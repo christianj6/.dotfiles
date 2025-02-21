@@ -24,6 +24,7 @@ npm -v
 brew install neovim ripgrep lazygit
 
 # todo: aider
+# todo: extend .zshrc, but do not version the entire thing or symlink it
 
 
 # create symlinks
