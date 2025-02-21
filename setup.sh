@@ -23,9 +23,7 @@ npm -v
 # other dependencies
 brew install neovim ripgrep lazygit
 
-
-# clone repo with configurations
-git clone --bare https://github.com/christianj6/.dotfiles.git $HOME/.dotfiles
+# todo: aider
 
 
 # create symlinks
