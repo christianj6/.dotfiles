@@ -32,7 +32,15 @@ return {
       keys = {
           { "<leader>lg", "<cmd>LazyGit<cr>", desc = "LazyGit" }
       }
-  }
+  },
+
+  {
+    'jmbuhr/otter.nvim',
+    dependencies = {
+      'nvim-treesitter/nvim-treesitter',
+    },
+    opts = {},
+}
 
   -- {
   -- 	"nvim-treesitter/nvim-treesitter",
