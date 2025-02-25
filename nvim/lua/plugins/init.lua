@@ -36,11 +36,18 @@ return {
 
   {
     'jmbuhr/otter.nvim',
+    lazy = false,
     dependencies = {
       'nvim-treesitter/nvim-treesitter',
     },
     opts = {},
-}
+  },
+
+  {
+    "sphamba/smear-cursor.nvim",
+    lazy = false,
+    opts = {},
+  }
 
   -- {
   -- 	"nvim-treesitter/nvim-treesitter",
