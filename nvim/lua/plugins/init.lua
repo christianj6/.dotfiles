@@ -68,7 +68,18 @@ return {
         adaptive_size = true
       }
     },
+  },
+
+  {
+    'akinsho/toggleterm.nvim',
+    lazy = false,
+    version = "*",
+    opts = {
+      open_mapping = [[<leader>o]],
+      direction = 'float'
+    }
   }
+
   -- {
   -- 	"nvim-treesitter/nvim-treesitter",
   -- 	opts = {
