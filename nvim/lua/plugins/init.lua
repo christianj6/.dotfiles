@@ -58,6 +58,16 @@ return {
               -- Configuration here, or leave empty to use defaults
           })
       end
+  },
+
+  {
+    "nvim-tree/nvim-tree.lua",
+    opts = {
+      view = {
+        preserve_window_proportions = true,
+        adaptive_size = true
+      }
+    },
   }
   -- {
   -- 	"nvim-treesitter/nvim-treesitter",
