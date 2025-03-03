@@ -23,9 +23,15 @@ npm -v
 # other dependencies
 brew install neovim ripgrep lazygit
 
-# todo: aider
-# todo: extend .zshrc, but do not version the entire thing or symlink it
+# conda
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh -O ~/miniconda.sh
+bash ~/miniconda.sh -b -p $HOME/miniconda
 
+# aider 
+python -m pip install aider-install
+aider-install
+
+# TODO: extend .zshrc, but do not version the entire thing or symlink it
 
 # create symlinks
 ln -s ~/.dotfiles/ghostty ~/.config/ghostty
