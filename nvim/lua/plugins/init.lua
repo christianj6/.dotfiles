@@ -75,7 +75,7 @@ return {
     lazy = false,
     version = "*",
     opts = {
-      open_mapping = [[<leader>o]],
+      open_mapping = [[<C-o>]],
       direction = 'float'
     }
   }
