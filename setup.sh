@@ -36,6 +36,6 @@ aider-install
 # create symlinks
 ln -s ~/.dotfiles/ghostty ~/.config/ghostty
 ln -s ~/.dotfiles/nvim ~/.config/nvim
-ln -s ~/.dotfiles/leaderkey ~/Library/Application Support/Leader Key
+ln -s ~/.dotfiles/leaderkey/config.json ~/Library/"Application Support"/"Leader Key"/config.json
 
 echo "setup complete."
