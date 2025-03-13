@@ -35,6 +35,12 @@
       "label" : "",
       "type" : "application",
       "value" : "/Applications/Microsoft Outlook.app"
+    },
+    {
+      "key" : "c",
+      "label" : "",
+      "type" : "application",
+      "value" : "/Applications/ChatGPT.app"
     }
   ],
   "type" : "group"
