@@ -78,8 +78,26 @@ return {
       open_mapping = [[<C-o>]],
       direction = 'float'
     }
-  }
+  },
 
+  {
+    "milanglacier/yarepl.nvim",
+    config = function()
+      require("yarepl").setup({
+        scratch_repl = true,
+        extensions = { "aider" },
+        metas = { aider = require('yarepl.extensions.aider').create_aider_meta() },
+        meta = {
+          split = "horizontal",
+          height = 15,
+        },
+      })
+    end,
+    dependencies = {
+      "nvim-treesitter/nvim-treesitter",
+    },
+    lazy = false, -- optional: force early loading for mappings to work
+  },
   -- {
   -- 	"nvim-treesitter/nvim-treesitter",
   -- 	opts = {
