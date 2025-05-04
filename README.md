@@ -31,6 +31,7 @@ Miscellaneous Programs
 ### Additional Resources
 
 Here is a nice article which explains how to configure the .zshrc so that activated conda environments are used in nvim child processes. I typically make project-specific aliases in the .zshrc which activate a conda env before starting nvim in a project directory, so this additional configuration helps avoid the need to activate conda environments again in child terminal processes.
+
 https://nielscautaerts.xyz/make-active-conda-environment-persist-in-neovim-terminal.html
 
 The main idea is to insert the following snippet around the conda init logic:
