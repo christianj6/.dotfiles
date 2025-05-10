@@ -79,30 +79,38 @@ def main():
     print("Looping through cards for culling ...")
     board_cards = get_trello_board_cards(board_id=inbox_board_id)
     inbox_cards = [card for card in board_cards if card['idList'] == inbox_list_id]
-
-    # logic for manually sorting the cards
-    for card in inbox_cards:
+    
+    # logic for manually sorting cards
+    i = 0
+    total_cards = len(inbox_cards)
+    while i < total_cards:
         print("\033c", end="")  # ANSI escape code to clear terminal screen
+        print(f"Progress: {i + 1}/{total_cards} cards")
         print("-"*3)
-        print(f"\n\n{card['name']}\n\n")
+        print(f"\n\n{inbox_cards[i]['name']}\n\n")
         print("-"*3)
 
-        print("\n\n\nPress SPACE to cull, D to delete, or any other key to keep ...")
+        print("\n\n\nPress SPACE to cull, D to delete, BACKSPACE to go back, or any other key to keep ...")
         key = readchar.readkey()
+        
+        if key == "\x7f":  # Backspace key
+            i = max(0, i - 1)  # Go back one card, but not before the first card
+            continue
+            
         if key == " ":
-            move_trello_card_to_list(card_id=card['id'], list_id=culled_list_id)
+            move_trello_card_to_list(card_id=inbox_cards[i]['id'], list_id=culled_list_id)
             input("\nMoved card to culled list!")
 
         elif key.lower() == "d":
-            delete_trello_card(card_id=card['id'])
+            delete_trello_card(card_id=inbox_cards[i]['id'])
             input("\nDeleted card!")
+            
+        i += 1
 
     return True
 
 
-# TODO: ability to go back
 # TODO: ability to dump already reviewed cards to the defer list
-# TODO: show progress
 
 
 if __name__ == "__main__":
