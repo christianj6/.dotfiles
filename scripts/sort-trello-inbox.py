@@ -140,6 +140,13 @@ def main():
             
         i += 1
 
+    # Handle any remaining cards that need to be deferred
+    if cards_to_defer:
+        print(f"\nDeferring {len(cards_to_defer)} remaining cards...")
+        for card in tqdm(cards_to_defer, desc="Deferring final cards"):
+            move_trello_card_to_list(card_id=card['id'], list_id=defer_list_id)
+        print("\nDone!")
+
     return True
 
 
