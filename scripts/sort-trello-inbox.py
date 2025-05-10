@@ -1,7 +1,7 @@
 import os
 import requests
 import readchar
-
+from tqdm import tqdm
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -104,20 +104,20 @@ def main():
             print("\n\nGracefully exiting...")
             # Auto-defer any remaining reviewed cards
             if cards_to_defer:
-                print(f"Moving {len(cards_to_defer)} reviewed cards to defer list...")
-                for card in cards_to_defer:
+                print(f"\nAuto-deferring {len(cards_to_defer)} reviewed cards...")
+                for card in tqdm(cards_to_defer, desc="Auto-deferring cards"):
                     move_trello_card_to_list(card_id=card['id'], list_id=defer_list_id)
-                print("Done!")
+                print("\nDone!")
 
             return True
         
         if key.lower() == "u":
-            # Move all reviewed but not culled/deleted cards to defer list
-            for card in cards_to_defer:
-                move_trello_card_to_list(card_id=card['id'], list_id=defer_list_id)
-
             if cards_to_defer:
-                input(f"\nDeferred {len(cards_to_defer)} cards!")
+                print(f"\nDeferring {len(cards_to_defer)} cards...")
+                # Move all reviewed but not culled/deleted cards to defer list
+                for card in tqdm(cards_to_defer, desc="Deferring cards"):
+                    move_trello_card_to_list(card_id=card['id'], list_id=defer_list_id)
+                input("\nDone! Press Enter to continue...")
 
             cards_to_defer = []  # Clear the list after deferring
             continue
@@ -141,6 +141,10 @@ def main():
         i += 1
 
     return True
+
+
+# TODO: text is narrower
+# TODO: ability to get more details on a card
 
 
 if __name__ == "__main__":
