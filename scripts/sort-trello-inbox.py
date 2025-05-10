@@ -42,6 +42,17 @@ def move_trello_card_to_list(card_id, list_id):
     return response.json()
 
 
+def delete_trello_card(card_id):
+    url = f'https://api.trello.com/1/cards/{card_id}'
+    params = {
+        'key': os.getenv("TRELLO_KEY"),
+        'token': os.getenv("TRELLO_TOKEN")
+    }
+    response = requests.delete(url, params=params)
+    response.raise_for_status()
+    return response.json()
+
+
 def get_trello_board_lists(board_id):
     url = f'https://api.trello.com/1/boards/{board_id}/lists'
     params = {
@@ -75,17 +86,20 @@ def main():
         print("-"*3)
         print(f"\n\n{card['name']}\n\n")
         print("-"*3)
-        
-        print("\n\n\nPress SPACE to cull, or any other key to keep ...")
+
+        print("\n\n\nPress SPACE to cull, D to delete, or any other key to keep ...")
         key = readchar.readkey()
         if key == " ":
             move_trello_card_to_list(card_id=card['id'], list_id=culled_list_id)
             input("\nMoved card to culled list!")
 
+        elif key.lower() == "d":
+            delete_trello_card(card_id=card['id'])
+            input("\nDeleted card!")
+
     return True
 
 
-# TODO: ability to delete
 # TODO: ability to go back
 # TODO: ability to dump already reviewed cards to the defer list
 # TODO: show progress
