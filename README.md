@@ -27,6 +27,14 @@ Miscellaneous Programs
 
 ***
 
+### Utility Scripts
+
+The /scripts directory contains some random utility scripts for:
+- Creating a Python project template.
+- Managing Trello cards.
+
+***
+
 
 ### Additional Resources
 
