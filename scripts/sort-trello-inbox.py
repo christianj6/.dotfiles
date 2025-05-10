@@ -95,7 +95,21 @@ def main():
 
         print("\n\n\nPress SPACE to cull, D to delete, U to defer all reviewed cards,")
         print("BACKSPACE to go back, or any other key to keep ...")
-        key = readchar.readkey()
+        print("\nYou can press CTRL-C at any time to quit the session, it is recommended to press 'U' first to save your state.")
+
+        try:
+            key = readchar.readkey()
+
+        except KeyboardInterrupt:
+            print("\n\nGracefully exiting...")
+            # Auto-defer any remaining reviewed cards
+            if cards_to_defer:
+                print(f"Moving {len(cards_to_defer)} reviewed cards to defer list...")
+                for card in cards_to_defer:
+                    move_trello_card_to_list(card_id=card['id'], list_id=defer_list_id)
+                print("Done!")
+
+            return True
         
         if key.lower() == "u":
             # Move all reviewed but not culled/deleted cards to defer list
