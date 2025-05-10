@@ -1,5 +1,4 @@
 import os
-import time
 import requests
 import readchar
 
@@ -69,7 +68,6 @@ def main():
     print("Looping through cards for culling ...")
     board_cards = get_trello_board_cards(board_id=inbox_board_id)
     inbox_cards = [card for card in board_cards if card['idList'] == inbox_list_id]
-    responses = {}
 
     # logic for manually sorting the cards
     for card in inbox_cards:
@@ -81,7 +79,7 @@ def main():
         print("\n\n\nPress SPACE to cull, or any other key to keep ...")
         key = readchar.readkey()
         if key == " ":
-            response = move_trello_card_to_list(card_id=card['id'], list_id=culled_list_id)
+            move_trello_card_to_list(card_id=card['id'], list_id=culled_list_id)
             input("\nMoved card to culled list!")
 
     return True
