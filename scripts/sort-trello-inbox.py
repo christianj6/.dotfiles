@@ -74,13 +74,16 @@ def main():
     lists = get_trello_board_lists(board_id=inbox_board_id)
     inbox_list_id = [ls['id'] for ls in lists if ls['name'] == 'inbox'][0]
     culled_list_id = [ls['id'] for ls in lists if ls['name'] == 'culled for upcoming week'][0]
+    defer_list_id = [ls['id'] for ls in lists if ls['name'] == 'deferred'][0]
     print(f"Inbox and culled list ids: {[inbox_list_id, culled_list_id]}")
 
     print("Looping through cards for culling ...")
     board_cards = get_trello_board_cards(board_id=inbox_board_id)
     inbox_cards = [card for card in board_cards if card['idList'] == inbox_list_id]
     
-    # logic for manually sorting cards
+    # Track cards that were reviewed but not culled/deleted
+    cards_to_defer = []
+    
     i = 0
     total_cards = len(inbox_cards)
     while i < total_cards:
@@ -90,9 +93,21 @@ def main():
         print(f"\n\n{inbox_cards[i]['name']}\n\n")
         print("-"*3)
 
-        print("\n\n\nPress SPACE to cull, D to delete, BACKSPACE to go back, or any other key to keep ...")
+        print("\n\n\nPress SPACE to cull, D to delete, U to defer all reviewed cards,")
+        print("BACKSPACE to go back, or any other key to keep ...")
         key = readchar.readkey()
         
+        if key.lower() == "u":
+            # Move all reviewed but not culled/deleted cards to defer list
+            for card in cards_to_defer:
+                move_trello_card_to_list(card_id=card['id'], list_id=defer_list_id)
+
+            if cards_to_defer:
+                input(f"\nDeferred {len(cards_to_defer)} cards!")
+
+            cards_to_defer = []  # Clear the list after deferring
+            continue
+
         if key == "\x7f":  # Backspace key
             i = max(0, i - 1)  # Go back one card, but not before the first card
             continue
@@ -104,13 +119,14 @@ def main():
         elif key.lower() == "d":
             delete_trello_card(card_id=inbox_cards[i]['id'])
             input("\nDeleted card!")
+
+        else:
+            # Card was reviewed but not culled/deleted, add to defer candidates
+            cards_to_defer.append(inbox_cards[i])
             
         i += 1
 
     return True
-
-
-# TODO: ability to dump already reviewed cards to the defer list
 
 
 if __name__ == "__main__":
