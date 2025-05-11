@@ -17,13 +17,24 @@ load_dotenv()
 
 def create_trello_list(board_id: str, name: str) -> Dict:
     """Create a new list in the specified board."""
+    # First get existing lists to calculate position
+    lists = get_trello_board_lists(board_id)
+    # wtf these numbers look really big, AI?
+    if len(lists) >= 2:
+        # Get position of second list
+        third_position = (lists[1]['pos'] + lists[2]['pos']) / 2 if len(lists) > 2 else lists[1]['pos'] + 16384
+    else:
+        third_position = 32768  # Default Trello position increment
+
     url = f'https://api.trello.com/1/lists'
     params = {
         'name': name,
         'idBoard': board_id,
+        'pos': third_position,
         'key': os.getenv("TRELLO_KEY"),
         'token': os.getenv("TRELLO_TOKEN")
     }
+
     response = requests.post(url, params=params)
     response.raise_for_status()
     return response.json()
