@@ -1,68 +1,16 @@
-import os
-import requests
 import readchar
 from tqdm import tqdm
 from dotenv import load_dotenv
+from trello import (
+    get_trello_boards,
+    get_trello_board_cards,
+    move_trello_card_to_list,
+    delete_trello_card,
+    get_trello_board_lists
+)
 
 load_dotenv()
 INBOX_BOARD_NAME = 'inbox'
-
-
-def get_trello_boards():
-    url = 'https://api.trello.com/1/members/me/boards'
-    params = {
-        'key': os.getenv("TRELLO_KEY"),
-        'token': os.getenv("TRELLO_TOKEN")
-    }
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    return response.json()
-
-
-def get_trello_board_cards(board_id):
-    url = f'https://api.trello.com/1/boards/{board_id}/cards'
-    params = {
-        'key': os.getenv("TRELLO_KEY"),
-        'token': os.getenv("TRELLO_TOKEN")
-    }
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    return response.json()
-
-
-def move_trello_card_to_list(card_id, list_id):
-    url = f'https://api.trello.com/1/cards/{card_id}'
-    params = {
-        'idList': list_id,
-        'key': os.getenv("TRELLO_KEY"),
-        'token': os.getenv("TRELLO_TOKEN")
-    }
-    response = requests.put(url, params=params)
-    response.raise_for_status()
-    return response.json()
-
-
-def delete_trello_card(card_id):
-    url = f'https://api.trello.com/1/cards/{card_id}'
-    params = {
-        'key': os.getenv("TRELLO_KEY"),
-        'token': os.getenv("TRELLO_TOKEN")
-    }
-    response = requests.delete(url, params=params)
-    response.raise_for_status()
-    return response.json()
-
-
-def get_trello_board_lists(board_id):
-    url = f'https://api.trello.com/1/boards/{board_id}/lists'
-    params = {
-        'key': os.getenv("TRELLO_KEY"),
-        'token': os.getenv("TRELLO_TOKEN")
-    }
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    return response.json()
-
 
 def main():
     print("Getting Trello boards ...")
