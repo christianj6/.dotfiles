@@ -10,7 +10,8 @@ from trello import (
     delete_trello_card,
     get_trello_boards,
     get_trello_board_lists,
-    get_trello_board_cards
+    get_trello_board_cards,
+    delete_trello_list
 )
 
 load_dotenv()
@@ -19,7 +20,6 @@ def create_trello_list(board_id: str, name: str) -> Dict:
     """Create a new list in the specified board."""
     # First get existing lists to calculate position
     lists = get_trello_board_lists(board_id)
-    # wtf these numbers look really big, AI?
     if len(lists) >= 2:
         # Get position of second list
         third_position = (lists[1]['pos'] + lists[2]['pos']) / 2 if len(lists) > 2 else lists[1]['pos'] + 16384
@@ -97,9 +97,14 @@ def merge_list_cards_into_single_card_in_new_list(board_id: str, source_list_id:
     
     if not source_list:
         raise ValueError(f"Could not find list with ID {source_list_id}")
+
+    # Check if "merged cards" list already exists
+    lists = get_trello_board_lists(board_id)
+    merged_list = next((lst for lst in lists if lst['name'] == "merged cards"), None)
     
-    # Create new list with same name
-    new_list = create_trello_list(board_id, source_list['name'] + "-new")  # new list has -new appended
+    # Create "merged cards" list if it doesn't exist
+    if not merged_list:
+        merged_list = create_trello_list(board_id, "merged cards")
     
     # Get all cards from source list
     cards = get_trello_board_cards(board_id)
@@ -117,8 +122,8 @@ def merge_list_cards_into_single_card_in_new_list(board_id: str, source_list_id:
             merged_description += f"### {card['name']}\n\n{card_details['desc']}\n\n---\n\n"
     
     new_card = create_trello_card(
-        new_list['id'],
-        f"{source_list['name']}-new",
+        merged_list['id'],
+        source_list['name'],
         merged_description
     )
     
@@ -166,6 +171,10 @@ def main():
     
     print(f"Merging cards from list '{inbox_list_name}'...")
     merge_list_cards_into_single_card_in_new_list(inbox_board['id'], target_list['id'])
+    
+    # Delete the source list after successful merge
+    print("Archiving source list...")
+    delete_trello_list(target_list['id'])
     print("Done!")
 
 if __name__ == "__main__":

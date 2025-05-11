@@ -81,3 +81,14 @@ def update_card_description(card_id: str, description: str) -> None:
     }
     response = requests.put(url, params=params)
     response.raise_for_status()
+
+def delete_trello_list(list_id: str) -> None:
+    """Delete a Trello list."""
+    url = f'https://api.trello.com/1/lists/{list_id}/closed'
+    params = {
+        'value': 'true',  # Archive/close the list
+        'key': os.getenv("TRELLO_KEY"),
+        'token': os.getenv("TRELLO_TOKEN")
+    }
+    response = requests.put(url, params=params)
+    response.raise_for_status()
