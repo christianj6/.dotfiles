@@ -1,5 +1,6 @@
 import readchar
 from tqdm import tqdm
+import requests
 from dotenv import load_dotenv
 from trello import (
     get_trello_boards,
@@ -92,7 +93,11 @@ def main():
     if cards_to_defer:
         print(f"\nDeferring {len(cards_to_defer)} remaining cards...")
         for card in tqdm(cards_to_defer, desc="Deferring final cards"):
-            move_trello_card_to_list(card_id=card['id'], list_id=defer_list_id)
+            try: 
+                move_trello_card_to_list(card_id=card['id'], list_id=defer_list_id)
+            except requests.exceptions.HTTPError:
+                print("ERROR when moving card!")
+                pass
         print("\nDone!")
 
     return True
