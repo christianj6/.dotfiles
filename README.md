@@ -50,3 +50,10 @@ if [[ -z "${CONDA_SHLVL}" ]]; then
   # <<< conda initialize <<<
 fi
 ```
+
+***
+
+### TODO
+
+- [ ] Migrate to stow for symlink management.
+- [ ] Windows and Linux setup compatibility.

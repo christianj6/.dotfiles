@@ -177,5 +177,7 @@ def main():
     delete_trello_list(target_list['id'])
     print("Done!")
 
+# TODO: also copy links
+
 if __name__ == "__main__":
     main()
