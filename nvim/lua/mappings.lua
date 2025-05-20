@@ -57,6 +57,22 @@ end
 -- Aider REPL keymaps
 map("n", "<C-a>", toggle_aider_repl, { desc = "Toggle aider REPL" })
 
+-- Build script shortcut 
+map("n", "<leader>b", function ()
+  local dir vim.fn.expand("%:p:h")
+  local output = vim.fn.systemlist("./build.sh")
+  vim.cmd("botright new")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, output)
+  vim.bo.buftype = "nofile"
+  vim.bo.bufhidden = "wipe"
+  vim.bo.swapfile = false
+  vim.bo.readonly = true
+  vim.bo.filetype = "output"
+
+  map("n", "q", "<cmd>bd!<CR>", {buffer=true})
+end, {desc="Run build.sh"}
+)
+
 -- map("n", "<Leader>as", "<Plug>(REPLStart-aider)", { desc = "Start an aider REPL" })
 -- map("n", "<Leader>af", "<Plug>(REPLFocus-aider)", { desc = "Focus on aider REPL" })
 -- map("n", "<Leader>ah", "<Plug>(REPLHide-aider)", { desc = "Hide aider REPL" })
