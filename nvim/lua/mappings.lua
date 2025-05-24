@@ -58,20 +58,63 @@ end
 map("n", "<C-a>", toggle_aider_repl, { desc = "Toggle aider REPL" })
 
 -- Build script shortcut 
-map("n", "<leader>b", function ()
-  local dir vim.fn.expand("%:p:h")
-  local output = vim.fn.systemlist("./build.sh")
-  vim.cmd("botright new")
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, output)
-  vim.bo.buftype = "nofile"
-  vim.bo.bufhidden = "wipe"
-  vim.bo.swapfile = false
-  vim.bo.readonly = true
-  vim.bo.filetype = "output"
+-- map("n", "<leader>b", function ()
+--   local dir vim.fn.expand("%:p:h")
+--   local output = vim.fn.systemlist("./build.sh")
+--   vim.cmd("botright new")
+--   vim.api.nvim_buf_set_lines(0, 0, -1, false, output)
+--   vim.bo.buftype = "nofile"
+--   vim.bo.bufhidden = "wipe"
+--   vim.bo.swapfile = false
+--   vim.bo.readonly = true
+--   vim.bo.filetype = "output"
+--
+--   map("n", "q", "<cmd>bd!<CR>", {buffer=true})
+-- end, {desc="Run build.sh"}
+-- )
 
-  map("n", "q", "<cmd>bd!<CR>", {buffer=true})
-end, {desc="Run build.sh"}
-)
+map("n", "<leader>b", function()
+  -- Open a new buffer in a bottom split
+  vim.cmd("botright new")
+  local buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_buf_set_name(buf, "Build Output")
+
+  -- Make the buffer scratch-like
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].readonly = false -- temporarily allow writing output
+  vim.bo[buf].filetype = "output"
+
+  -- Clear buffer initially
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})
+
+  -- Helper: append line and scroll
+  local function append_lines(lines)
+    local line_count = vim.api.nvim_buf_line_count(buf)
+    vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, lines)
+    vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(buf), 0 })
+  end
+
+  -- Start the job asynchronously
+  vim.fn.jobstart("./build.sh", {
+    stdout_buffered = false,
+    stderr_buffered = false,
+    on_stdout = function(_, data, _)
+      if data then append_lines(data) end
+    end,
+    on_stderr = function(_, data, _)
+      if data then append_lines(data) end
+    end,
+    on_exit = function(_, code, _)
+      append_lines({ "", "-- DONE (exit code: " .. code .. ") --" })
+      vim.bo[buf].readonly = true -- lock the buffer after completion
+    end,
+  })
+
+  -- Map 'q' to close the output window
+  vim.keymap.set("n", "q", "<cmd>bd!<CR>", { buffer = buf, silent = true })
+end, { desc = "Run build.sh (live)" })
 
 -- map("n", "<Leader>as", "<Plug>(REPLStart-aider)", { desc = "Start an aider REPL" })
 -- map("n", "<Leader>af", "<Plug>(REPLFocus-aider)", { desc = "Focus on aider REPL" })
