@@ -104,7 +104,7 @@ def main():
 
 
 # TODO: text is narrower
-# TODO: ability to get more details on a card
+# TODO: ability to get more details on a card eg open the card
 
 
 if __name__ == "__main__":
