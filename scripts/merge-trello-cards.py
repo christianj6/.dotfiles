@@ -118,8 +118,21 @@ def merge_list_cards_into_single_card_in_new_list(board_id: str, source_list_id:
     merged_description = ""
     for card in source_cards:
         card_details = get_trello_card(card['id'])
+        merged_description += f"### {card['name']}\n\n"
+        
+        # Add description if it exists
         if card_details['desc']:
-            merged_description += f"### {card['name']}\n\n{card_details['desc']}\n\n---\n\n"
+            merged_description += f"{card_details['desc']}\n\n"
+        
+        # Add any attachments/links
+        if card_details['attachments']:
+            merged_description += "**Attachments:**\n"
+            for attachment in card_details['attachments']:
+                if attachment['url']:
+                    merged_description += f"- [{attachment['name'] or attachment['url']}]({attachment['url']})\n"
+            merged_description += "\n"
+        
+        merged_description += "---\n\n"
     
     new_card = create_trello_card(
         merged_list['id'],
@@ -177,7 +190,6 @@ def main():
     delete_trello_list(target_list['id'])
     print("Done!")
 
-# TODO: also copy links
 
 if __name__ == "__main__":
     main()
