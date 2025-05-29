@@ -39,8 +39,53 @@ def create_trello_list(board_id: str, name: str) -> Dict:
     response.raise_for_status()
     return response.json()
 
+def create_trello_card_with_attachment(list_id: str, name: str, description: str = "") -> Dict:
+    """Create a card and add large content as an attachment."""
+    from tempfile import NamedTemporaryFile
+    
+    # Create card with minimal description
+    card = create_trello_card(
+        list_id,
+        name,
+        "This card's full content is available in the attached markdown file due to length."
+    )
+    
+    # Create temporary file with full content
+    with NamedTemporaryFile(mode='w', suffix='.md', delete=False) as temp_file:
+        temp_file.write(description)
+        temp_path = temp_file.name
+    
+    try:
+        # Upload as attachment
+        url = f'https://api.trello.com/1/cards/{card["id"]}/attachments'
+        with open(temp_path, 'rb') as file_content:
+            files = {
+                'file': (
+                    f'{name}_full_content.md',
+                    file_content,
+                    'text/markdown'
+                )
+            }
+            params = {
+                'key': os.getenv("TRELLO_KEY"),
+                'token': os.getenv("TRELLO_TOKEN")
+            }
+            response = requests.post(url, params=params, files=files)
+            response.raise_for_status()
+    finally:
+        os.unlink(temp_path)
+    
+    return card
+
 def create_trello_card(list_id: str, name: str, description: str = "") -> Dict:
     """Create a new card in the specified list."""
+    MAX_DESC_LENGTH = 8000  # Trello's limit with some buffer
+
+    # If description is too long, create card with attachment instead
+    if len(description) > MAX_DESC_LENGTH:
+        print(f"Description exceeds {MAX_DESC_LENGTH} characters. Creating card with attachment...")
+        return create_trello_card_with_attachment(list_id, name, description)
+    
     url = f'https://api.trello.com/1/cards'
     params = {
         'name': name,
@@ -185,7 +230,7 @@ def main():
     print(f"Merging cards from list '{inbox_list_name}'...")
     merge_list_cards_into_single_card_in_new_list(inbox_board['id'], target_list['id'])
     
-    # Delete the source list after successful merge
+    # delete source list after successful merge
     print("Archiving source list...")
     delete_trello_list(target_list['id'])
     print("Done!")
