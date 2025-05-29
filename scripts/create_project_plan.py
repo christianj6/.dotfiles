@@ -89,10 +89,10 @@ def main():
 
     # Get target board
     boards = get_trello_boards()
-    target_board = next((board for board in boards if board["name"].lower() == "projects"), None)
+    target_board = next((board for board in boards if board["name"].lower() == "inbox"), None)
     
     if not target_board:
-        print("Could not find projects board")
+        print("Could not find inbox board")
         sys.exit(1)
     
     # Load project data from JSON file
