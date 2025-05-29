@@ -1,0 +1,109 @@
+Instructions for Parsing Project Documents into Trello Structure
+
+Your task is to analyze a project document (PDF or text) and structure it into a JSON format that will be used to create a Trello board organization. Follow these specific guidelines:
+
+1. OUTPUT FORMAT
+The output must be a valid JSON object with this exact structure:
+{
+    "name": "Project Name",
+    "description": "Overall project description",
+    "phases": [
+        {
+            "name": "Phase Name",
+            "description": "Detailed phase description",
+            "tasks": [
+                {
+                    "name": "Task Name",
+                    "description": "Detailed task description",
+                    "subtasks": ["Subtask 1", "Subtask 2"]
+                }
+            ]
+        }
+    ]
+}
+
+2. PARSING RULES
+
+Project Name:
+- Extract the main project title or objective
+- Keep it concise (under 100 characters)
+- Use title case
+
+Project Description:
+- Summarize the project's overall goals and context
+- Include key objectives, timeline, and scope
+- Maximum 2000 characters
+
+Phases:
+- Identify major project stages or milestones
+- Each phase should represent a distinct project segment
+- Typical phases might include: Planning, Implementation, Testing, Deployment
+- 3-7 phases recommended
+
+Phase Description:
+- Explain the phase's objectives and success criteria
+- Include any phase-specific requirements or dependencies
+- Maximum 1000 characters per phase
+
+Tasks:
+- Break down each phase into concrete actionable items
+- Tasks should be specific and measurable
+- Each task should take 1-5 days to complete
+- 2-10 tasks per phase recommended
+
+Task Description:
+- Detail the specific work required
+- Include any technical requirements or dependencies
+- Maximum 500 characters per task
+
+Subtasks:
+- Break down complex tasks into smaller steps
+- Keep subtasks simple and actionable
+- 0-5 subtasks per task recommended
+- Each subtask should be under 100 characters
+
+3. SPECIAL CONSIDERATIONS
+
+- Maintain hierarchical relationships between phases, tasks, and subtasks
+- Preserve any explicit dependencies or sequences
+- Include any specific technical requirements in task descriptions
+- Capture deadlines or time constraints in descriptions
+- Note any resource requirements or constraints
+
+4. EXAMPLE INTERPRETATION
+
+Given text: "The database migration project will upgrade our MySQL 5.7 to 8.0 over Q3. First, we'll audit current databases and identify deprecated features. Then we'll update application code and test compatibility. Finally, we'll perform the migration in staging then production environments."
+
+Would become:
+{
+    "name": "Database Migration MySQL 5.7 to 8.0",
+    "description": "Comprehensive upgrade of database infrastructure from MySQL 5.7 to 8.0 during Q3. Project aims to modernize database system while maintaining application compatibility and minimizing downtime.",
+    "phases": [
+        {
+            "name": "Preparation and Audit",
+            "description": "Analyze current database state and identify required changes",
+            "tasks": [
+                {
+                    "name": "Database Feature Audit",
+                    "description": "Document all deprecated MySQL 5.7 features in use",
+                    "subtasks": [
+                        "List all databases and tables",
+                        "Identify deprecated features",
+                        "Document current configurations"
+                    ]
+                }
+            ]
+        }
+    ]
+}
+
+5. VALIDATION CHECKLIST
+
+Before returning the JSON:
+✓ Verify all required fields are present
+✓ Confirm JSON structure matches the template exactly
+✓ Check all text lengths are within limits
+✓ Ensure hierarchical relationships make logical sense
+✓ Validate JSON is properly formatted and escaped
+
+Remember: The goal is to create a clear, actionable project structure that can be effectively managed in Trello.
