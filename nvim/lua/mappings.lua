@@ -116,6 +116,15 @@ map("n", "<leader>b", function()
   vim.keymap.set("n", "q", "<cmd>bd!<CR>", { buffer = buf, silent = true })
 end, { desc = "Run build.sh (live)" })
 
+-- Debugger mappings
+map("n", "<leader>db", "<cmd>DapToggleBreakpoint<CR>", { desc = "Toggle breakpoint" })
+map("n", "<leader>dc", "<cmd>DapContinue<CR>", { desc = "Continue debugging" })
+map("n", "<leader>ds", "<cmd>DapTerminate<CR>", { desc = "Stop debugging" })
+map("n", "<leader>dpr", function()
+  require('dap-python').test_method()
+end, { desc = "Run Python test method" })
+
+
 -- map("n", "<Leader>as", "<Plug>(REPLStart-aider)", { desc = "Start an aider REPL" })
 -- map("n", "<Leader>af", "<Plug>(REPLFocus-aider)", { desc = "Focus on aider REPL" })
 -- map("n", "<Leader>ah", "<Plug>(REPLHide-aider)", { desc = "Hide aider REPL" })
