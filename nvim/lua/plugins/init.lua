@@ -137,7 +137,12 @@ return {
       -- require("core.utils").load_mappings("dap_python")
     end,
   },
-
+  {
+     "m4xshen/hardtime.nvim",
+     lazy = false,
+     dependencies = { "MunifTanjim/nui.nvim" },
+     opts = {},
+  },
   {
     "williamboman/mason.nvim",
     opts = {
