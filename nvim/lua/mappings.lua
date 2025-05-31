@@ -124,6 +124,17 @@ map("n", "<leader>dpr", function()
   require('dap-python').test_method()
 end, { desc = "Run Python test method" })
 
+-- Copy to clipboard
+map("v", "<leader>y", "\"+y", { desc = "Copy selection to clipboard" })
+map("n", "<leader>Y", "\"+yg_", { desc = "Copy line without newline to clipboard" })
+map("n", "<leader>y", "\"+y", { desc = "Copy to clipboard" })
+map("n", "<leader>yy", "\"+yy", { desc = "Copy line to clipboard" })
+
+-- Paste from clipboard
+map("n", "<leader>p", "\"+p", { desc = "Paste from clipboard after cursor" })
+map("n", "<leader>P", "\"+P", { desc = "Paste from clipboard before cursor" })
+map("v", "<leader>p", "\"+p", { desc = "Paste from clipboard after selection" })
+map("v", "<leader>P", "\"+P", { desc = "Paste from clipboard before selection" })
 
 -- map("n", "<Leader>as", "<Plug>(REPLStart-aider)", { desc = "Start an aider REPL" })
 -- map("n", "<Leader>af", "<Plug>(REPLFocus-aider)", { desc = "Focus on aider REPL" })
