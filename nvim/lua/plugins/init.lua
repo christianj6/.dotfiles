@@ -156,11 +156,28 @@ return {
     },
   },
   {
+    "mistweaverco/kulala.nvim",
+    ft = { "http", "rest" },
+    opts = {
+      global_keymaps = true,
+      global_keymaps_prefix = "<leader>k",
+      kulala_keymaps_prefix = "",
+      ui = {
+        display_mode = "split",
+        win_opts = {
+          width = 80,
+          height = 20,
+          -- split = "vertical",
+        },
+      }
+    },
+  },
+  {
   	"nvim-treesitter/nvim-treesitter",
   	opts = {
   		ensure_installed = {
   			"vim", "lua", "vimdoc",
-       "html", "css", "python"
+       "html", "css", "python", "http"
   		},
   	},
   },
