@@ -35,7 +35,18 @@ elif [[ "$OS" == "macos" ]]; then
     if ! command -v brew &> /dev/null; then
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     fi
-    brew install neovim ripgrep lazygit
+    brew install neovim ripgrep lazygit derailed/k9s/k9s
+fi
+
+# Install k9s on Linux
+if [[ "$OS" == "linux" ]]; then
+    # Using LinuxBrew if available, otherwise try apt
+    if command -v brew &> /dev/null; then
+        brew install derailed/k9s/k9s
+    else
+        # Add k9s repo and install via apt
+        curl -sS https://webinstall.dev/k9s | bash
+    fi
 fi
 
 # Install nvm and Node.js
