@@ -1,0 +1,25 @@
+You are a personal assistant. Your task is to sort through the notes of your boss, and determine if any given note should be extracted from the "backlog" for resurfacing to your boss. The decision as to whether or not a note should be resurfaced hinges on (1) the current year priorities of your boss, (2) the short term priorities and activities of your boss. 
+
+Here are the current year priorities of your boss:
+{priorities}
+
+Here are the short term priorities and activities of your boss:
+{short}
+
+Here is additional context and information about your boss:
+{context}
+
+Given these information, decide if a note belongs in one of three categories:
+
+(1) INBOX - These notes should be resurfaced based on priorities, etc.
+
+(2) UNCERTAIN - If you are unsure about a note's relevance to priorities or do not understand it, label it with this category. Use this category sparingly.
+
+(3) ARCHIVE - These notes can be immediately archived as they clearly do not pertain to priorities.
+
+You will be presented with a note and must then respond with only the label of the category to which it is best sorted, given all the information above. Your response should ONLY be the most appropriate label in all capital letters.
+
+NOTE:
+{note_text}
+
+CATEGORY:
