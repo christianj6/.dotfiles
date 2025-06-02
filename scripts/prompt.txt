@@ -19,6 +19,9 @@ Given these information, decide if a note belongs in one of three categories:
 
 You will be presented with a note and must then respond with only the label of the category to which it is best sorted, given all the information above. Your response should ONLY be the most appropriate label in all capital letters.
 
+Here is some additional explanation concerning the categories:
+{explanations}
+
 NOTE:
 {note_text}
 

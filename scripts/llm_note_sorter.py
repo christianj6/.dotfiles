@@ -40,12 +40,14 @@ def format_prompt(template: str, priorities: Dict, note_text: str) -> str:
     priorities_text = '\n'.join([f"- {priority}" for priority in priorities['year']])
     short_term_text = '\n'.join([f"- {priority}" for priority in priorities['short-term']])
     context_text = '\n'.join([f"- {ctx}" for ctx in priorities['context']])
+    explanation_text = '\n'.join([f"{category}: {explanation}" for category, explanation in priorities['explanations'].items()])
     
     return template.format(
         priorities=priorities_text,
         short=short_term_text,
         context=context_text,
-        note_text=note_text
+        note_text=note_text,
+        explanations=explanation_text
     )
 
 def get_llm_decision(prompt: str) -> str:
