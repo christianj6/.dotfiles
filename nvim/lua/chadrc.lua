@@ -4,6 +4,7 @@
 
 ---@type ChadrcConfig
 local M = {}
+vim.opt.relativenumber = true
 
 M.base46 = {
 	theme = "catppuccin",
