@@ -235,6 +235,7 @@ def main():
     delete_trello_list(target_list['id'])
     print("Done!")
 
+# TODO: automatically detect the list names and just merge them all, instead of requiring me to do it manually
 
 if __name__ == "__main__":
     main()
