@@ -57,3 +57,5 @@ fi
 
 - [ ] Migrate to stow for symlink management.
 - [ ] Windows and Linux setup compatibility.
+
+***
