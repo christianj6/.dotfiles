@@ -12,6 +12,7 @@ bash ./setup.sh
 conda init
 nvim
 ```
+You will probably also need to install various packages and/or configure a Nerd Font, but the above will get you 95%.
 
 ***
 
