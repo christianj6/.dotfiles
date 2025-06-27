@@ -9,12 +9,8 @@ Miscellaneous configuration files for a reproducible workspace.
 git clone ...
 cd .dotfiles/
 bash ./setup.sh
+conda init
 nvim
-```
-
-Then add the following to your .bashrc / .zshrc and ```source``` it.
-```
-export PATH="$HOME/miniconda/bin:$PATH"
 ```
 
 ***
