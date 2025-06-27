@@ -12,7 +12,7 @@ bash ./setup.sh
 nvim
 ```
 
-Then add the following to your .bashrc / .zshrc:
+Then add the following to your .bashrc / .zshrc and ```source``` it.
 ```
 export PATH="$HOME/miniconda/bin:$PATH"
 ```
