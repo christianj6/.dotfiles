@@ -76,15 +76,15 @@ python -m pip install aider-install
 aider-install
 
 # Create config directories
-mkdir -p ~/.config/nvim
+mkdir -p ~/.config
 
 # Create symlinks
-ln -sf ~/.dotfiles/nvim ~/.config/nvim
+ln -sf ~/.dotfiles/nvim ~/.config
 
 # OS-specific symlinks
 if [[ "$OS" == "macos" ]]; then
-    mkdir -p ~/.config/ghostty
-    ln -sf ~/.dotfiles/ghostty ~/.config/ghostty
+    mkdir -p ~/.config
+    ln -sf ~/.dotfiles/ghostty ~/.config
     mkdir -p ~/Library/"Application Support"/"Leader Key"
     ln -sf ~/.dotfiles/leaderkey/config.json ~/Library/"Application Support"/"Leader Key"/config.json
 fi
