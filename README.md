@@ -9,6 +9,7 @@ Miscellaneous configuration files for a reproducible workspace.
 git clone ...
 cd .dotfiles/
 bash ./setup.sh
+nvim
 ```
 
 ***
