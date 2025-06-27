@@ -12,6 +12,11 @@ bash ./setup.sh
 nvim
 ```
 
+Then add the following to your .bashrc / .zshrc:
+```
+export PATH="$HOME/miniconda/bin:$PATH"
+```
+
 ***
 
 ### Instructions for Setting Up Mac 
