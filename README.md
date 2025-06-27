@@ -3,6 +3,16 @@ Miscellaneous configuration files for a reproducible workspace.
 
 ***
 
+### Setup
+
+```
+git clone ...
+cd .dotfiles/
+bash ./setup.sh
+```
+
+***
+
 ### Instructions for Setting Up Mac 
 
 1. Administration Programs 
