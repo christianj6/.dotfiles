@@ -135,7 +135,10 @@ return {
       "nvim-neotest/nvim-nio",
     },
     config = function(_, opts)
-      local path = "~/.local/share/nvim/mason/packages/debugpy/venv/bin/python"
+      -- local path = "~/.local/share/nvim/mason/packages/debugpy/venv/bin/python"
+      local conda_prefix = os.getenv("CONDA_PREFIX")
+      local python_path = conda_prefix and (conda_prefix .. "/bin/python") or "~/.local/share/nvim/mason/packages/debugpy/venv/bin/python"
+
       require("dap-python").setup(path)
       -- require("core.utils").load_mappings("dap_python")
     end,
