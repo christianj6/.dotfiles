@@ -35,7 +35,7 @@ elif [[ "$OS" == "macos" ]]; then
     if ! command -v brew &> /dev/null; then
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     fi
-    brew install neovim ripgrep lazygit derailed/k9s/k9s bear
+    brew install neovim ripgrep lazygit derailed/k9s/k9s bear wget
 fi
 
 # Install k9s on Linux
@@ -60,7 +60,7 @@ npm -v
 
 # Install Miniconda
 if [[ "$OS" == "macos" ]]; then
-    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh"
+    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh"
 else
     MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
 fi
