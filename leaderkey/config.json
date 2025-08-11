@@ -2,43 +2,36 @@
   "actions" : [
     {
       "key" : "s",
-      "label" : "",
       "type" : "application",
       "value" : "/Applications/Sunsama.app"
     },
     {
       "key" : "g",
-      "label" : "",
       "type" : "application",
       "value" : "/Applications/Ghostty.app"
     },
     {
       "key" : "a",
-      "label" : "",
       "type" : "application",
       "value" : "/Applications/Arc.app"
     },
     {
       "key" : "d",
-      "label" : "",
       "type" : "application",
       "value" : "/Applications/draw.io.app"
     },
     {
       "key" : "t",
-      "label" : "",
       "type" : "application",
       "value" : "/Applications/Microsoft Teams.app"
     },
     {
       "key" : "o",
-      "label" : "",
       "type" : "application",
       "value" : "/Applications/Microsoft Outlook.app"
     },
     {
       "key" : "c",
-      "label" : "",
       "type" : "application",
       "value" : "/Applications/ChatGPT.app"
     }
