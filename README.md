@@ -3,7 +3,26 @@ Miscellaneous configuration files for a reproducible workspace.
 
 ***
 
-### Setup
+### Instructions for Setting Up Mac 
+
+1. Install Core Programs
+    - Sunsama
+    - 1Password 
+    - Arc Browser 
+        - 1Password Extension
+        - Vimium Extension 
+    - Ghostty
+    - Leader Key
+2. Set Up Terminal Workspace (see instructions below)
+3. Optional Programs 
+    - ChatGPT 
+    - Rancher Desktop
+
+You probably need to run some extra commands for brew, conda to work properly.
+
+***
+
+### Set Up Terminal Workspace
 
 ```
 git clone ...
@@ -12,31 +31,7 @@ bash ./setup.sh
 conda init
 nvim
 ```
-You will probably also need to install various packages and/or configure a Nerd Font, but the above will get you 95%.
-
-***
-
-### Instructions for Setting Up Mac 
-
-1. Administration Programs 
-    - Sunsama 
-    - 1Password 
-    - Arc Browser
-        - Vimium Extension 
-        - 1Password Extension 
-2. Terminal Workspace
-    - Pull .dotfiles Repository
-    - Run setup.sh
-3. Additional Programs 
-    - ChatGPT 
-    - Docker Desktop 
-    - Draw.io 
-    - Leader Key 
-    - Terraform
-
-Miscellaneous Programs
-- Sublime Merge 
-- Ollama 
+You will probably also need to install various packages and/or configure a Nerd Font, but the above will get you 95%. After this setup, it is a good idea to put some aliases etc. in the .zshrc.
 
 ***
 
@@ -47,7 +42,6 @@ The /scripts directory contains some random utility scripts for:
 - Managing Trello cards.
 
 ***
-
 
 ### Additional Resources
 
@@ -66,9 +60,3 @@ fi
 
 ***
 
-### TODO
-
-- [ ] Migrate to stow for symlink management.
-- [ ] Windows and Linux setup compatibility.
-
-***
