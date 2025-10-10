@@ -16,15 +16,24 @@ local function toggle_aider_repl()
 
   -- If the REPL window is open
   if winid ~= -1 then
-    local mode = vim.api.nvim_get_mode().mode  -- Get current mode (normal, insert, etc.)
-
-    -- If we are in insert mode inside the REPL, exit insert mode and hide the REPL window
-    if mode == "i" then
-      vim.cmd("stopinsert")  -- Exit insert mode
-      -- Hide the REPL window
-      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLHide-aider)", true, false, true), "")
+    -- Get the current window
+    local current_win = vim.api.nvim_get_current_win()
+    
+    -- Check if we're currently in the REPL window
+    if current_win == winid then
+      local mode = vim.api.nvim_get_mode().mode
+      
+      -- If in terminal mode or insert mode, exit to normal mode first
+      if mode == "t" or mode == "i" then
+        vim.cmd("stopinsert")
+      end
+      
+      -- Small delay to ensure mode change completes, then hide
+      vim.defer_fn(function()
+        vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLHide-aider)", true, false, true), "")
+      end, 10)
     else
-      -- If we're in normal mode in the REPL, hide the REPL window
+      -- We're in a different window, just hide the REPL
       vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLHide-aider)", true, false, true), "")
     end
   else
@@ -37,7 +46,7 @@ local function toggle_aider_repl()
         local repl_win = vim.fn.bufwinid("aider")
         if repl_win ~= -1 then
           vim.api.nvim_set_current_win(repl_win)
-          vim.cmd("startinsert")  -- Enter insert mode automatically
+          vim.cmd("startinsert")
         end
       end, 100)
     else
@@ -47,7 +56,7 @@ local function toggle_aider_repl()
         local repl_win = vim.fn.bufwinid("aider")
         if repl_win ~= -1 then
           vim.api.nvim_set_current_win(repl_win)
-          vim.cmd("startinsert")  -- Enter insert mode automatically
+          vim.cmd("startinsert")
         end
       end, 50)
     end
@@ -56,6 +65,7 @@ end
 
 -- Aider REPL keymaps
 map("n", "<C-a>", toggle_aider_repl, { desc = "Toggle aider REPL" })
+map("t", "<C-a>", toggle_aider_repl, { desc = "Toggle aider REPL" })
 
 -- Build script shortcut 
 -- map("n", "<leader>b", function ()
@@ -142,4 +152,3 @@ map("v", "<leader>P", "\"+P", { desc = "Paste from clipboard before selection" }
 -- map("v", "<Leader>ar", "<Plug>(REPLSendVisual-aider)", { desc = "Send visual region to aider" })
 -- map("n", "<Leader>arr", "<Plug>(REPLSendLine-aider)", { desc = "Send lines to aider" })
 -- map("n", "<Leader>ar", "<Plug>(REPLSendOperator-aider)", { desc = "Send Operator to aider" })
-
