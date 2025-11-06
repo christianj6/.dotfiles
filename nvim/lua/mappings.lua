@@ -9,6 +9,11 @@ map("n", ";", ":", { desc = "CMD enter command mode" })
 -- map("i", "jk", "<ESC>")
 -- map({ "n", "i", "v" }, "<C-s>", "<cmd> w <cr>")
 
+-- Window width adjustment
+map("n", "<C-,>", "<C-w><", { desc = "Decrease window width" })
+map("n", "<C-.>", "<C-w>>", { desc = "Increase window width" })
+map("n", "<leader>w=", "<C-w>=", { desc = "Equalize window sizes" })
+
 local function toggle_aider_repl()
   -- Check if the REPL window exists
   local bufnr = vim.fn.bufnr("aider")
