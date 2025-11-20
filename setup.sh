@@ -35,7 +35,7 @@ elif [[ "$OS" == "macos" ]]; then
     if ! command -v brew &> /dev/null; then
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     fi
-    brew install neovim ripgrep lazygit derailed/k9s/k9s bear wget
+    brew install neovim ripgrep lazygit derailed/k9s/k9s bear wget maccy
 fi
 
 # Install k9s on Linux
