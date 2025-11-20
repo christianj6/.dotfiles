@@ -9,6 +9,12 @@ map("n", ";", ":", { desc = "CMD enter command mode" })
 -- map("i", "jk", "<ESC>")
 -- map({ "n", "i", "v" }, "<C-s>", "<cmd> w <cr>")
 
+-- Jump back: Ctrl-[
+map('n', '<C-[>', '<C-o>', { noremap = true, silent = true })
+
+-- Jump forward: Ctrl-]
+map('n', '<C-]>', '<C-i>', { noremap = true, silent = true })
+
 -- Window width adjustment
 map("n", "<C-,>", "<C-w><", { desc = "Decrease window width" })
 map("n", "<C-.>", "<C-w>>", { desc = "Increase window width" })
