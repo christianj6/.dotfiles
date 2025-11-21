@@ -58,6 +58,9 @@ node -v
 nvm current
 npm -v
 
+# Install devcontainers CLI
+npm install -g @devcontainers/cli
+
 # Install Miniconda
 if [[ "$OS" == "macos" ]]; then
     MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh"
