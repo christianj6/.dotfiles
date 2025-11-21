@@ -1,5 +1,4 @@
 .env
 .aider*
 *.pyc
-.devcontainer
 priorities.json
