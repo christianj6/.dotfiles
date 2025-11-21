@@ -4,4 +4,5 @@ claude() {
     docker exec -it "$(devcontainer up --workspace-folder . | grep -o '"containerId":"[^"]*"' | cut -d'"' -f4)" claude
 }
 
+alias claude-setup="~/.dotfiles/scripts/setup-claude-devcontainer.sh"
 alias ls="tree -L 1"
