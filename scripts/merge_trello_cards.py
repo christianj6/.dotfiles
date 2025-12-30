@@ -1,6 +1,7 @@
 import os
 import requests
 import sys
+import re
 from typing import List, Dict
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -204,13 +205,21 @@ def merge_list_cards_into_single_card_in_new_list(board_id: str, source_list_id:
                 for item in checklist['checkItems']:
                     add_checklist_item(new_checklist['id'], item['name'])
 
+lists_not_to_merge = ["inbox", "culled for upcoming week", "deferred", "..."]
+
+def should_merge_list(list_name: str) -> bool:
+    """Determine if a list should be merged based on exclusion rules."""
+    # Skip if in exclusion list
+    if list_name.lower() in [name.lower() for name in lists_not_to_merge]:
+        return False
+    
+    # Skip if contains numerals
+    if re.search(r'\d', list_name):
+        return False
+    
+    return True
+
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: merge-trello-cards.py <inbox list name>")
-        sys.exit(1)
-    
-    inbox_list_name = sys.argv[1]
-    
     # Get inbox board
     boards = get_trello_boards()
     inbox_board = next((board for board in boards if board['name'].lower() == 'inbox'), None)
@@ -219,23 +228,30 @@ def main():
         print("Could not find inbox board")
         sys.exit(1)
     
-    # Get list ID for the specified list name
+    # Get all lists from inbox board
     lists = get_trello_board_lists(inbox_board['id'])
-    target_list = next((lst for lst in lists if lst['name'].lower() == inbox_list_name.lower()), None)
     
-    if not target_list:
-        print(f"Could not find list named '{inbox_list_name}' in inbox board")
-        sys.exit(1)
+    # Filter lists that should be merged
+    lists_to_merge = [lst for lst in lists if should_merge_list(lst['name'])]
     
-    print(f"Merging cards from list '{inbox_list_name}'...")
-    merge_list_cards_into_single_card_in_new_list(inbox_board['id'], target_list['id'])
+    if not lists_to_merge:
+        print("No lists found to merge")
+        return
     
-    # delete source list after successful merge
-    print("Archiving source list...")
-    delete_trello_list(target_list['id'])
-    print("Done!")
-
-# TODO: automatically detect the list names and just merge them all, instead of requiring me to do it manually
+    print(f"Found {len(lists_to_merge)} list(s) to merge:")
+    for lst in lists_to_merge:
+        print(f"  - {lst['name']}")
+    
+    # Merge each qualifying list
+    for lst in lists_to_merge:
+        print(f"\nMerging cards from list '{lst['name']}'...")
+        merge_list_cards_into_single_card_in_new_list(inbox_board['id'], lst['id'])
+        
+        # Delete source list after successful merge
+        print(f"Archiving list '{lst['name']}'...")
+        delete_trello_list(lst['id'])
+    
+    print("\nDone!")
 
 if __name__ == "__main__":
     main()
