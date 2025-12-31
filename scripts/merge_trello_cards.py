@@ -205,7 +205,7 @@ def merge_list_cards_into_single_card_in_new_list(board_id: str, source_list_id:
                 for item in checklist['checkItems']:
                     add_checklist_item(new_checklist['id'], item['name'])
 
-lists_not_to_merge = ["inbox", "culled for upcoming week", "deferred", "..."]
+lists_not_to_merge = ["inbox", "culled for upcoming week", "deferred", "...", "merged cards"]
 
 def should_merge_list(list_name: str) -> bool:
     """Determine if a list should be merged based on exclusion rules."""
