@@ -23,7 +23,7 @@ if [[ "$OS" == "linux" ]]; then
     # Install neovim from PPA for latest version
     sudo add-apt-repository ppa:neovim-ppa/unstable -y
     sudo apt-get update
-    sudo apt-get install -y neovim ripgrep bear ranger
+    sudo apt-get install -y neovim ripgrep bear ranger tmux
     # Install lazygit
     LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
     curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
@@ -35,7 +35,7 @@ elif [[ "$OS" == "macos" ]]; then
     if ! command -v brew &> /dev/null; then
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     fi
-    brew install neovim ripgrep lazygit derailed/k9s/k9s bear wget maccy ranger
+    brew install neovim ripgrep lazygit derailed/k9s/k9s bear wget maccy ranger tmux
 fi
 
 # Install k9s on Linux
