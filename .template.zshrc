@@ -7,5 +7,10 @@ claude() {
     docker exec -it "$(devcontainer up --workspace-folder . | grep -o '"containerId":"[^"]*"' | cut -d'"' -f4)" claude
 }
 
+opencode() {
+    devcontainer exec --config .opencode/devcontainer.json --workspace-folder . opencode
+}
+
 alias claude-setup="~/.dotfiles/scripts/setup-claude-devcontainer.sh"
+alias opencode-setup="~/.dotfiles/scripts/setup-opencode-devcontainer.sh"
 alias ls="tree -L 1"
