@@ -70,6 +70,7 @@ for domain in \
     "api.groq.com" \
     "api.cerebras.ai" \
     "sentry.io" \
+    "openrouter.ai" \
     "marketplace.visualstudio.com" \
     "vscode.blob.core.windows.net" \
     "update.code.visualstudio.com"; do
