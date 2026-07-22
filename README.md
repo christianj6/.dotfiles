@@ -59,6 +59,7 @@ fi
 ```
 
 Here is a nice tip about using ranger so that you can quit into the navigated directory:
+
 https://github.com/ranger/ranger/issues/2679
 
 ***
