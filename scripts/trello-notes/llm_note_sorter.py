@@ -31,8 +31,8 @@ def load_priorities() -> Dict:
         return json.load(f)
 
 def load_prompt_template() -> str:
-    """Load prompt template from prompt.txt file."""
-    with open('prompt.txt', 'r') as f:
+    """Load prompt template from prompts/prompt.txt file."""
+    with open('prompts/prompt.txt', 'r') as f:
         return f.read()
 
 def format_prompt(template: str, priorities: Dict, note_text: str) -> str:
