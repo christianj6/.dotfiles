@@ -102,4 +102,72 @@ if [[ "$OS" == "macos" ]]; then
     ln -sf ~/.dotfiles/leaderkey/config.json ~/Library/"Application Support"/"Leader Key"/config.json
 fi
 
+# ~/.local/bin entrypoints for the devcontainer setup scripts, so nothing
+# outside this repo needs to hardcode a scripts/ path.
+mkdir -p ~/.local/bin
+ln -sf ~/.dotfiles/scripts/devcontainers/setup-claude-devcontainer.sh ~/.local/bin/claude-setup
+ln -sf ~/.dotfiles/scripts/devcontainers/setup-opencode-devcontainer.sh ~/.local/bin/opencode-setup
+
+# Keep the devcontainer helper functions in ~/.zshrc current, without ever
+# touching anything else you keep there.
+sync_zshrc() {
+    local zshrc="$HOME/.zshrc"
+    local begin_marker="# >>> dotfiles devcontainer helpers >>>"
+    local end_marker="# <<< dotfiles devcontainer helpers <<<"
+
+    touch "$zshrc"
+
+    # Drop legacy single-line aliases from before scripts/ was reorganized;
+    # the managed block below and the ~/.local/bin symlinks above replace them.
+    local work
+    work="$(mktemp)"
+    grep -vF \
+        -e "alias claude-setup=\"~/.dotfiles/scripts/setup-claude-devcontainer.sh\"" \
+        -e "alias opencode-setup=\"~/.dotfiles/scripts/setup-opencode-devcontainer.sh\"" \
+        "$zshrc" > "$work" || true
+
+    local block
+    block="$(cat <<'BLOCK'
+claude() {
+    docker exec -it "$(devcontainer up --workspace-folder . | grep -o '"containerId":"[^"]*"' | cut -d'"' -f4)" claude
+}
+
+opencode() {
+    devcontainer exec --config .opencode/devcontainer.json --workspace-folder . opencode
+}
+BLOCK
+)"
+
+    local begin_line end_line
+    begin_line="$(grep -nF "$begin_marker" "$work" 2>/dev/null | head -1 | cut -d: -f1)" || true
+    end_line="$(grep -nF "$end_marker" "$work" 2>/dev/null | head -1 | cut -d: -f1)" || true
+
+    local final
+    final="$(mktemp)"
+    if [ -n "${begin_line:-}" ] && [ -n "${end_line:-}" ] && [ "$end_line" -gt "$begin_line" ]; then
+        # Existing block: replace its contents in place, keep everything else untouched.
+        { head -n "$begin_line" "$work"; printf '%s\n' "$block"; tail -n "+$end_line" "$work"; } > "$final"
+    else
+        # No block yet: append a fresh one at the end.
+        { cat "$work"; echo ""; echo "$begin_marker"; printf '%s\n' "$block"; echo "$end_marker"; } > "$final"
+    fi
+    rm -f "$work"
+
+    if cmp -s "$final" "$zshrc"; then
+        rm -f "$final"
+        return 0
+    fi
+
+    if command -v zsh &> /dev/null && ! zsh -n "$final" 2> /dev/null; then
+        echo "Warning: generated ~/.zshrc failed a zsh syntax check; leaving your ~/.zshrc untouched." >&2
+        rm -f "$final"
+        return 0
+    fi
+
+    cp "$zshrc" "$zshrc.bak.$(date +%Y%m%d%H%M%S)"
+    mv "$final" "$zshrc"
+    echo "Updated $zshrc (previous version backed up alongside it)"
+}
+sync_zshrc
+
 echo "Setup complete for $OS"

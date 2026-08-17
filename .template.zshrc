@@ -3,14 +3,7 @@
 # additional source required to make conda work in tmux (in addition to the other code mentioned in readme)
 source ~/miniconda3/etc/profile.d/conda.sh
 
-claude() {
-    docker exec -it "$(devcontainer up --workspace-folder . | grep -o '"containerId":"[^"]*"' | cut -d'"' -f4)" claude
-}
-
-opencode() {
-    devcontainer exec --config .opencode/devcontainer.json --workspace-folder . opencode
-}
-
-alias claude-setup="~/.dotfiles/scripts/setup-claude-devcontainer.sh"
-alias opencode-setup="~/.dotfiles/scripts/setup-opencode-devcontainer.sh"
+# `claude`/`opencode` functions and `claude-setup`/`opencode-setup` commands are
+# installed and kept current automatically by ~/.dotfiles/setup.sh -- no need
+# to copy them in here.
 alias ls="tree -L 1"

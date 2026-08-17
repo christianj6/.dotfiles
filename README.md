@@ -41,7 +41,7 @@ You will probably also need to install various packages and/or configure a Nerd 
 
 The /scripts directory:
 - `new-python-project.sh` — scaffold a new Python project (conda env, pre-commit, git init).
-- `devcontainers/` — `setup-claude-devcontainer.sh` / `setup-opencode-devcontainer.sh` copy a devcontainer config into any project and start it. (`scripts/setup-claude-devcontainer.sh` / `setup-opencode-devcontainer.sh` still exist as symlinks into `devcontainers/`, for older `.zshrc` aliases that reference the old path.)
+- `devcontainers/` — `setup-claude-devcontainer.sh` / `setup-opencode-devcontainer.sh` copy a devcontainer config into any project and start it. `setup.sh` symlinks these into `~/.local/bin` as `claude-setup` / `opencode-setup`, and keeps the matching `claude` / `opencode` shell functions in your `~/.zshrc` current inside a marked block (`# >>> dotfiles devcontainer helpers >>>` / `<<<`) — it never touches anything else in that file, and backs it up (`~/.zshrc.bak.<timestamp>`) before any change. (`scripts/setup-claude-devcontainer.sh` / `setup-opencode-devcontainer.sh` also still exist as symlinks into `devcontainers/`, for any already-deployed `.zshrc` that references the pre-reorg path.)
 - `trello-notes/` — Trello + LLM note-sorting automation (`merge_trello_cards.py`, `sort_trello_inbox.py`, `create_project_plan.py`, `llm_note_sorter.py`), the `trello` API client package, and a `prompts/` folder holding the LLM prompt and PDF-parsing instructions. Run `pip install -r scripts/trello-notes/requirements.txt`, then `cd scripts/trello-notes` before invoking any of these — some read files (like `prompt.txt`, `priorities.json`) relative to the current directory.
 
 ***
