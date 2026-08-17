@@ -33,13 +33,16 @@ nvim
 ```
 You will probably also need to install various packages and/or configure a Nerd Font, but the above will get you 95%. After this setup, it is a good idea to put some aliases etc. in the .zshrc.
 
+`setup.sh` is idempotent — re-run it any time (e.g. after pulling updates) to pick up new packages and symlinks; it skips work that's already done.
+
 ***
 
 ### Utility Scripts
 
-The /scripts directory contains some random utility scripts for:
-- Creating a Python project template.
-- Managing Trello cards.
+The /scripts directory:
+- `new-python-project.sh` — scaffold a new Python project (conda env, pre-commit, git init).
+- `devcontainers/` — `setup-claude-devcontainer.sh` / `setup-opencode-devcontainer.sh` copy a devcontainer config into any project and start it. (`scripts/setup-claude-devcontainer.sh` / `setup-opencode-devcontainer.sh` still exist as symlinks into `devcontainers/`, for older `.zshrc` aliases that reference the old path.)
+- `trello-notes/` — Trello + LLM note-sorting automation (`merge_trello_cards.py`, `sort_trello_inbox.py`, `create_project_plan.py`, `llm_note_sorter.py`), the `trello` API client package, and a `prompts/` folder holding the LLM prompt and PDF-parsing instructions. Run `pip install -r scripts/trello-notes/requirements.txt`, then `cd scripts/trello-notes` before invoking any of these — some read files (like `prompt.txt`, `priorities.json`) relative to the current directory.
 
 ***
 
