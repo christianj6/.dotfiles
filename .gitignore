@@ -1,4 +1,6 @@
 .env
 .aider*
 *.pyc
+__pycache__/
 priorities.json
+.DS_Store
