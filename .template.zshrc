@@ -1,9 +1,8 @@
 # template for .zshrc (extend with your own things)
-
-# additional source required to make conda work in tmux (in addition to the other code mentioned in readme)
-source ~/miniconda3/etc/profile.d/conda.sh
-
-# `claude`/`opencode` functions and `claude-setup`/`opencode-setup` commands are
-# installed and kept current automatically by ~/.dotfiles/setup.sh -- no need
-# to copy them in here.
+#
+# setup.sh installs/keeps current, automatically (see README):
+#   - claude/opencode functions, claude-setup/opencode-setup commands
+#   - the conda-in-tmux persistence trick (conda init's block, wrapped in the
+#     CONDA_SHLVL guard, plus sourcing conda.sh directly for tmux panes)
+# No need to copy any of that in here.
 alias ls="tree -L 1"

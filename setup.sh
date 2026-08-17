@@ -108,9 +108,32 @@ mkdir -p ~/.local/bin
 ln -sf ~/.dotfiles/scripts/devcontainers/setup-claude-devcontainer.sh ~/.local/bin/claude-setup
 ln -sf ~/.dotfiles/scripts/devcontainers/setup-opencode-devcontainer.sh ~/.local/bin/opencode-setup
 
+# Safely rewrite ~/.zshrc: only if the candidate actually differs from what's
+# currently there, only after a zsh syntax check, and only after taking a
+# timestamped backup of the current file.
+commit_zshrc() {
+    local candidate="$1"
+    local zshrc="$HOME/.zshrc"
+
+    if cmp -s "$candidate" "$zshrc"; then
+        rm -f "$candidate"
+        return 0
+    fi
+
+    if command -v zsh &> /dev/null && ! zsh -n "$candidate" 2> /dev/null; then
+        echo "Warning: generated ~/.zshrc failed a zsh syntax check; leaving your ~/.zshrc untouched." >&2
+        rm -f "$candidate"
+        return 1
+    fi
+
+    cp "$zshrc" "$zshrc.bak.$(date +%Y%m%d%H%M%S)"
+    mv "$candidate" "$zshrc"
+    echo "Updated $zshrc (previous version backed up alongside it)"
+}
+
 # Keep the devcontainer helper functions in ~/.zshrc current, without ever
 # touching anything else you keep there.
-sync_zshrc() {
+sync_devcontainer_helpers() {
     local zshrc="$HOME/.zshrc"
     local begin_marker="# >>> dotfiles devcontainer helpers >>>"
     local end_marker="# <<< dotfiles devcontainer helpers <<<"
@@ -153,21 +176,97 @@ BLOCK
     fi
     rm -f "$work"
 
-    if cmp -s "$final" "$zshrc"; then
-        rm -f "$final"
-        return 0
-    fi
-
-    if command -v zsh &> /dev/null && ! zsh -n "$final" 2> /dev/null; then
-        echo "Warning: generated ~/.zshrc failed a zsh syntax check; leaving your ~/.zshrc untouched." >&2
-        rm -f "$final"
-        return 0
-    fi
-
-    cp "$zshrc" "$zshrc.bak.$(date +%Y%m%d%H%M%S)"
-    mv "$final" "$zshrc"
-    echo "Updated $zshrc (previous version backed up alongside it)"
+    commit_zshrc "$final" || true
 }
-sync_zshrc
+
+# Keep conda usable in tmux panes / nvim terminals current in ~/.zshrc: let
+# `conda init` manage its own block (safe to re-run), wrap that block in the
+# CONDA_SHLVL guard from
+# https://nielscautaerts.xyz/make-active-conda-environment-persist-in-neovim-terminal.html
+# so an already-active env survives into nested shells, and ensure the
+# tmux-specific conda.sh source line is present. Never touches anything else.
+sync_conda_tmux_persistence() {
+    local zshrc="$HOME/.zshrc"
+    touch "$zshrc"
+
+    # Run `conda init` against a scratch $HOME instead of the real file
+    # directly: it always rewrites the target rc file (even a no-op-looking
+    # one may reformat something), so touching ~/.zshrc with it mid-function
+    # would make every run look like a change. Compute the full result in
+    # scratch, then do exactly one clean comparison against the real file.
+    local workdir
+    workdir="$(mktemp -d)"
+    local candidate="$workdir/.zshrc"
+    cp "$zshrc" "$candidate"
+
+    if command -v conda &> /dev/null; then
+        HOME="$workdir" conda init zsh > /dev/null 2>&1 || true
+    fi
+
+    local begin_marker="# >>> conda initialize >>>"
+    local end_marker="# <<< conda initialize <<<"
+    local wrap_begin='if [[ -z "${CONDA_SHLVL}" ]]; then'
+    local begin_line end_line
+    begin_line="$(grep -nF "$begin_marker" "$candidate" 2>/dev/null | head -1 | cut -d: -f1)" || true
+    end_line="$(grep -nF "$end_marker" "$candidate" 2>/dev/null | head -1 | cut -d: -f1)" || true
+
+    if [ -n "${begin_line:-}" ] && [ -n "${end_line:-}" ]; then
+        local prev_line=$((begin_line - 1))
+        local prev_text=""
+        [ "$prev_line" -ge 1 ] && prev_text="$(sed -n "${prev_line}p" "$candidate")"
+        local next_line=$((end_line + 1))
+        local next_text
+        next_text="$(sed -n "${next_line}p" "$candidate")"
+
+        if [ "$prev_text" != "$wrap_begin" ] || [ "$next_text" != "fi" ]; then
+            local wrapped="$workdir/wrapped"
+            {
+                [ "$prev_line" -ge 1 ] && head -n "$prev_line" "$candidate"
+                echo "$wrap_begin"
+                sed -n "${begin_line},${end_line}p" "$candidate"
+                echo "fi"
+                tail -n "+$next_line" "$candidate"
+            } > "$wrapped"
+            mv "$wrapped" "$candidate"
+        fi
+    fi
+
+    # `conda init` unconditionally comments out any standalone conda.sh
+    # source line it finds elsewhere in the file, thinking it's redundant
+    # with its own block above. It isn't here -- this one is deliberately
+    # unguarded (unlike the block above) so the `conda` shell function,
+    # not just inherited env vars, is available in tmux panes / nvim
+    # terminals. Strip every trace of this pair (active, disabled by
+    # conda, or orphaned by an older buggy pass of this function) and
+    # re-add exactly one canonical, active copy.
+    local stripped="$workdir/stripped"
+    grep -vF \
+        -e "# additional source required to make conda work in tmux" \
+        -e "source ~/miniconda3/etc/profile.d/conda.sh" \
+        "$candidate" > "$stripped" || true
+    grep -v 'commented out by conda initialize' "$stripped" > "$candidate" || true
+
+    if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+        {
+            echo ""
+            echo "# additional source required to make conda work in tmux"
+            echo "source ~/miniconda3/etc/profile.d/conda.sh"
+        } >> "$candidate"
+    fi
+
+    local squeezed="$workdir/squeezed"
+    cat -s "$candidate" > "$squeezed"
+    mv "$squeezed" "$candidate"
+
+    local final
+    final="$(mktemp)"
+    cp "$candidate" "$final"
+    rm -rf "$workdir"
+
+    commit_zshrc "$final" || true
+}
+
+sync_devcontainer_helpers || true
+sync_conda_tmux_persistence || true
 
 echo "Setup complete for $OS"

@@ -28,12 +28,20 @@ You probably need to run some extra commands for brew, conda to work properly.
 git clone ...
 cd .dotfiles/
 bash ./setup.sh
-conda init
 nvim
 ```
 You will probably also need to install various packages and/or configure a Nerd Font, but the above will get you 95%. After this setup, it is a good idea to put some aliases etc. in the .zshrc.
 
-`setup.sh` is idempotent — re-run it any time (e.g. after pulling updates) to pick up new packages and symlinks; it skips work that's already done.
+### `setup.sh` — the one-stop workspace configuration tool
+
+Anything this repo needs on a machine belongs in `setup.sh`, not in a manual step written here in the README. It's an idempotent *apply* script, not a one-shot installer: pull this repo onto any machine (or one you've already set up) and run `bash ./setup.sh` — it converges the workspace to the state this repo describes (installed tools, symlinked configs, `~/.local/bin` entrypoints, a couple of small managed blocks in your `~/.zshrc`) without redoing finished work or touching anything you've added yourself. Re-run it any time, as often as you want.
+
+How it stays safe to re-run:
+- Every install step checks first (`command -v`, a directory/file test, an existing-install check) and skips whatever's already done.
+- Anything it writes into `~/.zshrc` lives inside clearly marked blocks (`# >>> ... >>>` / `# <<< ... <<<` — the same convention `conda init` and Rancher Desktop already use in that file) or is an exact, known-string match (e.g. retiring an old alias). It never touches anything else in your `~/.zshrc`.
+- Before writing, it diffs the candidate against the file's pre-change state and skips the write if nothing changed, syntax-checks the result with `zsh -n`, and takes a timestamped backup (`~/.zshrc.bak.<timestamp>`) right before overwriting anything.
+
+If you find yourself writing "now go manually do X" in this README, that's usually a sign `setup.sh` should be doing X instead.
 
 ***
 
@@ -48,18 +56,11 @@ The /scripts directory:
 
 ### Additional Resources
 
-Here is a nice article which explains how to configure the .zshrc so that activated conda environments are used in nvim child processes. I typically make project-specific aliases in the .zshrc which activate a conda env before starting nvim in a project directory, so this additional configuration helps avoid the need to activate conda environments again in child terminal processes.
+`setup.sh` automatically applies the trick from this article, so an activated conda environment persists into nvim/tmux child shells instead of resetting: it runs `conda init zsh`, wraps the resulting block in `if [[ -z "${CONDA_SHLVL}" ]]; then ... fi`, and adds the tmux-specific `source ~/miniconda3/etc/profile.d/conda.sh` line. Nothing to do by hand.
 
 https://nielscautaerts.xyz/make-active-conda-environment-persist-in-neovim-terminal.html
 
-The main idea is to insert the following snippet around the conda init logic:
-```
-if [[ -z "${CONDA_SHLVL}" ]]; then
-  # >>> conda initialize >>>
-  ...
-  # <<< conda initialize <<<
-fi
-```
+I typically make project-specific aliases in the .zshrc which activate a conda env before starting nvim in a project directory, so this additional configuration helps avoid the need to activate conda environments again in child terminal processes.
 
 Here is a nice tip about using ranger so that you can quit into the navigated directory:
 
