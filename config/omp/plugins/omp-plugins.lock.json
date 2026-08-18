@@ -1,0 +1,10 @@
+{
+  "plugins": {
+    "clangd-lsp": {
+      "version": "1.0.0",
+      "enabledFeatures": null,
+      "enabled": true
+    }
+  },
+  "settings": {}
+}

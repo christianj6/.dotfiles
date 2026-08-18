@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "plugins": {
+    "clangd-lsp@claude-plugins-official": [
+      {
+        "scope": "user",
+        "installPath": "/Users/christianjohnson/.omp/plugins/cache/plugins/claude-plugins-official___clangd-lsp___1.0.0",
+        "version": "1.0.0",
+        "installedAt": "2026-08-12T15:04:11.842Z",
+        "lastUpdated": "2026-08-12T15:04:11.842Z"
+      }
+    ]
+  }
+}

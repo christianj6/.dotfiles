@@ -107,14 +107,25 @@ mkdir -p ~/.config
 # Create symlinks
 ln -sf ~/.dotfiles/config/nvim ~/.config
 
-# omp config: symlink the versioned provider/agent settings into place.
-mkdir -p ~/.omp/agent
+# omp config: symlink the versioned provider/agent settings and plugin lock
+# file into place. omp-plugins.lock.json is safe to symlink (it's the
+# declarative "what should be enabled" record and doesn't block a real
+# install). marketplaces.json and plugins/installed_plugins.json are
+# versioned in config/omp/ for visibility only and deliberately NOT
+# symlinked: they're runtime bookkeeping keyed by absolute cache paths, and
+# pre-seeding either of them makes omp believe a marketplace/plugin is
+# already present without checking whether the actual cache/node_modules
+# content exists -- verified empirically: with a stale entry in place but
+# its cache deleted, both `omp plugin marketplace add` and
+# `omp plugin install` report "already exists"/"already installed" and
+# skip re-fetching, leaving a broken reference. The commands below are the
+# only safe way to (re)materialize them on any machine.
+mkdir -p ~/.omp/agent ~/.omp/plugins
 ln -sf ~/.dotfiles/config/omp/config.yml ~/.omp/agent/config.yml
+ln -sf ~/.dotfiles/config/omp/plugins/omp-plugins.lock.json ~/.omp/plugins/omp-plugins.lock.json
 
-# Reproduce the one installed omp plugin. Copying marketplaces.json /
-# omp-plugins.lock.json alone would not materialize this -- it needs the
-# actual install actions run. Non-fatal: a fresh marketplace/network hiccup
-# here must not abort the rest of setup.sh.
+# Reproduce the configured marketplace and plugin. Non-fatal: a fresh
+# marketplace/network hiccup here must not abort the rest of setup.sh.
 omp plugin marketplace add anthropics/claude-plugins-official || true
 omp plugin install clangd-lsp@claude-plugins-official || true
 
