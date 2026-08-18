@@ -16,7 +16,7 @@ echo "Installing dependencies for $OS..."
 # Install system packages
 if [[ "$OS" == "linux" ]]; then
     sudo apt-get update
-    sudo apt-get install -y curl wget git build-essential ripgrep fd-find bear ranger tmux
+    sudo apt-get install -y curl wget git build-essential ripgrep fd-find bear ranger tmux unzip python3-venv
 
     # fd-find installs its binary as `fdfind` on Debian/Ubuntu; symlink it to
     # the `fd` name everything (Telescope, etc.) actually looks for.
@@ -115,10 +115,14 @@ export PATH="$HOME/miniconda3/bin:$PATH"
 python -m pip install aider-install
 aider-install
 
-# Install omp (Oh My Pi coding agent CLI)
+# Install omp (Oh My Pi coding agent CLI). The installer drops the binary in
+# ~/.local/bin, which isn't necessarily on PATH yet for this already-running
+# shell (it wires PATH into ~/.bashrc/~/.zshrc for *future* shells) -- export
+# it here so the omp calls a few lines down actually find it.
 if ! command -v omp &> /dev/null; then
     curl -fsSL https://omp.sh/install | sh
 fi
+export PATH="$HOME/.local/bin:$PATH"
 
 # Create config directories
 mkdir -p ~/.config
