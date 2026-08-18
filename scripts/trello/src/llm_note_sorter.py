@@ -5,12 +5,13 @@ import argparse
 import asyncio
 import concurrent.futures
 from typing import Dict, List, Optional
+from pathlib import Path
 from dotenv import load_dotenv
 import openai
 from tqdm import tqdm
 import requests
 
-from trello import (
+from client import (
     get_trello_boards,
     get_trello_board_cards,
     move_trello_card_to_list,
@@ -25,14 +26,16 @@ INBOX_LIST_NAME = 'inbox'
 ARCHIVE_LIST_NAME = 'archive'
 UNCERTAIN_LIST_NAME = 'culled for upcoming week'
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
 def load_priorities() -> Dict:
-    """Load priorities from priorities.json file."""
-    with open('priorities.json', 'r') as f:
+    """Load priorities from priorities.json file (next to this script)."""
+    with open(SCRIPT_DIR / 'priorities.json', 'r') as f:
         return json.load(f)
 
 def load_prompt_template() -> str:
-    """Load prompt template from prompts/prompt.txt file."""
-    with open('prompts/prompt.txt', 'r') as f:
+    """Load prompt template from prompts/prompt.txt (next to this script)."""
+    with open(SCRIPT_DIR / 'prompts' / 'prompt.txt', 'r') as f:
         return f.read()
 
 def format_prompt(template: str, priorities: Dict, note_text: str) -> str:

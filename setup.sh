@@ -105,8 +105,8 @@ fi
 # ~/.local/bin entrypoints for the devcontainer setup scripts, so nothing
 # outside this repo needs to hardcode a scripts/ path.
 mkdir -p ~/.local/bin
-ln -sf ~/.dotfiles/scripts/devcontainers/setup-claude-devcontainer.sh ~/.local/bin/claude-setup
-ln -sf ~/.dotfiles/scripts/devcontainers/setup-opencode-devcontainer.sh ~/.local/bin/opencode-setup
+ln -sf ~/.dotfiles/scripts/devcontainer/setup-claude-devcontainer.sh ~/.local/bin/claude-setup
+ln -sf ~/.dotfiles/scripts/devcontainer/setup-opencode-devcontainer.sh ~/.local/bin/opencode-setup
 
 # Safely rewrite ~/.zshrc: only if the candidate actually differs from what's
 # currently there, only after a zsh syntax check, and only after taking a

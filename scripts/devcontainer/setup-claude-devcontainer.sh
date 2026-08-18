@@ -9,7 +9,7 @@
 
 set -e
 
-source "$HOME/.dotfiles/scripts/devcontainers/lib.sh"
+source "$HOME/.dotfiles/scripts/devcontainer/lib.sh"
 
 TARGET_DIR="$(resolve_target_dir "${1:-.}")"
 echo "Setting up Claude Code devcontainer in: $TARGET_DIR"

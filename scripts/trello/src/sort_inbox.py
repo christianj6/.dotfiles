@@ -2,7 +2,7 @@ import readchar
 from tqdm import tqdm
 import requests
 from dotenv import load_dotenv
-from trello import (
+from client import (
     get_trello_boards,
     get_trello_board_cards,
     move_trello_card_to_list,

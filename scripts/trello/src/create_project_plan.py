@@ -2,11 +2,9 @@ import os
 import sys
 from typing import Dict, List
 from dotenv import load_dotenv
-from trello import (
+from client import (
     get_trello_boards,
     get_trello_board_lists,
-)
-from merge_trello_cards import (
     create_trello_list,
     create_trello_card,
     create_checklist,
