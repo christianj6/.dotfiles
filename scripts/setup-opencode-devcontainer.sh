@@ -1,1 +1,0 @@
-devcontainers/setup-opencode-devcontainer.sh

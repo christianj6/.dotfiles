@@ -1,1 +1,0 @@
-devcontainers/setup-claude-devcontainer.sh

@@ -93,13 +93,13 @@ aider-install
 mkdir -p ~/.config
 
 # Create symlinks
-ln -sf ~/.dotfiles/nvim ~/.config
+ln -sf ~/.dotfiles/config/nvim ~/.config
 
 # OS-specific symlinks
 if [[ "$OS" == "macos" ]]; then
-    ln -sf ~/.dotfiles/ghostty ~/.config
+    ln -sf ~/.dotfiles/config/ghostty ~/.config
     mkdir -p ~/Library/"Application Support"/"Leader Key"
-    ln -sf ~/.dotfiles/leaderkey/config.json ~/Library/"Application Support"/"Leader Key"/config.json
+    ln -sf ~/.dotfiles/config/leaderkey/config.json ~/Library/"Application Support"/"Leader Key"/config.json
 fi
 
 # ~/.local/bin entrypoints for the devcontainer setup scripts, so nothing
