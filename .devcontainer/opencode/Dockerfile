@@ -75,6 +75,11 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
 # Install opencode
 RUN curl -fsSL https://opencode.ai/install | bash
 
+# The installer's own shell-rc-file PATH edit doesn't reach non-login
+# `docker exec` sessions; set PATH at the image level so `opencode` always
+# resolves, the same way the PATH additions above do for other tools.
+ENV PATH="/home/node/.opencode/bin:${PATH}"
+
 # Copy and set up firewall script
 COPY init-firewall.sh /usr/local/bin/
 USER root

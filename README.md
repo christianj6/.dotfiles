@@ -18,7 +18,7 @@ nvim
 - Install manually: Sunsama, 1Password, Arc Browser (+ 1Password and Vimium extensions), Ghostty, Leader Key. Optional: ChatGPT, Rancher Desktop.
 - Configure a Nerd Font.
 - Add your own aliases to `~/.zshrc` — see `.template.zshrc` for a starting point.
-- See `scripts/` for devcontainer setup (`claude-setup` / `opencode-setup`), a Python project scaffolder, and Trello/note-sorting automation.
+- `claude-setup [dir]` / `opencode-setup [dir]` copy the `.devcontainer/claude/` or `.devcontainer/opencode/` sandboxed-devcontainer template (network allowlist, CLI preinstalled) into another project and start it. `scripts/` also has a Python project scaffolder and Trello/note-sorting automation.
 
 ## References
 

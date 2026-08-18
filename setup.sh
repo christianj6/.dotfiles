@@ -152,11 +152,11 @@ sync_devcontainer_helpers() {
     local block
     block="$(cat <<'BLOCK'
 claude() {
-    docker exec -it "$(devcontainer up --workspace-folder . | grep -o '"containerId":"[^"]*"' | cut -d'"' -f4)" claude
+    docker exec -it "$(devcontainer up --config .devcontainer/claude/devcontainer.json --workspace-folder . | grep -o '"containerId":"[^"]*"' | cut -d'"' -f4)" claude
 }
 
 opencode() {
-    devcontainer exec --config .opencode/devcontainer.json --workspace-folder . opencode
+    docker exec -it "$(devcontainer up --config .devcontainer/opencode/devcontainer.json --workspace-folder . | grep -o '"containerId":"[^"]*"' | cut -d'"' -f4)" opencode
 }
 BLOCK
 )"
