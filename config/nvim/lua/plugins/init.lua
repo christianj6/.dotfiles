@@ -86,15 +86,45 @@ return {
   {
     "milanglacier/yarepl.nvim",
     config = function()
+      -- yarepl's own default float window (utility.lua's default_float_wincmd)
+      -- anchors `relative = "laststatus"` with row/col offset by half the
+      -- window's own size, which lands the float in the bottom-right corner
+      -- instead of the middle of the screen. This is the same look (50%
+      -- width, 70% height, rounded border) with real editor-relative centering.
+      local function centered_float_wincmd(config_getter)
+        return function(bufnr, name)
+          local width = math.floor(vim.o.columns * 0.5)
+          local height = math.floor(vim.o.lines * 0.7)
+          local winid = vim.api.nvim_open_win(bufnr, true, {
+            relative = "editor",
+            row = math.floor((vim.o.lines - height) / 2),
+            col = math.floor((vim.o.columns - width) / 2),
+            width = width,
+            height = height,
+            style = "minimal",
+            title = name,
+            border = "rounded",
+            title_pos = "center",
+          })
+          if config_getter().show_winbar_in_float_window then
+            vim.wo[winid].winbar = "%t"
+          end
+        end
+      end
+
       -- yarepl's pi extension defaults to running the `pi` binary; this
       -- machine's install is named `omp`.
-      require('yarepl.extensions.pi').setup({ pi_cmd = 'omp' })
+      local pi_ext = require('yarepl.extensions.pi')
+      local aider_ext = require('yarepl.extensions.aider')
+      pi_ext.setup({ pi_cmd = 'omp', wincmd = centered_float_wincmd(function() return pi_ext.config end) })
+      aider_ext.setup({ wincmd = centered_float_wincmd(function() return aider_ext.config end) })
+
       require("yarepl").setup({
         scratch_repl = true,
         extensions = { "aider", "pi" },
         metas = {
-          aider = require('yarepl.extensions.aider').create_aider_meta(),
-          pi = require('yarepl.extensions.pi').create_pi_meta(),
+          aider = aider_ext.create_aider_meta(),
+          pi = pi_ext.create_pi_meta(),
         },
         meta = {
           split = "horizontal",
