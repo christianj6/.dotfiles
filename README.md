@@ -13,7 +13,7 @@ nvim
 
 `setup.sh` is idempotent — safe to re-run any time, on any machine, to pick up changes.
 
-Linux support assumes Ubuntu/Debian (`apt-get`-based); other distros aren't supported.
+Linux support assumes Ubuntu/Debian (`apt-get`-based); other distros aren't supported. On EC2 (or similarly small cloud instances), use at least 8GB RAM — `omp` is a self-contained bun/V8 binary that gets silently OOM-killed (a bare `Killed`, no other output) on the 1GB `t2/t3.micro` free-tier default. `setup.sh` adds a swapfile as a safety net below 2GB RAM, but a properly-sized instance is what's actually confirmed to just work.
 
 ## Additional steps
 
