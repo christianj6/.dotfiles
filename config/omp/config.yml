@@ -25,7 +25,7 @@ providers:
     - mojeek
   memoryModel: online
 modelRoles: 
-  default: openrouter/anthropic/claude-sonnet-5
+  default: openrouter/~deepseek/deepseek-v4-flash-latest:max
 symbolPreset: nerd
 theme: 
   dark: titanium
