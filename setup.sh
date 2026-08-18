@@ -179,6 +179,40 @@ BLOCK
     commit_zshrc "$final" || true
 }
 
+# Keep a ranger alias current in ~/.zshrc: ". ranger" (sourcing ranger
+# instead of exec'ing it) makes ranger cd the *current* shell into the last
+# directory you visited before quitting, instead of leaving you back where
+# you started. See https://github.com/ranger/ranger/issues/2679.
+sync_ranger_alias() {
+    local zshrc="$HOME/.zshrc"
+    local begin_marker="# >>> dotfiles ranger alias >>>"
+    local end_marker="# <<< dotfiles ranger alias <<<"
+
+    touch "$zshrc"
+
+    local block
+    block="$(cat <<'BLOCK'
+alias ranger=". ranger"
+BLOCK
+)"
+
+    local begin_line end_line
+    begin_line="$(grep -nF "$begin_marker" "$zshrc" 2>/dev/null | head -1 | cut -d: -f1)" || true
+    end_line="$(grep -nF "$end_marker" "$zshrc" 2>/dev/null | head -1 | cut -d: -f1)" || true
+
+    local final
+    final="$(mktemp)"
+    if [ -n "${begin_line:-}" ] && [ -n "${end_line:-}" ] && [ "$end_line" -gt "$begin_line" ]; then
+        # Existing block: replace its contents in place, keep everything else untouched.
+        { head -n "$begin_line" "$zshrc"; printf '%s\n' "$block"; tail -n "+$end_line" "$zshrc"; } > "$final"
+    else
+        # No block yet: append a fresh one at the end.
+        { cat "$zshrc"; echo ""; echo "$begin_marker"; printf '%s\n' "$block"; echo "$end_marker"; } > "$final"
+    fi
+
+    commit_zshrc "$final" || true
+}
+
 # Keep conda usable in tmux panes / nvim terminals current in ~/.zshrc: let
 # `conda init` manage its own block (safe to re-run), wrap that block in the
 # CONDA_SHLVL guard from
@@ -267,6 +301,7 @@ sync_conda_tmux_persistence() {
 }
 
 sync_devcontainer_helpers || true
+sync_ranger_alias || true
 sync_conda_tmux_persistence || true
 
 echo "Setup complete for $OS"
