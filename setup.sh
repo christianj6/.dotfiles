@@ -20,8 +20,33 @@ CURL_RETRY=(--retry 3 --retry-delay 2 --retry-connrefused)
 
 echo "Installing dependencies for $OS..."
 
+# Small cloud instances (e.g. EC2 t2/t3.micro's 1GB RAM) don't leave enough
+# headroom for a bun-based binary like omp to even start, let alone run
+# node/npm installs alongside it -- both silently die with a bare "Killed"
+# (the kernel's OOM killer, not an omp or setup.sh bug). Add swap once, if
+# there's noticeably less than 2GB of RAM and none is already configured.
+# Non-fatal: a failure here (e.g. a filesystem that rejects swapfiles) must
+# not abort the rest of setup.sh.
+ensure_swap() {
+    [ -f /swapfile ] && return 0
+    [ "$(swapon --show | wc -l)" -gt 0 ] && return 0
+
+    local mem_kb
+    mem_kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
+    [ "$mem_kb" -ge 2097152 ] && return 0
+
+    echo "Low memory detected ($((mem_kb / 1024))MB RAM) -- adding a 2GB swapfile so later installs (npm, omp) don't get OOM-killed"
+    sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab > /dev/null
+}
+
 # Install system packages
 if [[ "$OS" == "linux" ]]; then
+    ensure_swap || true
+
     sudo apt-get update
     sudo apt-get install -y curl wget git build-essential ripgrep fd-find bear ranger tmux unzip python3-venv
 
@@ -438,4 +463,20 @@ if [ ! -f ~/.omp/agent/.env ]; then
     echo ""
     echo "==> One more step: add your OpenRouter key so the omp REPL (<C-a> in nvim) can reach a model:"
     echo "      echo 'OPENROUTER_API_KEY=sk-...' > ~/.omp/agent/.env"
+fi
+
+# omp, aider, and other tools just went onto PATH via ~/.zshrc / ~/.bashrc /
+# ~/.profile, but as a child process this script can't push that into the
+# shell that invoked it. Replace this process with a fresh login shell so
+# PATH is already correct the moment control returns to the terminal --
+# but only when there's an actual terminal to hand back to; a
+# non-interactive invocation (CI, a piped script) has no one to type into a
+# spawned shell, so fall back to telling the caller instead.
+if [ -t 0 ] && [ -t 1 ]; then
+    echo ""
+    echo "==> Starting a fresh shell so omp/aider are on PATH (exit it to return here)..."
+    exec "$SHELL" -l
+else
+    echo ""
+    echo "==> omp, aider, and other tools just went onto PATH -- open a new shell (or run 'exec \$SHELL -l') to use them."
 fi
