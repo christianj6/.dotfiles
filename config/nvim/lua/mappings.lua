@@ -20,8 +20,8 @@ map("n", "<C-,>", "<C-w><", { desc = "Decrease window width" })
 map("n", "<C-.>", "<C-w>>", { desc = "Increase window width" })
 map("n", "<leader>w=", "<C-w>=", { desc = "Equalize window sizes" })
 
--- Toggle/hide/focus a named yarepl REPL (yarepl registers <Plug>(REPLStart-{name})
--- / <Plug>(REPLHide-{name}) / <Plug>(REPLFocus-{name}) for every entry in its
+-- Toggle/hide/focus a named yarepl REPL (yarepl registers <Plug>(yarepl-start-{name})
+-- / <Plug>(yarepl-hide-{name}) / <Plug>(yarepl-focus-{name}) for every entry in its
 -- `metas` table in plugins/init.lua -- "aider" and "pi" are both registered there).
 local function toggle_repl(name)
   -- Check if the REPL window exists
@@ -44,18 +44,18 @@ local function toggle_repl(name)
 
       -- Small delay to ensure mode change completes, then hide
       vim.defer_fn(function()
-        vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLHide-" .. name .. ")", true, false, true), "")
+        vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(yarepl-hide-" .. name .. ")", true, false, true), "")
       end, 10)
     else
       -- We're in a different window, just hide the REPL
-      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLHide-" .. name .. ")", true, false, true), "")
+      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(yarepl-hide-" .. name .. ")", true, false, true), "")
     end
   else
     -- If the REPL is not open, start it and enter insert mode
     -- Check if the REPL buffer exists
     if bufnr == -1 then
       -- Start the REPL and enter insert mode
-      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLStart-" .. name .. ")", true, false, true), "")
+      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(yarepl-start-" .. name .. ")", true, false, true), "")
       vim.defer_fn(function()
         local repl_win = vim.fn.bufwinid(name)
         if repl_win ~= -1 then
@@ -65,7 +65,7 @@ local function toggle_repl(name)
       end, 100)
     else
       -- Focus the REPL window and enter insert mode if it's already open but not focused
-      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLFocus-" .. name .. ")", true, false, true), "")
+      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(yarepl-focus-" .. name .. ")", true, false, true), "")
       vim.defer_fn(function()
         local repl_win = vim.fn.bufwinid(name)
         if repl_win ~= -1 then
