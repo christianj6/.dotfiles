@@ -11,6 +11,13 @@ else
     exit 1
 fi
 
+# Shared retry policy for one-shot installer downloads: cloud/CI networks
+# occasionally return a transient 5xx (e.g. the 502 from omp.sh's install
+# endpoint that once took this whole script down) or refuse a connection
+# while still settling right after boot, and with `set -e` that would
+# otherwise abort this entire script over one bad request.
+CURL_RETRY=(--retry 3 --retry-delay 2 --retry-connrefused)
+
 echo "Installing dependencies for $OS..."
 
 # Install system packages
@@ -41,7 +48,7 @@ if [[ "$OS" == "linux" ]]; then
             *) echo "Unsupported architecture for neovim: $(uname -m)" >&2; exit 1 ;;
         esac
         NVIM_TMP="$(mktemp -d)"
-        curl -fsSL -o "$NVIM_TMP/nvim.tar.gz" "https://github.com/neovim/neovim/releases/latest/download/nvim-linux-${NVIM_ARCH}.tar.gz"
+        curl -fsSL "${CURL_RETRY[@]}" -o "$NVIM_TMP/nvim.tar.gz" "https://github.com/neovim/neovim/releases/latest/download/nvim-linux-${NVIM_ARCH}.tar.gz"
         sudo mkdir -p /opt/nvim
         sudo tar -xzf "$NVIM_TMP/nvim.tar.gz" -C /opt/nvim --strip-components=1
         sudo ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim
@@ -51,8 +58,8 @@ if [[ "$OS" == "linux" ]]; then
     # Install lazygit (skip if already on PATH)
     if ! command -v lazygit &> /dev/null; then
         LAZYGIT_TMP="$(mktemp -d)"
-        LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
-        curl -Lo "$LAZYGIT_TMP/lazygit.tar.gz" "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
+        LAZYGIT_VERSION=$(curl -fsS "${CURL_RETRY[@]}" "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
+        curl -fLo "$LAZYGIT_TMP/lazygit.tar.gz" "${CURL_RETRY[@]}" "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
         tar xf "$LAZYGIT_TMP/lazygit.tar.gz" -C "$LAZYGIT_TMP" lazygit
         sudo install "$LAZYGIT_TMP/lazygit" /usr/local/bin
         rm -rf "$LAZYGIT_TMP"
@@ -63,7 +70,7 @@ if [[ "$OS" == "linux" ]]; then
         if command -v brew &> /dev/null; then
             brew install derailed/k9s/k9s
         else
-            curl -sS https://webinstall.dev/k9s | bash
+            curl -fsS "${CURL_RETRY[@]}" https://webinstall.dev/k9s | bash
         fi
     fi
 elif [[ "$OS" == "macos" ]]; then
@@ -85,7 +92,7 @@ fi
 # Install nvm and Node.js (skip installer if nvm is already present)
 export NVM_DIR="$HOME/.nvm"
 if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    curl -fsSL "${CURL_RETRY[@]}" https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 fi
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 nvm install 22
@@ -103,7 +110,7 @@ if [ ! -d "$HOME/miniconda3" ]; then
     else
         MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
     fi
-    wget "$MINICONDA_URL" -O ~/miniconda.sh
+    wget --tries=3 --waitretry=2 "$MINICONDA_URL" -O ~/miniconda.sh
     bash ~/miniconda.sh -b -p "$HOME/miniconda3"
     rm ~/miniconda.sh
 fi
@@ -126,7 +133,7 @@ aider-install || true
 # shell (it wires PATH into ~/.bashrc/~/.zshrc for *future* shells) -- export
 # it here so the omp calls a few lines down actually find it.
 if ! command -v omp &> /dev/null; then
-    curl -fsSL https://omp.sh/install | sh
+    curl -fsSL "${CURL_RETRY[@]}" https://omp.sh/install | sh
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
