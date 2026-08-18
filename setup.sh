@@ -96,11 +96,29 @@ export PATH="$HOME/miniconda3/bin:$PATH"
 python -m pip install aider-install
 aider-install
 
+# Install omp (Oh My Pi coding agent CLI)
+if ! command -v omp &> /dev/null; then
+    curl -fsSL https://omp.sh/install | sh
+fi
+
 # Create config directories
 mkdir -p ~/.config
 
 # Create symlinks
 ln -sf ~/.dotfiles/config/nvim ~/.config
+
+# omp config: symlink the versioned provider/agent settings into place.
+mkdir -p ~/.omp/agent
+ln -sf ~/.dotfiles/config/omp/config.yml ~/.omp/agent/config.yml
+
+# Reproduce the one installed omp plugin. Copying marketplaces.json /
+# omp-plugins.lock.json alone would not materialize this -- it needs the
+# actual install actions run. Non-fatal: a fresh marketplace/network hiccup
+# here must not abort the rest of setup.sh.
+omp plugin marketplace add anthropics/claude-plugins-official || true
+omp plugin install clangd-lsp@claude-plugins-official || true
+
+echo "omp: put your OpenRouter key in ~/.omp/agent/.env (see templates/omp.env.example) so the default model resolves."
 
 # OS-specific symlinks
 if [[ "$OS" == "macos" ]]; then

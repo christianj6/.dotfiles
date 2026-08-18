@@ -86,10 +86,16 @@ return {
   {
     "milanglacier/yarepl.nvim",
     config = function()
+      -- yarepl's pi extension defaults to running the `pi` binary; this
+      -- machine's install is named `omp`.
+      require('yarepl.extensions.pi').setup({ pi_cmd = 'omp' })
       require("yarepl").setup({
         scratch_repl = true,
-        extensions = { "aider" },
-        metas = { aider = require('yarepl.extensions.aider').create_aider_meta() },
+        extensions = { "aider", "pi" },
+        metas = {
+          aider = require('yarepl.extensions.aider').create_aider_meta(),
+          pi = require('yarepl.extensions.pi').create_pi_meta(),
+        },
         meta = {
           split = "horizontal",
           height = 15,

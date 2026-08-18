@@ -1,0 +1,51 @@
+providers: 
+  webSearchOrder: 
+    - public
+    - perplexity
+    - gemini
+    - anthropic
+    - codex
+    - xai
+    - zai
+    - exa
+    - tinyfish
+    - jina
+    - kagi
+    - tavily
+    - firecrawl
+    - brave
+    - kimi
+    - parallel
+    - synthetic
+    - searxng
+    - startpage
+    - duckduckgo
+    - ecosia
+    - google
+    - mojeek
+  memoryModel: online
+modelRoles: 
+  default: openrouter/anthropic/claude-sonnet-5
+symbolPreset: nerd
+theme: 
+  dark: titanium
+  light: light
+setupVersion: 1
+defaultThinkingLevel: max
+hideThinkingBlock: true
+advisor: 
+  enabled: true
+prewalk: 
+  enabled: true
+memory: 
+  backend: mnemopi
+cycleOrder: 
+  - smol
+  - default
+  - slow
+  - advisor
+statusLine: 
+  preset: compact
+  separator: slash
+display: 
+  shimmer: classic

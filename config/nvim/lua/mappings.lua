@@ -20,41 +20,44 @@ map("n", "<C-,>", "<C-w><", { desc = "Decrease window width" })
 map("n", "<C-.>", "<C-w>>", { desc = "Increase window width" })
 map("n", "<leader>w=", "<C-w>=", { desc = "Equalize window sizes" })
 
-local function toggle_aider_repl()
+-- Toggle/hide/focus a named yarepl REPL (yarepl registers <Plug>(REPLStart-{name})
+-- / <Plug>(REPLHide-{name}) / <Plug>(REPLFocus-{name}) for every entry in its
+-- `metas` table in plugins/init.lua -- "aider" and "pi" are both registered there).
+local function toggle_repl(name)
   -- Check if the REPL window exists
-  local bufnr = vim.fn.bufnr("aider")
+  local bufnr = vim.fn.bufnr(name)
   local winid = vim.fn.bufwinid(bufnr)
 
   -- If the REPL window is open
   if winid ~= -1 then
     -- Get the current window
     local current_win = vim.api.nvim_get_current_win()
-    
+
     -- Check if we're currently in the REPL window
     if current_win == winid then
       local mode = vim.api.nvim_get_mode().mode
-      
+
       -- If in terminal mode or insert mode, exit to normal mode first
       if mode == "t" or mode == "i" then
         vim.cmd("stopinsert")
       end
-      
+
       -- Small delay to ensure mode change completes, then hide
       vim.defer_fn(function()
-        vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLHide-aider)", true, false, true), "")
+        vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLHide-" .. name .. ")", true, false, true), "")
       end, 10)
     else
       -- We're in a different window, just hide the REPL
-      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLHide-aider)", true, false, true), "")
+      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLHide-" .. name .. ")", true, false, true), "")
     end
   else
     -- If the REPL is not open, start it and enter insert mode
     -- Check if the REPL buffer exists
     if bufnr == -1 then
       -- Start the REPL and enter insert mode
-      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLStart-aider)", true, false, true), "")
+      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLStart-" .. name .. ")", true, false, true), "")
       vim.defer_fn(function()
-        local repl_win = vim.fn.bufwinid("aider")
+        local repl_win = vim.fn.bufwinid(name)
         if repl_win ~= -1 then
           vim.api.nvim_set_current_win(repl_win)
           vim.cmd("startinsert")
@@ -62,9 +65,9 @@ local function toggle_aider_repl()
       end, 100)
     else
       -- Focus the REPL window and enter insert mode if it's already open but not focused
-      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLFocus-aider)", true, false, true), "")
+      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(REPLFocus-" .. name .. ")", true, false, true), "")
       vim.defer_fn(function()
-        local repl_win = vim.fn.bufwinid("aider")
+        local repl_win = vim.fn.bufwinid(name)
         if repl_win ~= -1 then
           vim.api.nvim_set_current_win(repl_win)
           vim.cmd("startinsert")
@@ -74,9 +77,16 @@ local function toggle_aider_repl()
   end
 end
 
--- Aider REPL keymaps
-map("n", "<C-a>", toggle_aider_repl, { desc = "Toggle aider REPL" })
-map("t", "<C-a>", toggle_aider_repl, { desc = "Toggle aider REPL" })
+-- Default REPL for the primary toggle keymap. Change to "aider" to swap
+-- which tool <C-a> controls; aider stays reachable via <leader>a regardless.
+local DEFAULT_REPL = "pi"
+
+-- Primary REPL toggle keymap (follows DEFAULT_REPL)
+map("n", "<C-a>", function() toggle_repl(DEFAULT_REPL) end, { desc = "Toggle default REPL (" .. DEFAULT_REPL .. ")" })
+map("t", "<C-a>", function() toggle_repl(DEFAULT_REPL) end, { desc = "Toggle default REPL (" .. DEFAULT_REPL .. ")" })
+
+-- Explicit aider access, independent of DEFAULT_REPL
+map("n", "<leader>a", function() toggle_repl("aider") end, { desc = "Toggle aider REPL" })
 
 -- Build script shortcut 
 -- map("n", "<leader>b", function ()
