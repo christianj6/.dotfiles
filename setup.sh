@@ -111,9 +111,15 @@ fi
 # Add conda to path for current session
 export PATH="$HOME/miniconda3/bin:$PATH"
 
-# Install aider
+# Install aider. Non-fatal: aider-install's own `uv tool update-shell` step
+# can exit non-zero when it finds ~/.local/bin already referenced in
+# .bashrc/.profile (e.g. Ubuntu's stock /etc/skel/.profile snippet) while
+# this non-interactive script's own shell doesn't have it live yet -- uv
+# treats that as an error ("Bash configuration files are already
+# up-to-date") even though the actual aider binary already installed fine
+# by that point. Must not abort the rest of setup.sh over it.
 python -m pip install aider-install
-aider-install
+aider-install || true
 
 # Install omp (Oh My Pi coding agent CLI). The installer drops the binary in
 # ~/.local/bin, which isn't necessarily on PATH yet for this already-running
