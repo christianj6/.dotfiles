@@ -17,11 +17,15 @@ echo "Setting up Claude Code devcontainer in: $TARGET_DIR"
 check_devcontainer_prerequisites
 copy_devcontainer_template claude "$TARGET_DIR" Dockerfile devcontainer.json init-firewall.sh
 
-# Reuse the existing container across re-runs: `devcontainer up` only
-# rebuilds when the Dockerfile/devcontainer.json content actually changed,
-# and this script attaches you to the result immediately below, so you want
-# continuity with whatever was already running, not a wipe on every re-run.
-start_devcontainer_template claude "$TARGET_DIR"
+# Force-recreate the container on every run, same as opencode-setup: a
+# container reused for months accumulates a stale Docker Desktop VirtioFS
+# bind-mount cache (files untouched since before the last recreation start
+# throwing EPERM on read, `.git/packed-refs` included, breaking most git
+# commands) - reproduced and root-caused 2026-08-18 against thor-voiceai's
+# devcontainer, which had been alive since 2026-06-16. The few seconds of
+# extra latency (fresh postStartCommand firewall init) is worth never
+# hitting that again.
+start_devcontainer_template claude "$TARGET_DIR" --remove-existing-container
 
 echo ""
 echo "Connecting to devcontainer as 'claude' user..."

@@ -17,12 +17,10 @@ echo "Setting up OpenCode devcontainer in: $TARGET_DIR"
 check_devcontainer_prerequisites
 copy_devcontainer_template opencode "$TARGET_DIR" Dockerfile devcontainer.json init-firewall.sh package.json
 
-# Force-recreate the container on every re-run, unlike claude-setup: this
-# script never attaches you to it (the `opencode` shell helper in setup.sh
-# does that afterward), so re-running it is how you pick up template/
-# Dockerfile changes. --remove-existing-container guarantees you land on a
-# container matching what was just copied, instead of one reused via
-# devcontainer's own config-hash cache.
+# Force-recreate the container on every re-run (see setup-claude-devcontainer.sh
+# for why claude-setup does the same): this script also never attaches you to
+# it (the `opencode` shell helper in setup.sh does that afterward), so
+# re-running it is how you pick up template/Dockerfile changes too.
 start_devcontainer_template opencode "$TARGET_DIR" --remove-existing-container
 
 echo ""
