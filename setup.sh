@@ -118,8 +118,6 @@ ln -sf ~/.dotfiles/config/omp/config.yml ~/.omp/agent/config.yml
 omp plugin marketplace add anthropics/claude-plugins-official || true
 omp plugin install clangd-lsp@claude-plugins-official || true
 
-echo "omp: put your OpenRouter key in ~/.omp/agent/.env (see templates/omp.env.example) so the default model resolves."
-
 # OS-specific symlinks
 if [[ "$OS" == "macos" ]]; then
     ln -sf ~/.dotfiles/config/ghostty ~/.config
@@ -379,3 +377,9 @@ fi
 sync_conda_tmux_persistence || true
 
 echo "Setup complete for $OS"
+
+if [ ! -f ~/.omp/agent/.env ]; then
+    echo ""
+    echo "==> One more step: add your OpenRouter key so the omp REPL (<C-a> in nvim) can reach a model:"
+    echo "      echo 'OPENROUTER_API_KEY=sk-...' > ~/.omp/agent/.env"
+fi
