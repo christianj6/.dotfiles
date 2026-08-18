@@ -16,17 +16,36 @@ echo "Installing dependencies for $OS..."
 # Install system packages
 if [[ "$OS" == "linux" ]]; then
     sudo apt-get update
-    sudo apt-get install -y curl wget git build-essential software-properties-common
-    # Install neovim from PPA for latest version
-    sudo add-apt-repository ppa:neovim-ppa/unstable -y
-    sudo apt-get update
-    sudo apt-get install -y neovim ripgrep fd-find bear ranger tmux
+    sudo apt-get install -y curl wget git build-essential ripgrep fd-find bear ranger tmux
 
     # fd-find installs its binary as `fdfind` on Debian/Ubuntu; symlink it to
     # the `fd` name everything (Telescope, etc.) actually looks for.
     mkdir -p ~/.local/bin
     if ! command -v fd &> /dev/null && command -v fdfind &> /dev/null; then
         ln -sf "$(command -v fdfind)" ~/.local/bin/fd
+    fi
+
+    # Install neovim from its own stable release tarball (skip if already
+    # on PATH), not the neovim-ppa/unstable PPA this used to pull from:
+    # that's a daily-build channel that intermittently ships a
+    # half-published package set ("required packages have not yet been
+    # created or been moved out of Incoming"), which fails the whole apt
+    # transaction -- including unrelated packages like bear -- and aborts
+    # this entire script. Ubuntu's own archived neovim also lags behind
+    # what this config needs: vim.lsp.enable() and
+    # vim.treesitter.query.set() both require >= 0.11.
+    if ! command -v nvim &> /dev/null; then
+        case "$(uname -m)" in
+            x86_64) NVIM_ARCH="x86_64" ;;
+            aarch64) NVIM_ARCH="arm64" ;;
+            *) echo "Unsupported architecture for neovim: $(uname -m)" >&2; exit 1 ;;
+        esac
+        NVIM_TMP="$(mktemp -d)"
+        curl -fsSL -o "$NVIM_TMP/nvim.tar.gz" "https://github.com/neovim/neovim/releases/latest/download/nvim-linux-${NVIM_ARCH}.tar.gz"
+        sudo mkdir -p /opt/nvim
+        sudo tar -xzf "$NVIM_TMP/nvim.tar.gz" -C /opt/nvim --strip-components=1
+        sudo ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim
+        rm -rf "$NVIM_TMP"
     fi
 
     # Install lazygit (skip if already on PATH)

@@ -13,6 +13,8 @@ nvim
 
 `setup.sh` is idempotent — safe to re-run any time, on any machine, to pick up changes.
 
+Linux support assumes Ubuntu/Debian (`apt-get`-based); other distros aren't supported.
+
 ## Additional steps
 
 - Install manually: Sunsama, 1Password, Arc Browser (+ 1Password and Vimium extensions), Ghostty, Leader Key, Wireshark. Optional: ChatGPT, Rancher Desktop, Antigravity.
