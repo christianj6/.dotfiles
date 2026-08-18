@@ -129,13 +129,22 @@ python -m pip install aider-install
 aider-install || true
 
 # Install omp (Oh My Pi coding agent CLI). The installer drops the binary in
-# ~/.local/bin, which isn't necessarily on PATH yet for this already-running
-# shell (it wires PATH into ~/.bashrc/~/.zshrc for *future* shells) -- export
-# it here so the omp calls a few lines down actually find it.
+# ~/.local/bin. Export it here so the omp calls a few lines down find it in
+# this already-running shell, and persist it in ~/.bashrc/~/.profile so NEW
+# shells (like the prompt after setup.sh finishes) also find it -- without
+# that, `omp` fails with "command not found" in the very next shell even
+# though the binary is installed.
 if ! command -v omp &> /dev/null; then
     curl -fsSL "${CURL_RETRY[@]}" https://omp.sh/install | sh
 fi
 export PATH="$HOME/.local/bin:$PATH"
+
+if ! grep -qF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+fi
+if ! grep -qF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.profile" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.profile"
+fi
 
 # Create config directories
 mkdir -p ~/.config
