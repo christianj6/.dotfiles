@@ -1,24 +1,18 @@
 -- load defaults i.e lua_lsp
 require("nvchad.configs.lspconfig").defaults()
 
-local lspconfig = require "lspconfig"
-
 -- EXAMPLE
 local servers = { "html", "cssls", "terraformls", "markdown_oxide", "pyright", "clangd", "svelte" }
-local nvlsp = require "nvchad.configs.lspconfig"
 
--- lsps with default config
-for _, lsp in ipairs(servers) do
-  lspconfig[lsp].setup {
-    on_attach = nvlsp.on_attach,
-    on_init = nvlsp.on_init,
-    capabilities = nvlsp.capabilities,
-  }
-end
+-- lsps with default config: nvchad.configs.lspconfig's defaults() already
+-- applies capabilities/on_init to every server via vim.lsp.config("*", ...)
+-- and wires on_attach through an LspAttach autocmd, so enabling by name is
+-- all that's needed -- nvim-lspconfig ships each server's cmd/filetypes/
+-- root_markers as lsp/<name>.lua, auto-loaded by vim.lsp.enable. (The old
+-- require("lspconfig")[lsp].setup{} "framework" is deprecated, removed in
+-- nvim-lspconfig v3.0.0.)
+vim.lsp.enable(servers)
 
--- configuring single server, example: typescript
--- lspconfig.ts_ls.setup {
---   on_attach = nvlsp.on_attach,
---   on_init = nvlsp.on_init,
---   capabilities = nvlsp.capabilities,
--- }
+-- configuring a single server beyond its shipped defaults, example: lua_ls
+-- vim.lsp.config("ts_ls", { settings = {} })
+-- vim.lsp.enable("ts_ls")
