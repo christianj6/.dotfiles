@@ -15,7 +15,7 @@ nvim
 
 ## Additional steps
 
-- Install manually: Sunsama, 1Password, Arc Browser (+ 1Password and Vimium extensions), Ghostty, Leader Key. Optional: ChatGPT, Rancher Desktop.
+- Install manually: Sunsama, 1Password, Arc Browser (+ 1Password and Vimium extensions), Ghostty, Leader Key, Wireshark. Optional: ChatGPT, Rancher Desktop, Antigravity.
 - Configure a Nerd Font.
 - `templates/` holds copy-paste starting points, never read automatically: `zshrc.example` for your own `~/.zshrc` aliases, `env.example` for `.env` at the repo root (aider preferences + `scripts/trello` secrets).
 - `claude-setup [dir]` / `opencode-setup [dir]` copy the `.devcontainer/claude/` or `.devcontainer/opencode/` sandboxed-devcontainer template (network allowlist, CLI preinstalled) into another project and start it. `scripts/projects/` has project scaffolders; `scripts/trello/` has Trello/note-sorting automation.

@@ -20,7 +20,14 @@ if [[ "$OS" == "linux" ]]; then
     # Install neovim from PPA for latest version
     sudo add-apt-repository ppa:neovim-ppa/unstable -y
     sudo apt-get update
-    sudo apt-get install -y neovim ripgrep bear ranger tmux
+    sudo apt-get install -y neovim ripgrep fd-find bear ranger tmux
+
+    # fd-find installs its binary as `fdfind` on Debian/Ubuntu; symlink it to
+    # the `fd` name everything (Telescope, etc.) actually looks for.
+    mkdir -p ~/.local/bin
+    if ! command -v fd &> /dev/null && command -v fdfind &> /dev/null; then
+        ln -sf "$(command -v fdfind)" ~/.local/bin/fd
+    fi
 
     # Install lazygit (skip if already on PATH)
     if ! command -v lazygit &> /dev/null; then
@@ -53,7 +60,7 @@ elif [[ "$OS" == "macos" ]]; then
             eval "$(/usr/local/bin/brew shellenv)"
         fi
     fi
-    brew install neovim ripgrep lazygit derailed/k9s/k9s bear wget maccy ranger tmux
+    brew install neovim ripgrep fd lazygit derailed/k9s/k9s bear wget maccy ranger tmux openjdk openjdk@21
 fi
 
 # Install nvm and Node.js (skip installer if nvm is already present)
@@ -107,6 +114,8 @@ fi
 mkdir -p ~/.local/bin
 ln -sf ~/.dotfiles/scripts/devcontainer/setup-claude-devcontainer.sh ~/.local/bin/claude-setup
 ln -sf ~/.dotfiles/scripts/devcontainer/setup-opencode-devcontainer.sh ~/.local/bin/opencode-setup
+ln -sf ~/.dotfiles/scripts/projects/new-python-project.sh ~/.local/bin/new-python-project
+ln -sf ~/.dotfiles/scripts/projects/new-cpp-project.sh ~/.local/bin/new-cpp-project
 
 # Safely rewrite ~/.zshrc: only if the candidate actually differs from what's
 # currently there, only after a zsh syntax check, and only after taking a
@@ -213,6 +222,50 @@ BLOCK
     commit_zshrc "$final" || true
 }
 
+# Keep the Homebrew openjdk PATH entries current in ~/.zshrc (macOS only):
+# both openjdk formulae are keg-only (Homebrew won't symlink them onto PATH
+# itself, since multiple JDKs can coexist), and openjdk@21 is listed last so
+# it wins over plain openjdk when both are on PATH.
+sync_java_path() {
+    local zshrc="$HOME/.zshrc"
+    local begin_marker="# >>> dotfiles java path >>>"
+    local end_marker="# <<< dotfiles java path <<<"
+
+    touch "$zshrc"
+
+    # Drop the old unmanaged raw exports (from `brew install openjdk`'s own
+    # manual-setup suggestion) so they don't sit duplicated next to the
+    # managed block below.
+    local work
+    work="$(mktemp)"
+    grep -vF \
+        -e 'export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"' \
+        -e 'export PATH="/opt/homebrew/opt/openjdk@21/bin:$PATH"' \
+        "$zshrc" > "$work" || true
+
+    local block
+    block="$(cat <<'BLOCK'
+export PATH="/opt/homebrew/opt/openjdk/bin:$PATH"
+export PATH="/opt/homebrew/opt/openjdk@21/bin:$PATH"
+BLOCK
+)"
+
+    local begin_line end_line
+    begin_line="$(grep -nF "$begin_marker" "$work" 2>/dev/null | head -1 | cut -d: -f1)" || true
+    end_line="$(grep -nF "$end_marker" "$work" 2>/dev/null | head -1 | cut -d: -f1)" || true
+
+    local final
+    final="$(mktemp)"
+    if [ -n "${begin_line:-}" ] && [ -n "${end_line:-}" ] && [ "$end_line" -gt "$begin_line" ]; then
+        { head -n "$begin_line" "$work"; printf '%s\n' "$block"; tail -n "+$end_line" "$work"; } > "$final"
+    else
+        { cat "$work"; echo ""; echo "$begin_marker"; printf '%s\n' "$block"; echo "$end_marker"; } > "$final"
+    fi
+    rm -f "$work"
+
+    commit_zshrc "$final" || true
+}
+
 # Keep conda usable in tmux panes / nvim terminals current in ~/.zshrc: let
 # `conda init` manage its own block (safe to re-run), wrap that block in the
 # CONDA_SHLVL guard from
@@ -302,6 +355,9 @@ sync_conda_tmux_persistence() {
 
 sync_devcontainer_helpers || true
 sync_ranger_alias || true
+if [[ "$OS" == "macos" ]]; then
+    sync_java_path || true
+fi
 sync_conda_tmux_persistence || true
 
 echo "Setup complete for $OS"

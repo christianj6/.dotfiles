@@ -2,7 +2,40 @@
 #
 # setup.sh installs/keeps current, automatically (see README):
 #   - claude/opencode functions, claude-setup/opencode-setup commands
+#   - the ranger alias (". ranger", so quitting ranger cds your shell there)
+#   - openjdk/openjdk@21 PATH entries (macOS)
 #   - the conda-in-tmux persistence trick (conda init's block, wrapped in the
 #     CONDA_SHLVL guard, plus sourcing conda.sh directly for tmux panes)
 # No need to copy any of that in here.
+#
+# Everything below is copy-paste only -- setup.sh never touches it -- kept
+# here so a fresh machine can be brought back to "the way I like it" by hand.
+
+# --- project navigation aliases ---
+alias dotfiles="cd ~/.dotfiles && conda activate dotfiles && nvim"
+alias home="cd ~/Desktop/tallence/ && conda activate base && clear && ls && tmux ls"
+alias zshrc="nvim ~/.zshrc"
+alias spikes="cd ~/Desktop/tallence/repos/spikes/ && conda activate spikes && nvim"
+alias notes="cd ~/Desktop/tallence/notes/ && nvim"
+alias infra="cd ~/Desktop/tallence/repos/infra/ && conda activate infra && nvim"
+alias migration="cd ~/Desktop/tallence/repos/a4_migration// && conda activate migration && nvim"
+alias thor="cd ~/Desktop/tallence/repos/thor/cluster-management && nvim"
+alias poc="cd ~/Desktop/tallence/repos/thor/thor-voiceai-poc && conda activate thor-poc && nvim"
+alias prod="cd /Users/christianjohnson/Desktop/tallence/repos/thor/thor-voiceai && conda activate thor-prod && nvim"
+alias legal="cd ~/Desktop/newaico/repos/spikes/ && conda activate legal && nvim"
+alias games="cd /Users/christianjohnson/Desktop/personal/repos/games && nvim"
+alias topical="cd /Users/christianjohnson/Desktop/personal/repos/topical && conda activate topical && nvim"
+
+# --- other aliases ---
+alias costs="bash ~/Desktop/tallence/scripts/check_aws_costs.sh"
 alias ls="tree -L 1"
+alias stzr="structurizr-cli"
+alias yo="clawdbot tui"
+
+# --- secrets (fill in per machine -- never commit real values here) ---
+# Bitwarden CLI (`bw`) auth.
+export BW_CLIENTID=""
+export BW_CLIENTSECRET=""
+
+# --- PATH additions for manually-installed apps (see README) ---
+export PATH="/Applications/Wireshark.app/Contents/MacOS:$PATH"

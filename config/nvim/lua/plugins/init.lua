@@ -150,14 +150,24 @@ return {
      opts = {},
   },
   {
-    "williamboman/mason.nvim",
+    -- `mason.nvim` itself has no `ensure_installed` option; that only
+    -- exists on mason-tool-installer (or mason-lspconfig, for LSP servers
+    -- specifically). Without it these tools silently never auto-install.
+    "WhoIsSethDaniel/mason-tool-installer.nvim",
+    -- NvChad's lazy.nvim defaults are `lazy = true` (configs/lazy.lua); this
+    -- has no event/cmd/ft trigger, so without `lazy = false` it would sit
+    -- installed but never call setup(), and ensure_installed would never run.
+    lazy = false,
+    dependencies = { "williamboman/mason.nvim" },
     opts = {
       ensure_installed = {
         "black",
         "debugpy",
         "mypy",
-        "ruff-lsp",
+        "ruff",
         "pyright",
+        "stylua",
+        "clangd",
       },
     },
   },
