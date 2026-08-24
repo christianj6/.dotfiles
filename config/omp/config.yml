@@ -32,7 +32,7 @@ theme:
   light: light
 setupVersion: 1
 defaultThinkingLevel: max
-hideThinkingBlock: true
+hideThinkingBlock: false
 advisor: 
   enabled: true
 prewalk: 
