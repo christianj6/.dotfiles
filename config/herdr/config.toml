@@ -1,0 +1,17 @@
+# Versioned herdr config (https://herdr.dev).
+# Destined for ~/.config/herdr/config.toml — see the herdr items in TODO.md.
+# Everything not set here uses the built-in default (print with
+# `herdr --default-config`); unknown keys fall back with a startup warning.
+
+# Skip the first-run onboarding wizard on fresh machines.
+onboarding = false
+
+[terminal]
+# "auto" starts new interactive panes as login shells on macOS, so
+# /usr/libexec/path_helper and Homebrew PATH setup run inside herdr panes;
+# behavior on other platforms is unchanged.
+shell_mode = "auto"
+
+# Theme intentionally unset: config/ghostty/config pins no ghostty theme
+# either, so herdr keeps its built-in default and follows the terminal the
+# same way ghostty does. If ghostty ever pins one, mirror it in [theme].name.

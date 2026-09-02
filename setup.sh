@@ -208,6 +208,18 @@ if ! command -v herdr &> /dev/null; then
     curl -fsSL "${CURL_RETRY[@]}" https://herdr.dev/install.sh | sh
 fi
 
+# Install the agent integrations for the agents this workspace actually runs.
+# omp becomes a full lifecycle authority (idle/working/blocked reported by the
+# agent itself, plus native `omp --resume=<session>` restore after a server
+# restart); claude reports session identity for restore while its state stays
+# on screen detection. Re-running is also the update path -- a stale
+# integration shows "outdated" in `herdr integration status` and install
+# rewrites it -- so this is deliberately NOT gated on presence. Non-fatal:
+# an install needs the agent's config dir to exist (e.g. no ~/.claude on a
+# machine that never ran claude), and that must not abort setup.sh.
+herdr integration install omp || true
+herdr integration install claude || true
+
 # OS-specific symlinks
 if [[ "$OS" == "macos" ]]; then
     ln -sf ~/.dotfiles/config/ghostty ~/.config
