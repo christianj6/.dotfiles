@@ -22,6 +22,8 @@ Linux support assumes Ubuntu/Debian (`apt-get`-based); other distros aren't supp
 - `templates/` holds copy-paste starting points, never read automatically: `zshrc.example` for your own `~/.zshrc` aliases, `env.example` for `.env` at the repo root (aider preferences + `scripts/trello` secrets), `omp.env.example` for `~/.omp/agent/.env` (OpenRouter key for the omp nvim REPL).
 - `claude-setup [dir]` / `opencode-setup [dir]` copy the `.devcontainer/claude/` or `.devcontainer/opencode/` sandboxed-devcontainer template (network allowlist, CLI preinstalled) into another project and start it. `scripts/projects/` has project scaffolders; `scripts/trello/` has Trello/note-sorting automation.
 - `config/omp/` versions the omp CLI's config: `config.yml` and `plugins/omp-plugins.lock.json` are symlinked into place by `setup.sh` (which also installs the `omp` CLI itself and the `clangd-lsp` plugin); `marketplaces.json` and `plugins/installed_plugins.json` are committed for visibility only — they're absolute-path runtime bookkeeping that `setup.sh` regenerates via `omp plugin marketplace add`/`omp plugin install` rather than copying into place. The default model routes through OpenRouter (`openrouter/anthropic/claude-sonnet-5`) so a fresh machine only needs one API key — see `templates/omp.env.example`.
+- `setup.sh` installs the herdr terminal workspace manager (https://herdr.dev, AI-agent pane multiplexer) alongside omp; nothing from it is versioned in this repo — the binary self-updates via `herdr update`.
+
 
 ## References
 

@@ -199,6 +199,15 @@ ln -sf ~/.dotfiles/config/omp/plugins/omp-plugins.lock.json ~/.omp/plugins/omp-p
 omp plugin marketplace add anthropics/claude-plugins-official || true
 omp plugin install clangd-lsp@claude-plugins-official || true
 
+# Install herdr (https://herdr.dev) terminal workspace manager. Same pattern
+# as omp above: the curl installer is identical on macOS and Linux, drops the
+# binary in ~/.local/bin (already exported and persisted above), and any
+# pre-existing install -- e.g. via Homebrew -- is left alone. Required, not
+# `|| true`: herdr is a key component, same bar as the omp install itself.
+if ! command -v herdr &> /dev/null; then
+    curl -fsSL "${CURL_RETRY[@]}" https://herdr.dev/install.sh | sh
+fi
+
 # OS-specific symlinks
 if [[ "$OS" == "macos" ]]; then
     ln -sf ~/.dotfiles/config/ghostty ~/.config
