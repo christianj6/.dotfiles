@@ -57,6 +57,10 @@ conda create -n "$PROJECT_NAME" python=3.10 -y
 conda init
 conda activate "$PROJECT_NAME"
 
+# Stamp the conda env name so the zsh env seam (setup.sh) activates it on cd
+# -- no per-project alias needed.
+echo "$PROJECT_NAME" > .conda-env
+
 # Install required packages
 python -m pip install aider-install pre-commit
 aider-install

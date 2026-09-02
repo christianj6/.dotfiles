@@ -220,6 +220,22 @@ fi
 herdr integration install omp || true
 herdr integration install claude || true
 
+# herdr config: symlink the versioned settings into ~/.config/herdr. The
+# versioned file carries onboarding=false and macOS login-shell panes; the
+# file the app writes on first run ("onboarding = false") is a strict subset,
+# so the symlink never clobbers a real setting.
+mkdir -p ~/.config/herdr
+ln -sf ~/.dotfiles/config/herdr/config.toml ~/.config/herdr/config.toml
+
+# Install the herdr skill into the agent skill dirs: teaches agents running
+# inside a herdr pane (HERDR_ENV=1) to drive herdr -- split panes, read
+# sibling output, wait on other agents. omp follows the pi agent layout
+# (~/.omp/agent/skills/); claude uses ~/.claude/skills/. Non-fatal: a failed
+# fetch must not abort setup.sh.
+mkdir -p ~/.omp/agent/skills/herdr ~/.claude/skills/herdr
+curl -fsSL "${CURL_RETRY[@]}" https://raw.githubusercontent.com/herdrdev/herdr/master/skills/herdr/SKILL.md -o ~/.omp/agent/skills/herdr/SKILL.md || true
+curl -fsSL "${CURL_RETRY[@]}" https://raw.githubusercontent.com/herdrdev/herdr/master/skills/herdr/SKILL.md -o ~/.claude/skills/herdr/SKILL.md || true
+
 # OS-specific symlinks
 if [[ "$OS" == "macos" ]]; then
     ln -sf ~/.dotfiles/config/ghostty ~/.config
@@ -471,12 +487,107 @@ sync_conda_tmux_persistence() {
     commit_zshrc "$final" || true
 }
 
+# Keep herdr shell completions current in ~/.zshrc: source the completion
+# script straight from the installed binary on every interactive shell start,
+# so completions always match the binary (including after `herdr update`)
+# with no cache file to regenerate. compinit is only initialized here when
+# nothing earlier in ~/.zshrc has done it already.
+sync_herdr_completions() {
+    local zshrc="$HOME/.zshrc"
+    local begin_marker="# >>> dotfiles herdr completions >>>"
+    local end_marker="# <<< dotfiles herdr completions <<<"
+
+    touch "$zshrc"
+
+    local block
+    block="$(cat <<'BLOCK'
+# herdr completions: generated straight from the installed binary.
+if command -v herdr &>/dev/null && [[ -o interactive ]]; then
+    if ! (( $+functions[compdef] )); then
+        autoload -Uz compinit
+        compinit
+    fi
+    source <(herdr completion zsh)
+fi
+BLOCK
+)"
+
+    local begin_line end_line
+    begin_line="$(grep -nF "$begin_marker" "$zshrc" 2>/dev/null | head -1 | cut -d: -f1)" || true
+    end_line="$(grep -nF "$end_marker" "$zshrc" 2>/dev/null | head -1 | cut -d: -f1)" || true
+
+    local final
+    final="$(mktemp)"
+    if [ -n "${begin_line:-}" ] && [ -n "${end_line:-}" ] && [ "$end_line" -gt "$begin_line" ]; then
+        { head -n "$begin_line" "$zshrc"; printf '%s\n' "$block"; tail -n "+$end_line" "$zshrc"; } > "$final"
+    else
+        { cat "$zshrc"; echo ""; echo "$begin_marker"; printf '%s\n' "$block"; echo "$end_marker"; } > "$final"
+    fi
+
+    commit_zshrc "$final" || true
+}
+
+# Keep the project conda env seam current in ~/.zshrc: a project stamps its
+# env name into a .conda-env marker file (new-python-project.sh writes one),
+# and every shell activates that env on cd -- replacing the per-project
+# "cd && conda activate && nvim" aliases. The future herdr restore guard
+# reuses activate_env_for_dir instead of duplicating it (see TODO.md).
+sync_env_seam() {
+    local zshrc="$HOME/.zshrc"
+    local begin_marker="# >>> dotfiles project conda env seam >>>"
+    local end_marker="# <<< dotfiles project conda env seam <<<"
+
+    touch "$zshrc"
+
+    local block
+    block="$(cat <<'BLOCK'
+activate_env_for_dir() {
+    local marker="$PWD/.conda-env"
+    [[ -f "$marker" ]] || return 0
+    local want
+    want="$(<"$marker")"
+    [[ -n "$want" ]] || return 0
+    command -v conda &>/dev/null || return 0
+    [[ "$CONDA_DEFAULT_ENV" == "$want" ]] && return 0
+    conda activate "$want" 2>/dev/null
+}
+autoload -Uz add-zsh-hook
+_env_seam_chpwd() { activate_env_for_dir "$@"; }
+add-zsh-hook chpwd _env_seam_chpwd
+# Fire once so a shell starting inside a project (e.g. a restored herdr pane)
+# gets its env immediately.
+activate_env_for_dir
+BLOCK
+)"
+
+    local begin_line end_line
+    begin_line="$(grep -nF "$begin_marker" "$zshrc" 2>/dev/null | head -1 | cut -d: -f1)" || true
+    end_line="$(grep -nF "$end_marker" "$zshrc" 2>/dev/null | head -1 | cut -d: -f1)" || true
+
+    local final
+    final="$(mktemp)"
+    if [ -n "${begin_line:-}" ] && [ -n "${end_line:-}" ] && [ "$end_line" -gt "$begin_line" ]; then
+        { head -n "$begin_line" "$zshrc"; printf '%s\n' "$block"; tail -n "+$end_line" "$zshrc"; } > "$final"
+    else
+        { cat "$zshrc"; echo ""; echo "$begin_marker"; printf '%s\n' "$block"; echo "$end_marker"; } > "$final"
+    fi
+
+    commit_zshrc "$final" || true
+}
+
 sync_devcontainer_helpers || true
 sync_ranger_alias || true
+sync_herdr_completions || true
+sync_env_seam || true
 if [[ "$OS" == "macos" ]]; then
     sync_java_path || true
 fi
 sync_conda_tmux_persistence || true
+
+# Apply the possibly-updated herdr config to a running server so re-runs take
+# effect live; a stopped server (or a client/server version skew) just picks
+# it up on its next start. Non-fatal either way.
+herdr server reload-config || true
 
 echo "Setup complete for $OS"
 
