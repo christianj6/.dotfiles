@@ -194,6 +194,7 @@ def load_panes() -> List[dict]:
 
 
 def main() -> None:
+    parent_pid_at_start = os.getppid()
     last_state: Dict[str, str] = {}
     seq: Dict[str, int] = {}
 
@@ -206,6 +207,22 @@ def main() -> None:
             run_herdr("pane", "release-agent", pane_id, "--source", SOURCE, "--agent", AGENT)
 
     while True:
+        # herdr's [[startup]] hook has no supervision and sends this
+        # process no signal when its owning server shuts down (verified
+        # empirically 2026-09-04: three successive server restarts each
+        # left a fully orphaned watcher running under init -- multiple
+        # instances silently accumulated and fought over the same panes,
+        # which is exactly why a newly opened pane in another workspace
+        # stayed stuck on "unknown"). A dead parent reparents us; exit for
+        # good the instant that happens -- the new server spawns its own
+        # fresh instance, and this one must not linger to duplicate it.
+        if os.getppid() != parent_pid_at_start:
+            print(
+                f"[omp-watch] orphaned (parent {parent_pid_at_start} -> {os.getppid()}); exiting for good",
+                file=sys.stderr,
+            )
+            sys.exit(0)
+
         try:
             live = live_omp_cwds()
             for pane in load_panes():
@@ -255,4 +272,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Respawn on an unexpected crash (main()'s own per-tick try/except
+    # already handles routine failures, so this is a last-resort net);
+    # but a SystemExit from the orphan check above must propagate and
+    # actually end the process, not be treated as a crash to recover from.
+    while True:
+        try:
+            main()
+        except SystemExit:
+            raise
+        except Exception as exc:
+            print(f"[omp-watch] main() crashed: {exc}; restarting in 1s", file=sys.stderr)
+            time.sleep(1)
