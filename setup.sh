@@ -547,6 +547,13 @@ activate_env_for_dir() {
     [[ -f "$marker" ]] || return 0
     local want
     want="$(<"$marker")"
+    # The conda shell FUNCTION may not exist yet depending on block order in
+    # ~/.zshrc (conda.sh gets sourced at the very end for tmux panes); before
+    # that, `conda` resolves to the condabin script, which only PRINTS the
+    # activation code instead of modifying this shell. Sourcing the hook
+    # script is idempotent and env-neutral.
+    [[ "$(whence -w conda 2>/dev/null)" == *function* ]] || \
+        { [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]] && source "$HOME/miniconda3/etc/profile.d/conda.sh"; }
     [[ -n "$want" ]] || return 0
     command -v conda &>/dev/null || return 0
     [[ "$CONDA_DEFAULT_ENV" == "$want" ]] && return 0

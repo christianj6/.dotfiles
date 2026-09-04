@@ -12,19 +12,14 @@
 # here so a fresh machine can be brought back to "the way I like it" by hand.
 
 # --- project navigation aliases ---
-alias dotfiles="cd ~/.dotfiles && conda activate dotfiles && nvim"
-alias home="cd ~/Desktop/tallence/ && conda activate base && clear && ls && tmux ls"
+alias dotfiles="cd ~/.dotfiles"
+alias home="cd ~/Desktop/tallence/ && clear && ls && tmux ls"
 alias zshrc="nvim ~/.zshrc"
-alias spikes="cd ~/Desktop/tallence/repos/spikes/ && conda activate spikes && nvim"
 alias notes="cd ~/Desktop/tallence/notes/ && nvim"
-alias infra="cd ~/Desktop/tallence/repos/infra/ && conda activate infra && nvim"
-alias migration="cd ~/Desktop/tallence/repos/a4_migration// && conda activate migration && nvim"
 alias thor="cd ~/Desktop/tallence/repos/thor/cluster-management && nvim"
-alias poc="cd ~/Desktop/tallence/repos/thor/thor-voiceai-poc && conda activate thor-poc && nvim"
-alias prod="cd /Users/christianjohnson/Desktop/tallence/repos/thor/thor-voiceai && conda activate thor-prod && nvim"
-alias legal="cd ~/Desktop/newaico/repos/spikes/ && conda activate legal && nvim"
+alias prod="cd ~/Desktop/tallence/repos/thor/thor-voiceai"
 alias games="cd /Users/christianjohnson/Desktop/personal/repos/games && nvim"
-alias topical="cd /Users/christianjohnson/Desktop/personal/repos/topical && conda activate topical && nvim"
+alias topical="cd ~/Desktop/personal/repos/topical"
 
 # --- other aliases ---
 alias costs="bash ~/Desktop/tallence/scripts/check_aws_costs.sh"
