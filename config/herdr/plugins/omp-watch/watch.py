@@ -104,7 +104,8 @@ def infer_state(entries: List[dict]) -> Optional[str]:
         # empirically 2026-09-04 against a real session file; the earlier
         # top-level e.get("role") always returned None, so the user/
         # assistant/toolResult branches below never actually matched.
-        role = (e.get("message") or {}).get("role")
+        msg = e.get("message") or {}
+        role = msg.get("role")
         if etype == "custom" and e.get("customType") == "session_exit":
             verdict = "exit"
         elif etype == "custom" and e.get("customType") == "tool_execution_start":
@@ -116,7 +117,28 @@ def infer_state(entries: List[dict]) -> Optional[str]:
         elif etype == "message" and role == "toolResult":
             verdict = "working"  # the agent loop still has to react to it
         elif etype == "message" and role == "assistant":
-            verdict = "idle"  # a finished assistant reply ends the turn
+            # An assistant message's role alone does NOT mean the turn is
+            # done -- confirmed empirically 2026-09-04 against ~444 real
+            # assistant entries: a toolCall block can be embedded directly
+            # in the SAME message (Anthropic-style), atomically, alongside
+            # thinking and/or text (221 text+thinking+toolCall, 127
+            # thinking+toolCall, 39 toolCall-only, 7 text+toolCall -- all
+            # genuinely still working despite having a "text" block).
+            # Racing on a LATER separate tool_execution_start event was the
+            # bug: this reads the decision straight out of the one entry
+            # that already carries it, so there is nothing left to race.
+            # Only text with NO toolCall is a real finished turn (32
+            # text+thinking, 13 text-only); thinking-only/empty content (2
+            # + 3 cases) means still reasoning, not yet answered.
+            content = msg.get("content") or []
+            has_tool_call = any(isinstance(c, dict) and c.get("type") == "toolCall" for c in content)
+            has_text = any(isinstance(c, dict) and c.get("type") == "text" for c in content)
+            if has_tool_call:
+                verdict = "working"
+            elif has_text:
+                verdict = "idle"
+            else:
+                verdict = "working"
     return verdict
 
 
@@ -169,11 +191,34 @@ def live_omp_cwds() -> Dict[str, int]:
     return result
 
 
-def run_herdr(*args: str) -> None:
+def run_herdr(*args: str) -> bool:
+    """Run a herdr CLI call and report whether it actually succeeded --
+    callers must not cache a new last-reported state unless this is True,
+    or a transient CLI/socket failure gets silently treated as delivered
+    and never retried until some unrelated later state change happens to
+    paper over it (a real, if unconfirmed, suspect behind one report of
+    a stuck "working" state 2026-09-04)."""
     try:
-        subprocess.run([HERDR_BIN, *args], check=False, capture_output=True, timeout=10)
+        result = subprocess.run(
+            [HERDR_BIN, *args], check=False, capture_output=True, text=True, timeout=10
+        )
     except Exception as exc:  # keep the watcher alive across any CLI hiccup
         print(f"[omp-watch] herdr call failed {args}: {exc}", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        print(f"[omp-watch] herdr call exited {result.returncode} {args}: {result.stderr.strip()}", file=sys.stderr)
+        return False
+    # herdr's socket API can return exit 0 with an application-level
+    # {"error": {...}} body; treat that as failure too rather than a
+    # false-positive success.
+    try:
+        parsed = json.loads(result.stdout) if result.stdout.strip() else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    if isinstance(parsed, dict) and "error" in parsed:
+        print(f"[omp-watch] herdr call returned an error {args}: {parsed['error']}", file=sys.stderr)
+        return False
+    return True
 
 
 def load_panes() -> List[dict]:
@@ -193,20 +238,37 @@ def load_panes() -> List[dict]:
     return panes
 
 
+DEBUG = os.environ.get("OMP_WATCH_DEBUG") == "1"
+
+
+def dlog(msg: str) -> None:
+    if DEBUG:
+        print(f"[omp-watch:debug {time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+
+
 def main() -> None:
     parent_pid_at_start = os.getppid()
     last_state: Dict[str, str] = {}
     seq: Dict[str, int] = {}
+    dlog(f"main() starting, pid={os.getpid()} parent_pid={parent_pid_at_start}")
 
     def next_seq(pane_id: str) -> int:
         seq[pane_id] = seq.get(pane_id, 0) + 1
         return seq[pane_id]
 
     def release(pane_id: str) -> None:
-        if last_state.pop(pane_id, None) is not None:
-            run_herdr("pane", "release-agent", pane_id, "--source", SOURCE, "--agent", AGENT)
+        if pane_id in last_state:
+            if run_herdr("pane", "release-agent", pane_id, "--source", SOURCE, "--agent", AGENT):
+                dlog(f"{pane_id}: released (was {last_state.get(pane_id)!r})")
+                last_state.pop(pane_id, None)
+            else:
+                dlog(f"{pane_id}: release-agent call FAILED, will retry next tick")
+            # else: leave it tracked so the next tick retries the release
+            # instead of silently treating a failed call as delivered.
 
+    tick = 0
     while True:
+        tick += 1
         # herdr's [[startup]] hook has no supervision and sends this
         # process no signal when its owning server shuts down (verified
         # empirically 2026-09-04: three successive server restarts each
@@ -225,7 +287,10 @@ def main() -> None:
 
         try:
             live = live_omp_cwds()
-            for pane in load_panes():
+            dlog(f"tick {tick}: live_omp_cwds={live}")
+            panes = load_panes()
+            dlog(f"tick {tick}: load_panes returned {len(panes)} panes")
+            for pane in panes:
                 pane_id = pane["pane_id"]
                 cwd_raw = pane.get("cwd", "")
                 # omp names its session directory from the shell's logical
@@ -238,6 +303,8 @@ def main() -> None:
                 cwd_resolved = str(Path(cwd_raw).resolve()) if cwd_raw else ""
 
                 if cwd_resolved not in live:
+                    if pane_id in last_state:
+                        dlog(f"{pane_id}: cwd={cwd_raw!r} no longer in live set -> releasing")
                     release(pane_id)
                     continue
 
@@ -248,10 +315,15 @@ def main() -> None:
                 # pause with no new bytes is still correctly "working".
                 verdict = "idle"
                 sfile = newest_session_file(cwd_raw)
+                tail_verdict = None
                 if sfile is not None:
                     tail_verdict = infer_state(tail_entries(sfile))
                     if tail_verdict == "working":
                         verdict = "working"
+                dlog(
+                    f"{pane_id}: cwd={cwd_raw!r} sfile={sfile.name if sfile else None} "
+                    f"tail_verdict={tail_verdict!r} verdict={verdict!r} last_state={last_state.get(pane_id)!r}"
+                )
 
                 if last_state.get(pane_id) == verdict:
                     continue
@@ -263,10 +335,19 @@ def main() -> None:
                 ]
                 if sfile is not None:
                     report_args += ["--agent-session-path", str(sfile)]
-                run_herdr(*report_args)
-                last_state[pane_id] = verdict
+                ok = run_herdr(*report_args)
+                dlog(f"{pane_id}: report-agent state={verdict!r} seq={seq[pane_id]} -> {'OK' if ok else 'FAILED'}")
+                if ok:
+                    last_state[pane_id] = verdict
+                # else: last_state is left unchanged (or absent), so the
+                # next tick's `last_state.get(pane_id) == verdict` check is
+                # False and it retries the same report -- a transient CLI
+                # failure here must never be cached as if it landed.
         except Exception as exc:  # never let one bad tick kill the watcher
             print(f"[omp-watch] tick error: {exc}", file=sys.stderr)
+            if DEBUG:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
 
         time.sleep(POLL_SECONDS)
 
