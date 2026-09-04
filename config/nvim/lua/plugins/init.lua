@@ -84,6 +84,27 @@ return {
   },
 
   {
+    "folke/persistence.nvim",
+    lazy = false, -- auto-restore must fire on a bare `nvim` start (the herdr
+                  -- guard opens nvim with no file args, so BufReadPre never fires)
+    config = function(_, opts)
+      require("persistence").setup(opts)
+      -- persistence saves sessions on exit but does not autoload; restore
+      -- the current directory's session on a bare `nvim` start (no file
+      -- args) -- the shape herdr-restored panes open with. `nvim somefile`
+      -- stays a focused single-file edit.
+      vim.api.nvim_create_autocmd("VimEnter", {
+        nested = true,
+        callback = function()
+          if vim.fn.argc() == 0 then
+            require("persistence").load()
+          end
+        end,
+      })
+    end,
+  },
+
+  {
     "milanglacier/yarepl.nvim",
     config = function()
       -- yarepl's own default float window (utility.lua's default_float_wincmd)

@@ -21,7 +21,7 @@ copy_devcontainer_template claude "$TARGET_DIR" Dockerfile devcontainer.json ini
 # container reused for months accumulates a stale Docker Desktop VirtioFS
 # bind-mount cache (files untouched since before the last recreation start
 # throwing EPERM on read, `.git/packed-refs` included, breaking most git
-# commands) - reproduced and root-caused 2026-08-18 against thor-voiceai's
+# commands) - reproduced and root-caused 2026-08-18 against a
 # devcontainer, which had been alive since 2026-06-16. The few seconds of
 # extra latency (fresh postStartCommand firewall init) is worth never
 # hitting that again.

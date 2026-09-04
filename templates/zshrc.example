@@ -12,20 +12,16 @@
 # here so a fresh machine can be brought back to "the way I like it" by hand.
 
 # --- project navigation aliases ---
-alias dotfiles="cd ~/.dotfiles"
-alias home="cd ~/Desktop/tallence/ && clear && ls && tmux ls"
+# cd into a marked project and the env seam activates its conda env
+# automatically (a .conda-env file in the project root names the env); herdr
+# panes in marked projects even open nvim on their own. Per-project aliases
+# are optional sugar:
+# alias myproject="cd ~/path/to/myproject"
 alias zshrc="nvim ~/.zshrc"
-alias notes="cd ~/Desktop/tallence/notes/ && nvim"
-alias thor="cd ~/Desktop/tallence/repos/thor/cluster-management && nvim"
-alias prod="cd ~/Desktop/tallence/repos/thor/thor-voiceai"
-alias games="cd /Users/christianjohnson/Desktop/personal/repos/games && nvim"
-alias topical="cd ~/Desktop/personal/repos/topical"
 
 # --- other aliases ---
-alias costs="bash ~/Desktop/tallence/scripts/check_aws_costs.sh"
-alias ls="tree -L 1"
-alias stzr="structurizr-cli"
-alias yo="clawdbot tui"
+# alias ls="tree -L 1"
+# alias mytool="tool-command"
 
 # --- secrets (fill in per machine -- never commit real values here) ---
 # Bitwarden CLI (`bw`) auth.

@@ -13,6 +13,19 @@ local servers = { "html", "cssls", "terraformls", "markdown_oxide", "pyright", "
 -- nvim-lspconfig v3.0.0.)
 vim.lsp.enable(servers)
 
+-- When a conda env is active (the shell env seam guarantees it in marked
+-- project dirs), analyze against that env's interpreter so the LSP sees the
+-- exact python the project runs on. No CONDA_PREFIX -> stock behavior.
+if vim.env.CONDA_PREFIX and vim.env.CONDA_PREFIX ~= "" then
+  vim.lsp.config("pyright", {
+    settings = {
+      python = {
+        pythonPath = vim.env.CONDA_PREFIX .. "/bin/python",
+      },
+    },
+  })
+end
+
 -- configuring a single server beyond its shipped defaults, example: lua_ls
 -- vim.lsp.config("ts_ls", { settings = {} })
 -- vim.lsp.enable("ts_ls")
