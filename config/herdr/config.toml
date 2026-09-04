@@ -10,7 +10,7 @@ onboarding = false
 # "auto" starts new interactive panes as login shells on macOS, so
 # /usr/libexec/path_helper and Homebrew PATH setup run inside herdr panes;
 # behavior on other platforms is unchanged.
-shell_mode = "auto"
+new_cwd = "home"
 
 # Theme intentionally unset: config/ghostty/config pins no ghostty theme
 # either, so herdr keeps its built-in default and follows the terminal the
