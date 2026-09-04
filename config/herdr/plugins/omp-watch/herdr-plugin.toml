@@ -1,0 +1,15 @@
+id = "dotfiles.omp-watch"
+name = "omp session watcher"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Reports omp agent state to herdr by tailing omp's own session transcript, since omp's extension API does not deliver lifecycle events and herdr ships no screen-manifest fallback for omp."
+platforms = ["linux", "macos"]
+
+# herdr's [[startup]] hook has no ongoing crash supervision (verified
+# empirically 2026-09-04: killing the started process leaves it dead
+# permanently -- status stays "failed" with no auto-restart until the next
+# full herdr server restart). Wrap in a respawn loop so the watcher comes
+# back from any exit -- a crash, an accidental kill, or anything else --
+# without depending on herdr or any other supervisor for this.
+[[startup]]
+command = ["sh", "-c", "while true; do python3 watch.py; sleep 1; done"]

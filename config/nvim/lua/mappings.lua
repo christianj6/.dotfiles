@@ -24,57 +24,88 @@ map("n", "<leader>w=", "<C-w>=", { desc = "Equalize window sizes" })
 -- / <Plug>(yarepl-hide-{name}) / <Plug>(yarepl-focus-{name}) for every entry in its
 -- `metas` table in plugins/init.lua -- "aider" and "pi" are both registered there).
 local function toggle_repl(name)
-  -- Check if the REPL window exists
-  local bufnr = vim.fn.bufnr(name)
-  local winid = vim.fn.bufwinid(bufnr)
+  -- yarepl names its REPL buffers "#name#N" (counter suffix); bufnr() matches
+  -- by vim pattern, so anchor it to that exact shape. A bare name would also
+  -- match unrelated buffers (e.g. api.lua).
+  local bufnr = vim.fn.bufnr("^#" .. name .. "#\\d\\+$")
+  if bufnr == -1 then
+    bufnr = vim.fn.bufnr("^#" .. name .. "#$")
+  end
 
-  -- If the REPL window is open
+  -- Where is it displayed? A restored session can show the buffer in a
+  -- window on ANOTHER tab, which must not count as "open here".
+  local winid = bufnr ~= -1 and vim.fn.bufwinid(bufnr) or -1
+  local in_current_tab = false
   if winid ~= -1 then
-    -- Get the current window
-    local current_win = vim.api.nvim_get_current_win()
+    in_current_tab = vim.api.nvim_win_get_tabpage(winid) == vim.api.nvim_get_current_tabpage()
+  end
 
-    -- Check if we're currently in the REPL window
-    if current_win == winid then
+  -- Liveness: a real yarepl REPL is a terminal buffer with a running job.
+  -- A session-restored zombie has the NAME but no job (persistence/mksession
+  -- restores the buffer, not the process), which used to leave ctrl-a
+  -- toggling a ghost window on an unfocused tab forever.
+  local is_live = false
+  if bufnr ~= -1 and vim.bo[bufnr].buftype == "terminal" then
+    local job = vim.b[bufnr].terminal_job_id
+    if type(job) == "number" and job > 0 then
+      pcall(function()
+        is_live = vim.fn.jobwait({ job }, 0)[1] == -1
+      end)
+    end
+  end
+
+  if winid ~= -1 and in_current_tab then
+    -- Visible here: toggle hide (leave terminal/insert first if needed)
+    if vim.api.nvim_get_current_win() == winid then
       local mode = vim.api.nvim_get_mode().mode
-
-      -- If in terminal mode or insert mode, exit to normal mode first
       if mode == "t" or mode == "i" then
         vim.cmd("stopinsert")
       end
-
-      -- Small delay to ensure mode change completes, then hide
       vim.defer_fn(function()
         vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(yarepl-hide-" .. name .. ")", true, false, true), "")
       end, 10)
     else
-      -- We're in a different window, just hide the REPL
       vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(yarepl-hide-" .. name .. ")", true, false, true), "")
     end
-  else
-    -- If the REPL is not open, start it and enter insert mode
-    -- Check if the REPL buffer exists
-    if bufnr == -1 then
-      -- Start the REPL and enter insert mode
-      vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(yarepl-start-" .. name .. ")", true, false, true), "")
-      vim.defer_fn(function()
-        local repl_win = vim.fn.bufwinid(name)
-        if repl_win ~= -1 then
-          vim.api.nvim_set_current_win(repl_win)
-          vim.cmd("startinsert")
-        end
-      end, 100)
+    return
+  end
+
+  if is_live then
+    -- Alive: the float may be hidden (no window) or shown on another tab.
+    -- Hidden -> yarepl-focus re-opens the float window; other tab -> jump.
+    if winid ~= -1 then
+      vim.api.nvim_set_current_win(winid)
+      vim.cmd("startinsert")
     else
-      -- Focus the REPL window and enter insert mode if it's already open but not focused
       vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(yarepl-focus-" .. name .. ")", true, false, true), "")
       vim.defer_fn(function()
-        local repl_win = vim.fn.bufwinid(name)
+        local repl_win = vim.fn.bufwinid(bufnr)
         if repl_win ~= -1 then
           vim.api.nvim_set_current_win(repl_win)
           vim.cmd("startinsert")
         end
       end, 50)
     end
+    return
   end
+
+  -- Zombie: close any windows showing it (possibly on other tabs), delete
+  -- the buffer, and start a fresh REPL here.
+  if bufnr ~= -1 then
+    for _, w in ipairs(vim.fn.win_findbuf(bufnr)) do
+      pcall(vim.api.nvim_win_close, w, true)
+    end
+    pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+  end
+  vim.fn.feedkeys(vim.api.nvim_replace_termcodes("<Plug>(yarepl-start-" .. name .. ")", true, false, true), "")
+  vim.defer_fn(function()
+    local new_bufnr = vim.fn.bufnr("^#" .. name .. "#\\d\\+$")
+    local repl_win = new_bufnr ~= -1 and vim.fn.bufwinid(new_bufnr) or -1
+    if repl_win ~= -1 then
+      vim.api.nvim_set_current_win(repl_win)
+      vim.cmd("startinsert")
+    end
+  end, 100)
 end
 
 -- Default REPL for the primary toggle keymap. Change to "aider" to swap

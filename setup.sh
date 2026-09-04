@@ -209,15 +209,27 @@ if ! command -v herdr &> /dev/null; then
 fi
 
 # Install the agent integrations for the agents this workspace actually runs.
-# omp becomes a full lifecycle authority (idle/working/blocked reported by the
-# agent itself, plus native `omp --resume=<session>` restore after a server
-# restart); claude reports session identity for restore while its state stays
-# on screen detection. Re-running is also the update path -- a stale
-# integration shows "outdated" in `herdr integration status` and install
-# rewrites it -- so this is deliberately NOT gated on presence. Non-fatal:
-# an install needs the agent's config dir to exist (e.g. no ~/.claude on a
-# machine that never ran claude), and that must not abort setup.sh.
-herdr integration install omp || true
+# claude reports session identity for restore while its state stays on screen
+# detection (no lifecycle authority conflict -- see agents doc). Re-running is
+# also the update path -- a stale integration shows "outdated" in
+# `herdr integration status` and install rewrites it -- so this is
+# deliberately NOT gated on presence. Non-fatal: an install needs the agent's
+# config dir to exist (e.g. no ~/.claude on a machine that never ran claude),
+# and that must not abort setup.sh.
+#
+# omp is deliberately NOT installed here (and was uninstalled 2026-09-04 after
+# being installed by an earlier pass of this script). herdr lists omp as a
+# "lifecycle authority" agent, but omp v17.3.4's extension API never delivers
+# a single lifecycle event through a live agent turn -- verified exhaustively,
+# including a minimal bare-bones test extension -- so the integration sits
+# installed-but-silent. herdr's own docs warn against a second report-agent
+# source running "next to a Herdr-managed integration" (it competes for
+# authority instead of being additive), which is exactly what was happening:
+# the dead native integration and config/herdr/plugins/omp-watch/ (this
+# repo's session-transcript watcher, the one mechanism that actually works)
+# were both claiming the same `--agent omp` on the same pane. Installing the
+# native integration here would silently reintroduce that conflict on every
+# fresh machine. If a future omp release fixes the extension API, revisit.
 herdr integration install claude || true
 
 # herdr config: symlink the versioned settings into ~/.config/herdr. The
@@ -235,6 +247,17 @@ ln -sf ~/.dotfiles/config/herdr/config.toml ~/.config/herdr/config.toml
 mkdir -p ~/.omp/agent/skills/herdr ~/.claude/skills/herdr
 curl -fsSL "${CURL_RETRY[@]}" https://raw.githubusercontent.com/herdrdev/herdr/master/skills/herdr/SKILL.md -o ~/.omp/agent/skills/herdr/SKILL.md || true
 curl -fsSL "${CURL_RETRY[@]}" https://raw.githubusercontent.com/herdrdev/herdr/master/skills/herdr/SKILL.md -o ~/.claude/skills/herdr/SKILL.md || true
+
+# Link the omp session watcher plugin: reports omp agent state to herdr by
+# tailing omp's own session transcript, since omp's extension/hook API does
+# not deliver lifecycle events to file-discovered extensions (verified
+# empirically -- neither herdr's own omp integration nor a minimal test
+# extension ever received a single event through a live agent turn) and
+# herdr ships no screen-manifest fallback for omp either. Idempotent and
+# non-fatal: needs a running herdr server, so on a fresh machine this is a
+# harmless no-op until the next setup.sh re-run after the first `herdr`
+# launch -- same shape as the omp plugin marketplace calls above.
+herdr plugin link ~/.dotfiles/config/herdr/plugins/omp-watch || true
 
 # OS-specific symlinks
 if [[ "$OS" == "macos" ]]; then
