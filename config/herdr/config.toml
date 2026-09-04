@@ -15,3 +15,12 @@ shell_mode = "auto"
 # Theme intentionally unset: config/ghostty/config pins no ghostty theme
 # either, so herdr keeps its built-in default and follows the terminal the
 # same way ghostty does. If ghostty ever pins one, mirror it in [theme].name.
+
+[session]
+# omp instances live INSIDE nvim (yarepl ctrl-a REPL) and still report their
+# session refs to herdr. With restore enabled, herdr relaunches those panes as
+# bare `omp --resume=<id>` after a server restart, clobbering nvim (observed
+# 2026-09-02). Restore shape only; the conversation re-attaches one layer down
+# via the omp-last wrapper in the REPL. Tradeoff: a genuinely standalone
+# agent pane would no longer auto-resume either — this workspace has none.
+resume_agents_on_restore = false

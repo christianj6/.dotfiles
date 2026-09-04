@@ -250,6 +250,7 @@ ln -sf ~/.dotfiles/scripts/devcontainer/setup-claude-devcontainer.sh ~/.local/bi
 ln -sf ~/.dotfiles/scripts/devcontainer/setup-opencode-devcontainer.sh ~/.local/bin/opencode-setup
 ln -sf ~/.dotfiles/scripts/projects/new-python-project.sh ~/.local/bin/new-python-project
 ln -sf ~/.dotfiles/scripts/projects/new-cpp-project.sh ~/.local/bin/new-cpp-project
+ln -sf ~/.dotfiles/scripts/projects/omp-last ~/.local/bin/omp-last
 
 # Safely rewrite ~/.zshrc: only if the candidate actually differs from what's
 # currently there, only after a zsh syntax check, and only after taking a
@@ -557,6 +558,14 @@ add-zsh-hook chpwd _env_seam_chpwd
 # Fire once so a shell starting inside a project (e.g. a restored herdr pane)
 # gets its env immediately.
 activate_env_for_dir
+# herdr re-entry: a restored herdr pane comes back as a plain shell in its
+# saved project dir; marked projects become nvim right away so the pane is
+# editor-first again (omp re-attaches via ctrl-a / omp-last). Skipped inside
+# nvim terminals ($NVIM set) and when HERDR_NO_NVIM=1; a deliberate nested
+# shell in a project pane is `HERDR_NO_NVIM=1 zsh`.
+if [[ -n "${HERDR_ENV:-}" && -z "${NVIM:-}" && -z "${HERDR_NO_NVIM:-}" && -f "$PWD/.conda-env" ]]; then
+    exec nvim
+fi
 BLOCK
 )"
 

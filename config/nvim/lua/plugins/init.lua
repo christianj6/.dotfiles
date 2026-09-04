@@ -113,10 +113,12 @@ return {
       end
 
       -- yarepl's pi extension defaults to running the `pi` binary; this
-      -- machine's install is named `omp`.
+      -- machine's agent is named `omp`, launched via the omp-last wrapper
+      -- (scripts/projects/omp-last) so ctrl-a re-attaches the project's
+      -- most recent omp session instead of starting a fresh conversation.
       local pi_ext = require('yarepl.extensions.pi')
       local aider_ext = require('yarepl.extensions.aider')
-      pi_ext.setup({ pi_cmd = 'omp', wincmd = centered_float_wincmd(function() return pi_ext.config end) })
+      pi_ext.setup({ pi_cmd = 'omp-last', wincmd = centered_float_wincmd(function() return pi_ext.config end) })
       aider_ext.setup({ wincmd = centered_float_wincmd(function() return aider_ext.config end) })
 
       require("yarepl").setup({

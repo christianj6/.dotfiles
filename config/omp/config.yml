@@ -25,7 +25,8 @@ providers:
     - mojeek
   memoryModel: online
 modelRoles: 
-  default: openrouter/~deepseek/deepseek-v4-flash-latest:max
+  default: openrouter/anthropic/claude-opus-5:xhigh
+  advisor: openrouter/~deepseek/deepseek-v4-flash-latest
 symbolPreset: nerd
 theme: 
   dark: titanium
@@ -49,3 +50,5 @@ statusLine:
   separator: slash
 display: 
   shimmer: classic
+dev: 
+  autoqaConsent: denied

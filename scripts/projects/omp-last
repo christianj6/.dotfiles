@@ -1,0 +1,18 @@
+#!/bin/bash
+# Launch omp resuming the most recent session recorded for the current
+# directory, falling back to a fresh session. yarepl's pi-meta (nvim ctrl-a)
+# uses this as its command so the REPL re-attaches the project's last omp
+# conversation instead of starting a new one.
+#
+# omp stores sessions under ~/.omp/agent/sessions/<cwd with '/' mapped to '-'>/
+# (home prefix collapsed to a single leading dash), newest-first by mtime.
+set -euo pipefail
+
+sessions_dir="$HOME/.omp/agent/sessions"
+key="$(printf '%s' "${PWD#"$HOME"}" | tr / -)"
+latest="$(ls -1t "$sessions_dir/$key"/*.jsonl 2>/dev/null | head -1 || true)"
+
+if [[ -n "$latest" ]]; then
+    exec omp --resume="$latest" "$@"
+fi
+exec omp "$@"

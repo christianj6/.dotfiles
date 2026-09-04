@@ -22,4 +22,25 @@ M.base46 = {
 --      }
 --}
 
+M.ui = {
+	statusline = {
+		modules = {
+			-- Upstream bug (NvChad/ui v3.0, stl/default.lua:50): the `cwd` module
+			-- indexes `vim.uv.cwd()` unguarded, so any nvim whose working directory
+			-- cannot be resolved (deleted dir, removed worktree, TCC denial) crashes
+			-- the statusline on every redraw: "attempt to index local 'name'".
+			-- This override is identical except for the nil guard; drop it once
+			-- upstream fixes the module.
+			cwd = function()
+				local sep_l = require("nvchad.stl.utils").separators.default.left
+				local icon = "%#St_cwd_icon#" .. "󰉋 "
+				local name = vim.uv.cwd()
+				local text = name and (name:match "([^/\\]+)[/\\]*$" or name) or "cwd?"
+				name = "%#St_cwd_text#" .. " " .. text .. " "
+				return (vim.o.columns > 85 and ("%#St_cwd_sep#" .. sep_l .. icon .. name)) or ""
+			end,
+		},
+	},
+}
+
 return M
