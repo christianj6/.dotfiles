@@ -1,0 +1,25 @@
+id = "dotfiles.agent-discord"
+name = "Agent Discord"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Notify on agent done/blocked via Discord and relay light commands from per-agent channels back into the agents."
+platforms = ["macos", "linux"]
+
+# Event-driven notify path: herdr fires one short-lived process per agent
+# status transition (verified live 2026-09-05 on 0.8.2: the hook receives
+# HERDR_PLUGIN_EVENT_JSON = {"event": "pane_agent_status_changed",
+# "data": {"pane_id", "workspace_id", "agent_status", "agent"}} within the
+# same second as the transition, including states reported by custom
+# reporters like omp-watch). notify.py posts to the agent's channel webhook
+# and exits -- no persistent process needed for notifications.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["python3", "notify.py"]
+
+# Control path: a persistent Discord gateway bot that provisions one
+# channel per agent and relays allowlisted messages into `herdr agent
+# prompt`. herdr startup hooks are one-shot, not supervised daemons, so
+# bot.py carries the omp-watch hygiene itself: machine-wide flock, orphan
+# guard, and an internal crash-respawn loop.
+[[startup]]
+command = ["bash", "run-bot.sh"]

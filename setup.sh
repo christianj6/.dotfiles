@@ -259,6 +259,25 @@ curl -fsSL "${CURL_RETRY[@]}" https://raw.githubusercontent.com/herdrdev/herdr/m
 # launch -- same shape as the omp plugin marketplace calls above.
 herdr plugin link ~/.dotfiles/config/herdr/plugins/omp-watch || true
 
+# Discord bridge plugin (config/herdr/plugins/agent-discord/): provisions
+# the venv for the persistent bot (discord.py is the plugin's one
+# non-stdlib dependency -- the notify hook itself is stdlib-only), links
+# the plugin, and seeds the config-dir .env from the template WITHOUT ever
+# overwriting an existing one (the user's bot token lives only there).
+# All non-fatal: a venv/pip failure must not abort setup.sh; run-bot.sh
+# prints a clear error into the plugin log if the venv is missing.
+if [ ! -x "$HOME/.herdr-discord-venv/bin/python" ]; then
+    python3 -m venv "$HOME/.herdr-discord-venv" || true
+fi
+"$HOME/.herdr-discord-venv/bin/pip" install --quiet --upgrade discord.py || true
+herdr plugin link ~/.dotfiles/config/herdr/plugins/agent-discord || true
+DISCORD_CFG_DIR="$HOME/.config/herdr/plugins/config/dotfiles.agent-discord"
+mkdir -p "$DISCORD_CFG_DIR"
+if [ ! -f "$DISCORD_CFG_DIR/.env" ]; then
+    cp ~/.dotfiles/config/herdr/plugins/agent-discord/.env.example "$DISCORD_CFG_DIR/.env"
+    chmod 600 "$DISCORD_CFG_DIR/.env"
+fi
+
 # OS-specific symlinks
 if [[ "$OS" == "macos" ]]; then
     ln -sf ~/.dotfiles/config/ghostty ~/.config
