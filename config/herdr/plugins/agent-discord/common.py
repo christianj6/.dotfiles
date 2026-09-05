@@ -84,6 +84,69 @@ def herdr_raw(*args: str) -> tuple[bool, str, str]:
     return result.returncode == 0, result.stdout, result.stderr.strip()
 
 
+def find_session_file(cwd: str):
+    """Newest transcript for a cwd (mirrors omp-watch/omp-last's mapping)."""
+    home = str(Path.home())
+    key = cwd[len(home):] if cwd.startswith(home) else cwd
+    key = key.replace("/", "-")
+    d = Path.home() / ".omp/agent/sessions" / key
+    if not d.is_dir():
+        return None
+    files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
+def latest_report(cwd: str, max_chars: int = 1800) -> str:
+    """The text of the newest assistant message with actual report text --
+    i.e. what the agent last SAID (its final answer / interim status),
+    straight from the transcript, with no TUI chrome. Empty string when
+    no text-bearing assistant entry is found. The window expands
+    adaptively: heavy turns with huge tool outputs (screenshots, schema
+    dumps) can push the last report megabytes back from EOF."""
+    f = find_session_file(cwd)
+    if f is None:
+        return ""
+    try:
+        size = f.stat().st_size
+    except OSError:
+        return ""
+
+    def extract(window: int) -> str:
+        with f.open("rb") as fh:
+            if size > window:
+                fh.seek(size - window)
+                fh.readline()  # drop a possibly-truncated first line
+            data = fh.read()
+        for line in reversed(data.decode("utf-8", "ignore").splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = e.get("message") or {}
+            if e.get("type") != "message" or msg.get("role") != "assistant":
+                continue
+            text = "\n".join(
+                c.get("text", "")
+                for c in (msg.get("content") or [])
+                if isinstance(c, dict) and c.get("type") == "text"
+            ).strip()
+            if text:
+                text = re.sub(r"\n{3,}", "\n\n", text)
+                return text[:max_chars] + ("…" if len(text) > max_chars else "")
+        return ""
+
+    for window in (262_144, 1_048_576, 4_194_304, 16_777_216):
+        if window >= size:
+            return extract(size)  # whole file
+        result = extract(window)
+        if result:
+            return result
+    return extract(16_777_216)
+
+
 def herdr_json(*args: str) -> tuple[bool, dict | None, str]:
     """Run a herdr CLI call; return (ok, parsed_stdout_or_None, stderr).
 

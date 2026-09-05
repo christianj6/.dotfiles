@@ -32,10 +32,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-
 from common import (  # noqa: E402
     STATE_DIR,
     agent_label_map,
+    find_session_file,
     herdr_json,
     herdr_raw,
     load_channels,
@@ -184,16 +184,7 @@ def run() -> None:
                 return pane_id, cwd
         return None, None
 
-    def find_session_file(cwd: str):
-        """Newest transcript for a cwd (mirrors omp-watch/omp-last)."""
-        home = str(Path.home())
-        key = cwd[len(home):] if cwd.startswith(home) else cwd
-        key = key.replace("/", "-")
-        d = Path.home() / ".omp/agent/sessions" / key
-        if not d.is_dir():
-            return None
-        files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-        return files[0] if files else None
+    # find_session_file comes from common (shared with the notify hook)
 
     def transcript_contains(cwd: str, needle: str, since_byte: int) -> bool:
         """True if `needle` appeared in the transcript after `since_byte`

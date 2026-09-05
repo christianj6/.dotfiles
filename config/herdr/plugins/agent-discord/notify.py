@@ -10,8 +10,13 @@ Herdr only renders "done" for UNVIEWED panes -- a pane the user is
 watching goes straight to "idle" -- so keying the ping on the
 working->settled transition instead of the literal "done" string makes
 the ping fire regardless of where the user is looking. done->idle (user
-viewed after a ping) and idle->idle stay silent. Falls back to
+viewed after a ping) stays silent. Falls back to
 DISCORD_NOTIFY_WEBHOOK when no per-agent channel exists yet.
+
+The embed carries the agent's own last words: the newest report text
+from the session transcript (clean, no TUI chrome), so the user can
+read what happened and decide whether to nudge -- entirely from their
+phone.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import urllib.request
 from common import (
     STATE_DIR,
     agent_label_map,
+    latest_report,
     load_channels,
     load_env,
     log,
@@ -110,13 +116,18 @@ def main() -> None:
         log(f"no webhook for #{label} ({pane_id}); {status} notification dropped")
         return
 
+    description = DESCRIPTIONS.get(status, "status change")
+    report = latest_report(cwd) if cwd else ""
+    if report:
+        description += "\n\n────────\n" + report
+
     body = {
         "username": "herdr",
         "allowed_mentions": {"parse": []},
         "embeds": [
             {
                 "title": f"{'⛔' if status == 'blocked' else '✅'} {label} — {status}",
-                "description": DESCRIPTIONS.get(status, "status change"),
+                "description": description,
                 "color": COLORS.get(status, 0x3498DB),
                 "footer": {"text": f"{pane_id} · {cwd}" if cwd else pane_id},
             }
@@ -124,7 +135,7 @@ def main() -> None:
     }
     try:
         webhook_post(url, body)
-        log(f"notified #{label}: {status} ({pane_id})")
+        log(f"notified #{label}: {status} ({pane_id}, report {len(report)} chars)")
     except Exception as exc:
         log(f"webhook post failed for #{label} ({pane_id}, {status}): {exc}")
 
