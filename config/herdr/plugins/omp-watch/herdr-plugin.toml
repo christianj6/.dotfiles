@@ -1,6 +1,6 @@
 id = "dotfiles.omp-watch"
 name = "omp session watcher"
-version = "0.2.0"
+version = "0.6.0"
 min_herdr_version = "0.7.0"
 description = "Reports omp agent state to herdr by tailing omp's own session transcript, since omp's extension API does not deliver lifecycle events and herdr ships no screen-manifest fallback for omp."
 platforms = ["linux", "macos"]
@@ -16,5 +16,60 @@ platforms = ["linux", "macos"]
 # both concerns itself (respawn-on-crash via an internal loop, immediate
 # clean exit the moment its ppid changes -- i.e. it's been orphaned), so a
 # bare invocation is correct and the wrapper is gone for good.
+#
+# 0.3.0: watch.py also takes a machine-wide singleton lock (/tmp/omp-watch
+# .lock via flock) and uses a timestamp-based --seq instead of a small
+# per-process counter. Root-caused 2026-09-04: a second, independently-
+# launched copy of this exact script (plausibly from a different agent
+# session sharing this machine/repo) was concurrently reporting under the
+# same hardcoded --source, and an earlier ad-hoc manual test's --seq 999
+# left the shared source's sequence "high water mark" poisoned -- a fresh
+# process's low seq (1, 2, 3...) was silently treated as stale forever,
+# so its idle reports returned a clean "ok" yet never actually applied.
+# The lock makes concurrent instances structurally impossible regardless
+# of who launches a second one; the timestamp seq is immune to any
+# historical ad-hoc value poisoning it either way.
+#
+# 0.4.0: premature-"done" fix. A text-only assistant message (no embedded
+# toolCall) was reported as idle immediately -- but omp's loop machinery
+# routinely CONTINUES the turn after exactly such interim answers
+# (prewalk-continue, plan approvals, async subagent results): 109
+# confirmed continuations vs 861 genuine ends across all local
+# transcripts, and the interim entry is indistinguishable from a genuine
+# final (same keys, stopReason "stop" on both). The continuation lands
+# p50 12.7s / p90 42s after the interim text, so the watcher now returns
+# "maybe_idle" for that tail and holds it working until the session file
+# has been quiet for IDLE_GRACE_SECONDS (45s); any new byte refreshes
+# mtime and flips the verdict straight back to working, so the hold
+# self-corrects instead of guessing. Genuine finals report idle ~45s
+# late -- a deliberate tradeoff against false dones.
+#
+# 0.5.0: delivery-path fix. Live incident 2026-09-05 (w5:p8, heinzel-haus):
+# the watcher computed the right verdict, but herdr silently stopped
+# APPLYING this pane's reports from the shared source -- exit 0, no error,
+# registry frozen on its idle fallback while the agent demonstrably worked
+# (transcript tail = toolResult). 25+ minutes of 3s resends did not
+# recover; a single report from a never-before-used source name landed
+# instantly. The pane-layer agent_status (pane list) can even agree with
+# us while the REGISTRY (agent list -- what the sidebar renders) is wedged,
+# so the old cross-check was blind to exactly this failure. watch.py now
+# cross-checks `herdr agent list` every tick and, after 4 consecutive
+# non-converging sends, rotates the pane onto a fresh source name (bounded:
+# max 3 rotations, then a 120s cooldown). Same-state registry entries are
+# deduped by herdr (no seq bump), so only genuine mismatches trigger sends.
+#
+# 0.6.0: tail-window collapse fix (2026-09-05, w5:p7 heinzel-exploration).
+# The old reader took a fixed 32KB byte window from EOF; when the newest
+# entry was LARGER than the window (heinzel agents routinely write 40-60KB
+# toolResult/assistant entries from big file reads), seek() landed mid-
+# line, readline() discarded everything to EOF, and the verdict collapsed
+# to "no recognizable entries -> default idle" -- a false done during
+# active work. Measured on this one session file: 166 collapse landings,
+# 27.3 min total, worst 6.1 min continuous (18:14-18:20, the live
+# incident). watch.py now scans backwards from EOF over newline-
+# terminated lines (watch.latest_verdict): no per-entry size assumption,
+# partial final lines skipped, unparseable lines skipped, stops at the
+# first recognizable entry. Same verdict semantics, robust to any entry
+# size.
 [[startup]]
 command = ["python3", "watch.py"]
