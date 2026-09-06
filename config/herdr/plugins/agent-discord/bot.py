@@ -203,22 +203,36 @@ def run() -> None:
         except OSError:
             return False
 
+    async def repl_visible(pane_id: str) -> bool:
+        ok, out, _ = herdr_raw(
+            "agent", "read", pane_id, "--source", "visible", "--lines", "10"
+        )
+        return bool(re.search(r"Prewalk|Opus|GLM|π", (out or "")[-1200:]))
+
     async def relay_via_pane(pane_id: str, cwd: str, text: str) -> str:
         """Raw-deliver a message into a nested agent's REPL via pane
         send-text. Guarded: the pane's visible tail must show omp's input
         box (the model/Prewalk header row) -- otherwise the text would be
         typed into whatever nvim window has focus (the user's editor).
-        Paste and Enter are sent as SEPARATE writes with a gap: the
-        trailing \\r of a combined burst is swallowed (verified live
-        2026-09-05 -- text landed in the input box, submit never fired).
+        When the guard fails, the relay TOGGLES the REPL open itself
+        (ctrl-a = the user's yarepl toggle): closed -> one toggle opens
+        and focuses it; open-but-unfocused/covered -> the first toggle
+        hides it and the second reopens it (verified live 2026-09-05).
+        Bounded at two toggles, then refuse. Paste and Enter are sent as
+        SEPARATE writes with a gap: the trailing \\r of a combined burst
+        is swallowed (verified live 2026-09-05 -- text landed in the
+        input box, submit never fired).
         Returns "ok", "guard", or "unconfirmed"."""
-        ok, out, _ = herdr_raw(
-            "agent", "read", pane_id, "--source", "visible", "--lines", "10"
-        )
-        tail = (out or "")[-1200:]
-        if not re.search(r"Prewalk|Opus|GLM|π", tail):
-            log(f"relay_via_pane({pane_id}): REPL visibility guard failed")
-            return "guard"
+        if not await repl_visible(pane_id):
+            log(f"relay_via_pane({pane_id}): REPL not visible -- toggling open")
+            herdr_raw("pane", "send-keys", pane_id, "ctrl+a")
+            await asyncio.sleep(0.8)
+            if not await repl_visible(pane_id):
+                herdr_raw("pane", "send-keys", pane_id, "ctrl+a")
+                await asyncio.sleep(0.8)
+                if not await repl_visible(pane_id):
+                    log(f"relay_via_pane({pane_id}): visibility guard failed after 2 toggles")
+                    return "guard"
         sfile = find_session_file(cwd)
         since_byte = sfile.stat().st_size if sfile else 0
         needle = re.sub(r"\s+", " ", text.strip())[:24]
@@ -337,9 +351,9 @@ def run() -> None:
                 await message.add_reaction("✅")
             elif outcome == "guard":
                 await message.reply(
-                    "⚠️ the omp REPL window doesn't look focused/open in that pane — "
-                    "refusing to type blind (the text could land in your editor). "
-                    "Open the REPL (ctrl-a) and resend."
+                    "⚠️ couldn't bring the agent's REPL into view even after toggling "
+                    "(ctrl-a twice) — is nvim actually running in that pane? "
+                    "Refusing to type blind."
                 )
             else:
                 await message.add_reaction("👀")
