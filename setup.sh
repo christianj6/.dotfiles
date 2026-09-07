@@ -264,6 +264,34 @@ mkdir -p ~/.local/bin
 cp ~/.dotfiles/config/herdr/skills/herdr-workstreams/peer.py ~/.local/bin/omp-peer || true
 chmod +x ~/.local/bin/omp-peer 2>/dev/null || true
 
+# terminal-browser (https://terminal-browser.com): a real browser that
+# renders inside the terminal via kitty graphics (ghostty/herdr already
+# carry it; `terminal-browser setup` only touches VS Code-family editors).
+# Install + agent onboarding: the binary is required (same bar as herdr),
+# then `setup` enables terminal images where they apply and links the
+# agent skill into ~/.claude/skills and the shared ~/.agents/skills home.
+# omp is NOT in the tool's manifest, so the skill is linked into
+# ~/.omp/agent/skills here (pi layout, same shape as the herdr skill
+# above) -- a symlink to the app's canonical copy, so `terminal-browser
+# upgrade` keeps all agent copies current without re-running setup.
+if ! command -v terminal-browser &> /dev/null; then
+    curl -fsSL "${CURL_RETRY[@]}" https://terminal-browser.sh/install | bash
+fi
+terminal-browser setup || true
+mkdir -p ~/.omp/agent/skills/terminal-browser
+ln -sfn ~/.local/share/terminal-browser/app/skills/default/terminal-browser ~/.omp/agent/skills/terminal-browser 2>/dev/null \
+    || cp ~/.local/share/terminal-browser/app/skills/default/terminal-browser/SKILL.md ~/.omp/agent/skills/terminal-browser/SKILL.md || true
+
+# Local-quirks companion skill (versioned in this repo, copied not linked):
+# the v0.8.0 wrapper's `terminal-browser action --` cannot reach the CDP
+# port on this machine (IPv6/localhost resolution vs IPv4-only listener),
+# so agents drive the browser via the bundled agent-browser CLI over
+# http://127.0.0.1:<cdpPort> -- full recipe in the skill. Retire it when an
+# upgrade fixes the wrapper.
+mkdir -p ~/.omp/agent/skills/terminal-browser-quirks ~/.claude/skills/terminal-browser-quirks
+cp ~/.dotfiles/config/herdr/skills/terminal-browser-quirks/SKILL.md ~/.omp/agent/skills/terminal-browser-quirks/SKILL.md || true
+cp ~/.dotfiles/config/herdr/skills/terminal-browser-quirks/SKILL.md ~/.claude/skills/terminal-browser-quirks/SKILL.md || true
+
 # Link the omp session watcher plugin: reports omp agent state to herdr by
 # tailing omp's own session transcript, since omp's extension/hook API does
 # not deliver lifecycle events to file-discovered extensions (verified
