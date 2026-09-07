@@ -40,3 +40,6 @@ rows = [
     ["state_icon", "workspace", "tab"],
     ["state_text", "agent"],
 ]
+
+[experimental]
+kitty_graphics = true
