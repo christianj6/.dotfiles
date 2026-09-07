@@ -5,9 +5,11 @@ Short-lived, stdlib-only: herdr spawns one instance per agent status
 transition and this script posts to the agent's channel webhook and exits.
 
 Ping semantics: a message fires when a pane's PREVIOUS status was
-"working" and it has now settled (idle/done) or needs approval (blocked).
-Herdr only renders "done" for UNVIEWED panes -- a pane the user is
-watching goes straight to "idle" -- so keying the ping on the
+"working" and it has now settled (idle/done); blocked fires from ANY
+previous state -- a failed turn needs attention even when it never
+showed a working phase (fast provider 404s complete inside one watcher
+poll, verified live 2026-09-06). Herdr only renders "done" for UNVIEWED
+panes -- a pane the user is watching goes straight to "idle" -- so keying the ping on the
 working->settled transition instead of the literal "done" string makes
 the ping fire regardless of where the user is looking. done->idle (user
 viewed after a ping) stays silent. Falls back to
@@ -29,6 +31,7 @@ import urllib.request
 from common import (
     STATE_DIR,
     agent_label_map,
+    latest_error,
     latest_report,
     load_channels,
     load_env,
@@ -39,7 +42,7 @@ COLORS = {"done": 0x2ECC71, "blocked": 0xE67E22, "idle": 0x2ECC71}
 DESCRIPTIONS = {
     "done": "turn finished — awaiting input",
     "idle": "turn finished — awaiting input",
-    "blocked": "needs your approval",
+    "blocked": "blocked — needs your attention",
 }
 
 
@@ -73,9 +76,15 @@ def save_prev_status(prev: dict) -> None:
     tmp.write_text(json.dumps(prev))
     tmp.replace(STATE_DIR / "last_status.json")
 
-
 def should_notify(prev: dict, pane_id: str, new_status: str) -> bool:
-    return prev.get(pane_id) == "working" and new_status in ("done", "idle", "blocked")
+    # ANY transition into blocked needs attention -- including idle->blocked:
+    # verified live 2026-09-06 that a fast provider 404 completes the whole
+    # failed turn inside one watcher poll, so the sidebar jumps idle->
+    # blocked with no working phase in between (the old working-only gate
+    # silently dropped exactly the events this hook exists for).
+    if new_status == "blocked":
+        return True
+    return prev.get(pane_id) == "working" and new_status in ("done", "idle")
 
 
 def main() -> None:
@@ -117,7 +126,13 @@ def main() -> None:
         return
 
     description = DESCRIPTIONS.get(status, "status change")
-    report = latest_report(cwd) if cwd else ""
+    # blocked carries the transcript's newest model/provider failure text
+    # when there is one (turn-level errors, e.g. unsupported-model 404s --
+    # the agent's last REPORT is stale at that point); approval-style
+    # blocks and every other status keep the agent's own last words.
+    report = (latest_error(cwd) if (cwd and status == "blocked") else "") or (
+        latest_report(cwd) if cwd else ""
+    )
     if report:
         description += "\n\n────────\n" + report
 

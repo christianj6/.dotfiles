@@ -192,6 +192,7 @@ ln -sf ~/.dotfiles/config/nvim ~/.config
 # only safe way to (re)materialize them on any machine.
 mkdir -p ~/.omp/agent ~/.omp/plugins
 ln -sf ~/.dotfiles/config/omp/config.yml ~/.omp/agent/config.yml
+ln -sf ~/.dotfiles/config/omp/models.yml ~/.omp/agent/models.yml
 ln -sf ~/.dotfiles/config/omp/plugins/omp-plugins.lock.json ~/.omp/plugins/omp-plugins.lock.json
 
 # Reproduce the configured marketplace and plugin. Non-fatal: a fresh
@@ -247,6 +248,21 @@ ln -sf ~/.dotfiles/config/herdr/config.toml ~/.config/herdr/config.toml
 mkdir -p ~/.omp/agent/skills/herdr ~/.claude/skills/herdr
 curl -fsSL "${CURL_RETRY[@]}" https://raw.githubusercontent.com/herdrdev/herdr/master/skills/herdr/SKILL.md -o ~/.omp/agent/skills/herdr/SKILL.md || true
 curl -fsSL "${CURL_RETRY[@]}" https://raw.githubusercontent.com/herdrdev/herdr/master/skills/herdr/SKILL.md -o ~/.claude/skills/herdr/SKILL.md || true
+
+# Companion skill: workstream + peer-comms recipes -- create/list/clean up
+# workspaces ("spaces"), panes, and git worktrees. Unlike the upstream fetch
+# above (re-fetched from GitHub on every run), this one is versioned in the
+# repo and copied, so local edits survive and offline runs still get it.
+# Non-fatal: a missing repo file must not abort setup.sh.
+mkdir -p ~/.omp/agent/skills/herdr-workstreams ~/.claude/skills/herdr-workstreams
+cp ~/.dotfiles/config/herdr/skills/herdr-workstreams/SKILL.md ~/.omp/agent/skills/herdr-workstreams/SKILL.md || true
+cp ~/.dotfiles/config/herdr/skills/herdr-workstreams/SKILL.md ~/.claude/skills/herdr-workstreams/SKILL.md || true
+
+# The peer-comms helper goes on PATH (not in the skill dirs) so every agent
+# can call it regardless of which agent's skill dir it was taught from.
+mkdir -p ~/.local/bin
+cp ~/.dotfiles/config/herdr/skills/herdr-workstreams/peer.py ~/.local/bin/omp-peer || true
+chmod +x ~/.local/bin/omp-peer 2>/dev/null || true
 
 # Link the omp session watcher plugin: reports omp agent state to herdr by
 # tailing omp's own session transcript, since omp's extension/hook API does

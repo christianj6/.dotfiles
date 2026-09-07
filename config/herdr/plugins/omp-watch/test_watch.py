@@ -5,7 +5,9 @@ Plain asserts, no framework: `python3 test_watch.py` runs everything and
 prints one line per group. These pin the OBSERVABLE contract that matters
 to the herdr sidebar: which transcript tails mean "working", which mean
 "idle", and which are ambiguous ("maybe_idle" -- gated on file quiescence
-by main(), see watch.py IDLE_GRACE_SECONDS).
+by main(), see watch.py IDLE_GRACE_SECONDS) -- and which mean the turn
+FAILED outright ("blocked": stopReason "error", the model/provider
+failure path added 2026-09-06; "aborted" is deliberately NOT blocked).
 
 The text-only-assistant history here is the point: 2026-09-04 concluded
 "text without toolCall = finished turn"; 2026-09-05 proved that wrong
@@ -147,6 +149,58 @@ def test_text_only_assistant_is_maybe_idle():
         assert last(entries) == "maybe_idle", (blocks, last(entries))
 
 
+def test_error_turns_are_blocked():
+    # 2026-09-06: model/provider failures land as assistant entries with
+    # stopReason "error" + content [] (verified against real OpenRouter
+    # guardrail 404 transcripts, which also carry errorStatus/errorId/
+    # errorMessage). The turn is dead and the agent needs input: herdr
+    # "blocked", which notify.py turns into a Discord ping. Previously
+    # these fell into the empty-content -> "working" branch and pinned
+    # failed agents at working forever.
+    error_entry = {"type": "message", "message": {
+        "role": "assistant", "content": [], "stopReason": "error",
+        "errorStatus": 404, "errorMessage": "404 provider not allowed"}}
+    assert last([msg("user", [block("text")]), error_entry]) == "blocked"
+    # partial streamed content + error is still an error
+    error_entry["message"]["content"] = [block("text")]
+    assert last([msg("user", [block("text")]), error_entry]) == "blocked"
+
+
+def test_abort_is_not_blocked():
+    # "Interrupted by user" (stopReason "aborted") ends the turn without
+    # failing it: the agent waits for input like after any finished turn.
+    entries = [
+        msg("user", [block("text")]),
+        {"type": "message", "message": {
+            "role": "assistant", "content": [], "stopReason": "aborted",
+            "errorMessage": "Interrupted by user"}},
+    ]
+    assert last(entries) == "maybe_idle"
+
+
+def test_blocked_recovers_on_next_entry():
+    # a new user message re-opens the turn; a successful retry resolves it
+    error_entry = {"type": "message", "message": {
+        "role": "assistant", "content": [], "stopReason": "error"}}
+    assert last([error_entry, msg("user", [block("text")])]) == "working"
+    assert last([error_entry, msg("assistant", [block("text")])]) == "maybe_idle"
+    # a repeated error (omp's retry pair) stays blocked
+    assert last([error_entry, dict(error_entry)]) == "blocked"
+
+
+def test_latest_verdict_error_tail():
+    p = _tmp_jsonl([
+        _msg_entry("user", [block("text")]), b"\n",
+        json.dumps({"type": "message", "message": {
+            "role": "assistant", "content": [], "stopReason": "error",
+            "errorStatus": 404}}).encode(), b"\n",
+    ])
+    try:
+        assert watch.latest_verdict(p) == "blocked"
+    finally:
+        p.unlink()
+
+
 def test_exit_and_empty():
     assert last([custom("session_exit")]) == "exit"
     # nothing recognizable -> None (main() then falls back to presence-idle)
@@ -184,6 +238,11 @@ def test_registry_matches_is_the_sidebar_truth():
     assert watch.registry_matches("idle", "idle")
     assert watch.registry_matches("idle", "done")
     assert not watch.registry_matches("idle", "working")
+    # blocked pairs only with itself: a failed turn must not be rendered
+    # as (or collapse into) idle/done anywhere in the pipeline.
+    assert watch.registry_matches("blocked", "blocked")
+    assert not watch.registry_matches("blocked", "idle")
+    assert not watch.registry_matches("blocked", "working")
     # None/unknown is deliberately a MISMATCH even for idle: a pane absent
     # from the registry (fresh pane, or herdr server restart wiping it)
     # must be (re-)reported at least once or it never shows in the sidebar.

@@ -85,15 +85,25 @@ def herdr_raw(*args: str) -> tuple[bool, str, str]:
 
 
 def find_session_file(cwd: str):
-    """Newest transcript for a cwd (mirrors omp-watch/omp-last's mapping)."""
+    """Newest transcript for a cwd. omp's dir naming, fully mapped against
+    all six live dirs 2026-09-06: HOME-relative cwds keep their leading
+    slash (/.dotfiles -> -.dotfiles); absolute cwds outside HOME are
+    dash-wrapped on BOTH ends (/private/tmp/x -> --private-tmp-x--), so
+    the plain key alone never matched them (found live when a /tmp-cwd
+    test agent's blocked embed came out empty)."""
     home = str(Path.home())
     key = cwd[len(home):] if cwd.startswith(home) else cwd
     key = key.replace("/", "-")
-    d = Path.home() / ".omp/agent/sessions" / key
-    if not d.is_dir():
-        return None
-    files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[0] if files else None
+    base = Path.home() / ".omp/agent/sessions"
+    candidates = [key] if cwd.startswith(home) else [
+        "--" + cwd.strip("/").replace("/", "-") + "--", key]
+    for k in candidates:
+        d = base / k
+        if d.is_dir():
+            files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if files:
+                return files[0]
+    return None
 
 
 def latest_report(cwd: str, max_chars: int = 1800) -> str:
@@ -145,6 +155,42 @@ def latest_report(cwd: str, max_chars: int = 1800) -> str:
         if result:
             return result
     return extract(16_777_216)
+
+
+def latest_error(cwd: str, max_chars: int = 600) -> str:
+    """Newest assistant errorMessage from the session transcript -- the
+    model/provider failure text (e.g. OpenRouter's guardrail 404). Empty
+    string when the transcript has none (e.g. a herdr-native approval
+    block), so callers can fall back to latest_report(). Bounded tail read:
+    when an agent is blocked the failing entry is the newest thing in the
+    file; 1MB covers it without the adaptive window latest_report needs."""
+    f = find_session_file(cwd)
+    if f is None:
+        return ""
+    try:
+        with f.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - 1_048_576))
+            data = fh.read().decode("utf-8", "ignore")
+    except OSError:
+        return ""
+    lines = data.splitlines()
+    if data and not data.endswith("\n"):
+        lines = lines[:-1]  # torn final line: writer mid-flush, skip
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        msg = e.get("message") or {}
+        if e.get("type") == "message" and msg.get("role") == "assistant" and msg.get("errorMessage"):
+            text = str(msg["errorMessage"]).strip()
+            return text[:max_chars] + ("…" if len(text) > max_chars else "")
+    return ""
 
 
 def herdr_json(*args: str) -> tuple[bool, dict | None, str]:

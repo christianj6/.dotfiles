@@ -143,16 +143,30 @@ def newest_session_file(cwd: str) -> Optional[Path]:
     key = session_key(cwd)
     if not key:
         return None
-    d = SESSIONS_DIR / key
-    if not d.is_dir():
-        return None
-    files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[0] if files else None
+    # omp's dir naming, fully mapped against all six live dirs 2026-09-06:
+    # HOME-relative cwds keep their leading slash (/.dotfiles -> -.dotfiles)
+    # -- that IS session_key -- while absolute cwds outside HOME are
+    # dash-wrapped on BOTH ends (/private/tmp/x -> --private-tmp-x--), so
+    # the plain key never matched them and transcript verdicts (working /
+    # blocked / maybe_idle) silently never applied to non-HOME agents.
+    # Found live when a /tmp-cwd test agent's 404 error tail stayed
+    # invisible to the blocked-state pipeline.
+    if cwd.startswith(str(HOME)):
+        candidates = [key]
+    else:
+        candidates = ["--" + cwd.strip("/").replace("/", "-") + "--", key]
+    for k in candidates:
+        d = SESSIONS_DIR / k
+        if d.is_dir():
+            files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if files:
+                return files[0]
+    return None
 
 
 def classify_entry(e: dict) -> Optional[str]:
     """Recognize a single transcript entry and return its verdict
-    contribution: "working", "maybe_idle", "exit", or None for entries
+    contribution: "working", "maybe_idle", "blocked", "exit", or None for entries
     that carry no signal (unrecognized entries are conservative: they
     never change a running verdict)."""
     etype = e.get("type")
@@ -194,6 +208,22 @@ def classify_entry(e: dict) -> Optional[str]:
         # "maybe_idle" so main() can hold it working until the file
         # goes quiet (IDLE_GRACE_SECONDS). Thinking-only/empty
         # content still means reasoning, not yet answered.
+        # stopReason is the turn's exit status and outranks content shape:
+        # "error" is a DEAD turn -- model/provider failure (verified live
+        # 2026-09-06: OpenRouter guardrail 404s land as assistant entries
+        # with content [] + stopReason "error" + errorStatus/errorMessage).
+        # Reported as herdr "blocked": the sidebar flags it and notify.py
+        # pings Discord on the working->blocked transition. Without this
+        # the empty-content fallthrough below pinned failed agents at
+        # "working" forever -- the file never gets another byte.
+        # "aborted" ("Interrupted by user") is NOT a failure: the turn
+        # ended without failing, the agent waits for input -- same shape
+        # as a completed text turn.
+        stop = msg.get("stopReason")
+        if stop == "error":
+            return "blocked"
+        if stop == "aborted":
+            return "maybe_idle"
         content = msg.get("content") or []
         has_tool_call = any(isinstance(c, dict) and c.get("type") == "toolCall" for c in content)
         has_text = any(isinstance(c, dict) and c.get("type") == "text" for c in content)
@@ -525,7 +555,14 @@ def main() -> None:
                 quiet = None
                 if sfile is not None:
                     tail_verdict = latest_verdict(sfile)
-                    if tail_verdict == "working":
+                    if tail_verdict == "blocked":
+                        # Turn-level failure (model/provider error): hold
+                        # blocked until the transcript's next entry -- a new
+                        # user message flips to working, a successful retry
+                        # resolves to its own verdict. No quiescence gate:
+                        # an error entry is terminal for its turn.
+                        verdict = "blocked"
+                    elif tail_verdict == "working":
                         verdict = "working"
                     elif tail_verdict == "maybe_idle":
                         quiet = time.time() - sfile.stat().st_mtime

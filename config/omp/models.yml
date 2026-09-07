@@ -1,0 +1,16 @@
+# omp models.yml — provider overrides (oh-my-pi).
+#
+# opencode-go (OpenCode Go / "Console Go"): the gateway requires a stable
+# per-conversation session id in the `x-opencode-session` header for
+# routing + prompt caching (400 MissingSessionID otherwise, observed live
+# 2026-09-06 on omp 17.3.4). omp's OpenAI-family transport already derives
+# a stable per-session id (`pc_<hash(sessionId)>`; gated on
+# cacheRetention != "none", the default) and sends it under whatever header
+# name `compat.promptCacheSessionHeader` names — newer omp bundles map
+# this provider natively (opencode.ai/docs/go: "Pi: current builds send
+# session information"). Keep PI_CACHE_RETENTION from being set to "none"
+# or the id — and this header — disappear.
+providers:
+  opencode-go:
+    compat:
+      promptCacheSessionHeader: x-opencode-session

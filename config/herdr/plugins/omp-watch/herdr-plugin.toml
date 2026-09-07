@@ -1,6 +1,6 @@
 id = "dotfiles.omp-watch"
 name = "omp session watcher"
-version = "0.6.0"
+version = "0.7.0"
 min_herdr_version = "0.7.0"
 description = "Reports omp agent state to herdr by tailing omp's own session transcript, since omp's extension API does not deliver lifecycle events and herdr ships no screen-manifest fallback for omp."
 platforms = ["linux", "macos"]
@@ -71,5 +71,16 @@ platforms = ["linux", "macos"]
 # partial final lines skipped, unparseable lines skipped, stops at the
 # first recognizable entry. Same verdict semantics, robust to any entry
 # size.
+#
+# 0.7.0: turn-level failures surface as herdr "blocked" (2026-09-06). omp
+# writes model/provider failures as assistant entries with stopReason
+# "error" (+ errorStatus/errorMessage, content usually []); the old
+# empty-content fallthrough classified those as "working", pinning failed
+# agents at working forever -- observed live during the OpenRouter
+# guardrail 404 window. "blocked" lights up the sidebar AND fires the
+# agent-discord working->blocked ping (whose embed now carries the
+# transcript's errorMessage via common.latest_error). stopReason "aborted"
+# ("Interrupted by user") is deliberately NOT blocked: the turn ended
+# without failing -- maybe_idle, like any finished turn.
 [[startup]]
 command = ["python3", "watch.py"]
