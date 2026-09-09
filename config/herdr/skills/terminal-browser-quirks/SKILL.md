@@ -1,6 +1,6 @@
 ---
 name: terminal-browser-quirks
-description: Companion to the terminal-browser skill — read BOTH. Carries the standard usage workflow on this machine (open --split right → ls → agent-browser connect → snapshot/act → done), the working CDP path when `terminal-browser action --` fails ("could not connect agent-browser"), and the split-pane + click recipe. Read this whenever you touch terminal-browser.
+description: Companion to the terminal-browser skill — read BOTH. Carries the standard usage workflow on this machine (open --split right → ls → agent-browser connect → snapshot/act → done → close the pane), the working CDP path when `terminal-browser action --` fails ("could not connect agent-browser"), and the split-pane + click recipe. Read this whenever you touch terminal-browser.
 ---
 
 # terminal-browser quirks (this machine)
@@ -27,7 +27,8 @@ copies from it on every run).
 2. **List browsers and tabs** (also grab the CDP port):
 
        terminal-browser ls            # human list: browser key, tabs, tab ids
-       terminal-browser ls --json     # .browsers[].key and .browsers[].cdpPort
+       terminal-browser ls --json     # .browsers[].key, .browsers[].cdpPort,
+                                      # .browsers[].pane (hosting herdr pane)
 
 3. **Connect the bundled driver CLI over IPv4** — NOT
    `terminal-browser action --` (see below for why):
@@ -47,6 +48,23 @@ copies from it on every run).
 
    `done` at the end is etiquette — the human sees a live "agent is acting"
    indicator until it expires or is cleared.
+
+5. **Close out BOTH the browser and its herdr pane.** Closing the browser
+   (`$AB close`) does NOT close the pane it was split into under herdr —
+   the pane is left behind as an orphaned empty shell with its cwd reset
+   to `$HOME` (verified live 2026-09-07: browser closed, pane `w6:pG`
+   remained with cwd=$HOME, agent=unknown). The hosting pane id comes
+   straight from `ls --json` — no manual pane hunt needed:
+
+       terminal-browser ls --json     # .browsers[].pane = {"tab": "w6:t3", "pane": "w6:pG"}
+       herdr pane close w6:pG         # browser first or pane first — both orders work
+
+   Do this whenever the session with the browser is over — otherwise every
+   terminal-browser session leaves a stray pane in the human's tab. (If the
+   browser already exited, `ls --json` can no longer tell you the pane:
+   fall back to `herdr pane list --workspace <ws>` and look for the
+   cwd-reverted-to-$HOME no-agent pane in the same tab — that signature is
+   unambiguous.)
 
 ## Why step 3 is not `terminal-browser action --`
 
