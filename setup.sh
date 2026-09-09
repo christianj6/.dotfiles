@@ -267,30 +267,44 @@ chmod +x ~/.local/bin/omp-peer 2>/dev/null || true
 # terminal-browser (https://terminal-browser.com): a real browser that
 # renders inside the terminal via kitty graphics (ghostty/herdr already
 # carry it; `terminal-browser setup` only touches VS Code-family editors).
-# Install + agent onboarding: the binary is required (same bar as herdr),
-# then `setup` enables terminal images where they apply and links the
-# agent skill into ~/.claude/skills and the shared ~/.agents/skills home.
-# omp is NOT in the tool's manifest, so the skill is linked into
-# ~/.omp/agent/skills here (pi layout, same shape as the herdr skill
-# above) -- a symlink to the app's canonical copy, so `terminal-browser
-# upgrade` keeps all agent copies current without re-running setup.
+# Install is required (same bar as herdr); `setup` is non-fatal.
 if ! command -v terminal-browser &> /dev/null; then
     curl -fsSL "${CURL_RETRY[@]}" https://terminal-browser.sh/install | bash
 fi
 terminal-browser setup || true
-mkdir -p ~/.omp/agent/skills/terminal-browser
-ln -sfn ~/.local/share/terminal-browser/app/skills/default/terminal-browser ~/.omp/agent/skills/terminal-browser 2>/dev/null \
-    || cp ~/.local/share/terminal-browser/app/skills/default/terminal-browser/SKILL.md ~/.omp/agent/skills/terminal-browser/SKILL.md || true
 
-# Local-quirks companion skill (versioned in this repo, copied not linked):
-# the v0.8.0 wrapper's `terminal-browser action --` cannot reach the CDP
-# port on this machine (IPv6/localhost resolution vs IPv4-only listener),
-# so agents drive the browser via the bundled agent-browser CLI over
-# http://127.0.0.1:<cdpPort> -- full recipe in the skill. Retire it when an
-# upgrade fixes the wrapper.
-mkdir -p ~/.omp/agent/skills/terminal-browser-quirks ~/.claude/skills/terminal-browser-quirks
-cp ~/.dotfiles/config/herdr/skills/terminal-browser-quirks/SKILL.md ~/.omp/agent/skills/terminal-browser-quirks/SKILL.md || true
-cp ~/.dotfiles/config/herdr/skills/terminal-browser-quirks/SKILL.md ~/.claude/skills/terminal-browser-quirks/SKILL.md || true
+# Agent skill copies + machine banner. The tool's own skill manifest lists
+# only claude/codex/cursor/gemini -- omp is absent -- so both agents get
+# the skill from here. Per agent dir, two files:
+# (1) terminal-browser/SKILL.md = canonical command reference + banner.
+#     Rebuilt on every run as canonical + banner.md, so upgrades refresh
+#     the reference and the banner always rides along. A COPY, not the
+#     symlink the tool would place itself: the banner must survive
+#     `terminal-browser setup`/upgrade, and its linkSkills() deliberately
+#     leaves non-symlink copies alone (verified in its source).
+# (2) terminal-browser-quirks/ = versioned companion skill: standard usage
+#     flow + the working CDP path (the v0.8.0 wrapper's
+#     `terminal-browser action --` cannot reach the CDP port on this
+#     machine -- IPv6/localhost resolution vs IPv4-only listener; agents
+#     drive via the bundled agent-browser CLI over http://127.0.0.1:<port>).
+#     Retire it when an upgrade fixes the wrapper.
+_TB_CANONICAL=~/.local/share/terminal-browser/app/skills/default/terminal-browser/SKILL.md
+for d in ~/.omp/agent/skills ~/.claude/skills; do
+    # Replace any pre-existing symlink entry (e.g. one the tool itself
+    # placed) with a real dir BEFORE writing: cat-ing through a symlink
+    # to the canonical dir would clobber the upstream file (observed
+    # 2026-09-07; recovered from the release tarball -- see the block
+    # comment). `rm -f` on the link, THEN mkdir (the mkdir must come
+    # after removal, or the removed link leaves no parent dir behind).
+    [ -L "$d/terminal-browser" ] && rm -f "$d/terminal-browser"
+    [ -L "$d/terminal-browser/SKILL.md" ] && rm -f "$d/terminal-browser/SKILL.md"
+    mkdir -p "$d/terminal-browser" "$d/terminal-browser-quirks"
+    cat "$_TB_CANONICAL" ~/.dotfiles/config/herdr/skills/terminal-browser/banner.md \
+        > "$d/terminal-browser/SKILL.md" 2>/dev/null \
+        || echo "warning: terminal-browser canonical skill not found at $_TB_CANONICAL" >&2
+    cp ~/.dotfiles/config/herdr/skills/terminal-browser-quirks/SKILL.md \
+        "$d/terminal-browser-quirks/SKILL.md" || true
+done
 
 # Link the omp session watcher plugin: reports omp agent state to herdr by
 # tailing omp's own session transcript, since omp's extension/hook API does
