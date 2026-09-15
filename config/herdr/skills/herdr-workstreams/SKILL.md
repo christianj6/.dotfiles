@@ -1,6 +1,6 @@
 ---
 name: herdr-workstreams
-description: Start, find, and clean up herdr workstreams — new workspaces ("spaces"), tabs, panes, and git worktrees — and message other agents (send instructions, get replies) — when the user asks to spin up a workstream/space/worktree/tab/pane, or to tell/instruct/have another agent do something. Companion to the herdr skill. Requires HERDR_ENV=1.
+description: Start, find, and clean up herdr workstreams — new workspaces ("spaces"), tabs, panes, and git worktrees — spin up claude/omp subagent panes that auto-register in herdr, and message other agents (send instructions, get replies) — when the user asks to spin up a workstream/space/worktree/tab/pane, or to tell/instruct/have another agent do something. Companion to the herdr skill. Requires HERDR_ENV=1.
 ---
 
 # Herdr workstreams
@@ -47,14 +47,76 @@ Result: `result.pane.pane_id`. Use `--direction down` for tall/narrow panes.
 ## After creation
 
 - Report the workspace and pane IDs back to the user.
-- The root pane is a plain shell. Start an agent in it only if the user asked
-  for one (kind list: `herdr agent`):
-      herdr agent start <name> --kind claude --pane <pane_id>
-  Note: a standalone `omp` pane does not auto-resume after a herdr server
-  restart in this setup (`resume_agents_on_restore = false`); the user's omp
-  normally runs inside nvim (ctrl-a REPL).
+- The root pane is a plain shell. To put an agent in it, use the subagent
+  recipe below (NOT `herdr agent start` on a project-dir pane -- that
+  fails, see why there). A standalone `omp` pane does not auto-resume
+  after a herdr server restart in this setup
+  (`resume_agents_on_restore = false`); the user's main omp normally runs
+  inside nvim (ctrl-a REPL).
 - To jump the user's view there anyway: `herdr workspace focus <id>` — only on
   explicit request.
+
+## Subagents: you are main, claude/omp panes are the workers
+
+In this workspace the omp session you are running IS the project's main
+agent: it owns the conversation, the repo context, and the herdr driving.
+Other agents are spun up on demand as SIBLING PANES -- never inside your
+own pane -- and they register themselves in herdr's sidebar when started
+this way. Verified live 2026-09-15 for claude (`w6:pM | claude | idle`)
+and the same shape works for a second omp.
+
+1. **Split a sibling pane WITHOUT `--cwd`:**
+
+       herdr pane split --current --direction right --no-focus
+
+   Omitting `--cwd` is load-bearing: `[terminal] new_cwd = "home"` gives a
+   clean zsh in `$HOME`. A pane created directly in a project dir
+   auto-starts nvim from the shell config, so its foreground process is
+   nvim and every agent-start path rejects it with `agent_pane_busy`.
+
+2. **Push the agent in as a command** -- this is what makes it the pane's
+   FOREGROUND process, which is the only thing herdr's screen detection
+   reads:
+
+       herdr pane run <pane_id> "cd /path/to/project && claude"
+       herdr pane run <pane_id> "cd /path/to/project && omp"
+
+3. **Verify** (allow a few seconds; a first run in an untrusted directory
+   sits on claude's trust prompt, which herdr reports as `blocked`):
+
+       herdr agent list        # pane_id | agent | agent_status
+
+4. **Name it, then talk to it** with the peer-comms recipes below:
+
+       herdr agent rename <pane_id> <name>
+       omp-peer send <name> "<instruction>" --wait-reply
+
+5. **Close the pane you created when the work is done** (`herdr pane close
+   <pane_id>`) -- that ends the agent with it.
+
+`herdr agent start <name> --kind <kind> --pane <id>` is the "official"
+path but only accepts a pane already sitting at an interactive prompt and
+never creates layout, so in practice it works only on a freshly split
+`$HOME` pane. `pane run` is preferred: it works whether the pane needs a
+`cd` first or not.
+
+### Never run another agent inside your own pane
+
+herdr attributes exactly one agent per pane and reads only that pane's
+foreground process. An agent started inside your pane (a `claude` in an
+nvim `:terminal`, or anything under the ctrl-a REPL split) is therefore
+INVISIBLE to the sidebar -- and worse, claude's SessionStart hook plants a
+`herdr:claude` agent_session claim on YOUR pane. That claim takes
+authority: herdr keeps accepting the omp watcher's state reports with
+"ok" while applying none, so your own pane's status freezes at whatever it
+was (hit live twice on 2026-09-15). Recovery needs the pane recreated or
+`scripts/herdr-clear-agent-claims.sh` with the server stopped; nothing the
+watcher can send wins.
+
+If you only need a one-shot probe of another agent CLI, strip the herdr
+env so no claim is planted:
+
+    env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SOCKET_PATH claude -p "..."
 
 ## Peer comms (agent-to-agent)
 
@@ -87,6 +149,17 @@ transcript instead:
   input box is visible and toggles it open (ctrl+a, the user's yarepl
   binding) if not — refusing rather than typing blind after two attempts.
   Pass `--no-guard` for standalone agent panes.
+- NEVER let a nested agent CLI claim your pane. A `claude`/`codex` process
+  you spawn as a subprocess inherits `HERDR_PANE_ID` and registers ITSELF
+  as that pane's agent session -- even a one-shot `claude -p` probe. herdr
+  then accepts every later report for the pane with "ok" and applies none,
+  so the pane's sidebar status freezes permanently (the claim is persisted
+  in `~/.config/herdr/session.json`; release-agent cannot undo it; only
+  recreating the pane or `scripts/herdr-clear-agent-claims.sh` clears it).
+  Strip the env when probing another agent CLI:
+      env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SOCKET_PATH claude -p "..."
+  Real sessions of another agent belong in their OWN pane, never inside a
+  pane that already hosts one.
 - The user has right of way: their keystrokes land in the same input box.
   Never prompt a peer the user is actively typing into.
 

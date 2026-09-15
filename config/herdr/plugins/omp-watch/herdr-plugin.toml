@@ -1,11 +1,46 @@
 id = "dotfiles.omp-watch"
 name = "omp session watcher"
-version = "0.7.0"
-min_herdr_version = "0.7.0"
+version = "0.9.1"
+min_herdr_version = "0.9.1"
 description = "Reports omp agent state to herdr by tailing omp's own session transcript, since omp's extension API does not deliver lifecycle events and herdr ships no screen-manifest fallback for omp."
 platforms = ["linux", "macos"]
 
-# herdr's [[startup]] hook has no ongoing crash supervision AND does not
+# herdr's 
+#
+# 0.9.0: pid-based omp attribution (2026-09-15). The cwd-keyed presence
+# match mis-credited ANY pane sharing a cwd with a live omp process --
+# observed live: a new pane opened in thor-voiceai (an nvim+omp REPL pane's
+# cwd) was reported agent=omp regardless of its real occupant, crushing
+# claude's native registration every ~3s and making mixed omp/claude
+# work in one repo impossible to attribute. TTY matching alone fails for
+# REPL-nested omp (it runs on nvim's internal pty). The robust link is
+# ANCESTRY: an omp process's ppid chain terminates EXACTLY at the pane
+# shell (verified live: omp -> nvim --embed -> nvim -> pane shell pid).
+# watch.py now reads `herdr pane process-info` per pane per tick (~0.2s
+# for 8 panes) and matches by pane-shell-pid membership in a live omp's
+# bounded ancestor set -- no cwd involvement. Registry cross-check/
+# rotation machinery untouched; transcript lookup stays cwd-keyed
+# (single-omp-per-cwd keeps working; two omp in ONE cwd sharing a
+# transcript dir remains the flagged edge).
+#
+# 0.9.1: foreign agent-slot claims are detected, reported once, and
+# skipped (2026-09-15). A managed integration's agent_session claim --
+# planted by ANY claude process inheriting a pane's HERDR_PANE_ID, down to
+# a one-shot `claude -p` probe -- owns that pane's agent slot for good:
+# herdr accepts our report-agent calls with "ok" and applies none, so the
+# pane's status freezes at whatever was live when the claim landed (hit
+# live on w6:p4, stuck "working"/seq 1181 for an hour; also present on
+# w7:p1 from a normal claude session run inside an omp REPL pane). Proven
+# unfixable from here: our source, never-used fresh sources,
+# release-agent, and a no-id report-agent-session from the owning source
+# are all no-ops, and the claim persists in ~/.config/herdr/session.json
+# across restarts. watch.py now names the owning source in a one-shot
+# stderr warning per pane and skips the pane instead of burning source
+# rotations on it. Remedies live outside the watcher: recreate the pane,
+# or scripts/herdr-clear-agent-claims.sh (stops the server, strips
+# claims). Prevention is in the herdr-workstreams skill: strip HERDR_*
+# before invoking another agent CLI as a subprocess.
+[[startup]] hook has no ongoing crash supervision AND does not
 # signal this process when the server itself shuts down -- both verified
 # empirically 2026-09-04. A shell respawn-loop wrapper (`while true; do
 # python3 watch.py; done`) fixed the first problem but made the second one

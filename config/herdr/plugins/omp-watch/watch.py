@@ -328,29 +328,90 @@ def process_cwd(pid: int) -> Optional[str]:
     return None
 
 
-def live_omp_cwds() -> Dict[str, int]:
-    """{cwd: pid} for every running omp process, matched by resolved argv
+def live_omp_pids() -> Tuple[Dict[int, int], Dict[int, int]]:
+    """(omp_pids, all_ppids): omp_pids maps {pid: ppid} for every running omp
+    process matched by resolved argv
     basename (covers both a direct `omp ...` invocation and the
-    `bun .../bin/omp ...` shape this machine actually uses)."""
+    `bun .../bin/omp ...` shape this machine actually uses).
+
+    v0.9.0 rework: attribution is PID-BASED, not cwd-based. The previous
+    live_omp_cwds() built {cwd: pid} and main() credited every pane whose
+    cwd matched a live omp process, so a claude/plain-shell pane in the
+    SAME repo as an nvim+omp REPL was mis-reported as omp every tick
+    (observed live 2026-09-15 on thor-voiceai: a new pane in that cwd
+    showed agent=omp regardless of its actual occupant). tty-only
+    matching is insufficient too: an omp nested in an nvim REPL runs on
+    nvim's internal pty, not the pane's tty. The robust link is
+    ANCESTRY: an omp process's ppid chain terminates exactly at the pane
+    shell (ps -o ppid, bounded walk; verified live -- omp ->
+    nvim --embed -> nvim -> pane shell). main() matches a pane by
+    pane-shell-pid in the omp process's ancestor set; no cwd involved.
+    """
     out = subprocess.run(
-        ["ps", "-A", "-o", "pid=,command="], capture_output=True, text=True, timeout=10
+        ["ps", "-A", "-o", "pid=,ppid=,command="], capture_output=True, text=True, timeout=10
     )
-    result: Dict[str, int] = {}
+    ppids: Dict[int, int] = {}
+    omp_pids: List[int] = []
     for line in out.stdout.splitlines():
         line = line.strip()
         if not line:
             continue
-        pid_str, _, cmd = line.partition(" ")
+        pid_str, _, rest = line.partition(" ")
+        rest = rest.strip()
+        ppid_str, _, cmd = rest.partition(" ")
         try:
             pid = int(pid_str)
+            ppid = int(ppid_str)
         except ValueError:
             continue
+        ppids[pid] = ppid
         tokens = cmd.split()
-        if not any(Path(t).name == "omp" for t in tokens if not t.startswith("-")):
-            continue
-        cwd = process_cwd(pid)
-        if cwd:
-            result[cwd] = pid
+        if any(Path(t).name == "omp" for t in tokens if not t.startswith("-")):
+            omp_pids.append(pid)
+    # the FULL ppid table is required for ancestry walks: an omp nested in
+    # wrappers (bash -> nvim -> pty -> omp) crosses several non-omp
+    # processes before reaching the pane shell, and a table of only omp
+    # pids would stop the walk after one hop (the exact bug that left the
+    # freshly-recreated pane unattributed, 2026-09-15).
+    return {pid: ppids[pid] for pid in omp_pids}, ppids
+
+
+def ancestor_set(omp_pids: Dict[int, int], ppids: Dict[int, int]) -> Dict[int, set]:
+    """{omp_pid: {self + every ancestor pid}} via one bounded ppid walk per
+    process over the FULL process table (ppids covers every process, not
+    just omp ones -- see live_omp_pids). Bounded at 32 levels; unknown ppid
+    entries terminate the walk defensively."""
+    chains: Dict[int, set] = {}
+    for pid in omp_pids:
+        chain = {pid}
+        p = omp_pids[pid]
+        depth = 0
+        while p is not None and p > 1 and depth < 32:
+            chain.add(p)
+            nxt = ppids.get(p)
+            if nxt is None:
+                break
+            p = nxt
+            depth += 1
+        chains[pid] = chain
+    return chains
+
+
+def pane_shell_pids(pane_ids: List[str]) -> Dict[str, Optional[int]]:
+    """{pane_id: shell_pid} via `herdr pane process-info` (one call per
+    pane; measured ~0.2s for all 8 panes). Failed lookups -> None: the
+    pane is treated as omp-less (never falsely omp)."""
+    result: Dict[str, Optional[int]] = {}
+    for pane_id in pane_ids:
+        try:
+            out = subprocess.run(
+                [HERDR_BIN, "pane", "process-info", "--pane", pane_id],
+                capture_output=True, text=True, timeout=10,
+            )
+            info = json.loads(out.stdout)["result"]["process_info"]
+            result[pane_id] = info.get("shell_pid")
+        except Exception:
+            result[pane_id] = None
     return result
 
 
@@ -419,6 +480,33 @@ def registry_matches(verdict: str, registry_status: Optional[str]) -> bool:
     return registry_status == verdict
 
 
+def foreign_claim(pane: dict) -> Optional[str]:
+    """The source of a FOREIGN agent-session claim on this pane, if any.
+
+    A managed integration's claim (e.g. `herdr:claude`, registered by ANY
+    claude process that inherits the pane's HERDR_PANE_ID -- including a
+    short `claude -p` probe run from that pane's shell) takes ownership of
+    the pane's agent slot. herdr then accepts our report-agent calls with a
+    clean "ok" and never applies them: the sidebar freezes at whatever
+    state was live when the claim landed. Verified exhaustively
+    2026-09-15 on w6:p4 (frozen at "working", state_change_seq 1181):
+    reports from our own source AND from never-used fresh sources both
+    returned ok and changed nothing; `release-agent` and a no-id
+    `report-agent-session` from the owning source are both no-ops; and the
+    claim is persisted under .panes[].agent_session in
+    ~/.config/herdr/session.json, so it survives server restarts. Nothing
+    we send can win, so main() warns once and skips the pane rather than
+    burning source rotations on an unwinnable one. Remedies are outside
+    this process: recreate the pane, or stop the server and strip the
+    claims (scripts/herdr-clear-agent-claims.sh).
+    """
+    claim = pane.get("agent_session") or {}
+    source = claim.get("source") or ""
+    if source and not source.startswith(SOURCE):
+        return source
+    return None
+
+
 def load_panes() -> List[dict]:
     ws_out = subprocess.run(
         [HERDR_BIN, "workspace", "list"], capture_output=True, text=True, timeout=10
@@ -460,6 +548,9 @@ def main() -> None:
     rotations: Dict[str, int] = {}
     cooldown_until: Dict[str, float] = {}
     rotation_counter = 0
+    # Panes whose agent slot is owned by a foreign source (see
+    # foreign_claim): warned once each, then skipped every tick.
+    foreign_claims: Dict[str, str] = {}
     last_seq_sent = 0
     dlog(f"main() starting, pid={os.getpid()} parent_pid={parent_pid_at_start}")
 
@@ -514,30 +605,45 @@ def main() -> None:
             sys.exit(0)
 
         try:
-            live = live_omp_cwds()
-            dlog(f"tick {tick}: live_omp_cwds={live}")
+            live, all_ppids = live_omp_pids()
+            chains = ancestor_set(live, all_ppids)
             panes = load_panes()
             # One registry read per tick, shared by every pane below.
             # None (call failed) disables the cross-check for this tick.
             registry = load_registry()
+            dlog(f"tick {tick}: live_omp_pids={live}")
             dlog(f"tick {tick}: registry={registry}")
+            # v0.9.0: attribution = pane shell pid in a live omp's ancestor
+            # set (one `pane process-info` sweep per tick; see
+            # live_omp_pids() for why ancestry replaced cwd matching).
+            shell_pids = pane_shell_pids([p["pane_id"] for p in panes])
+            dlog(f"tick {tick}: shell_pids={shell_pids}")
             for pane in panes:
                 pane_id = pane["pane_id"]
                 cwd_raw = pane.get("cwd", "")
-                # omp names its session directory from the shell's logical
-                # cwd, but a live process's cwd as reported by lsof/procfs
-                # is always fully symlink-resolved (e.g. macOS's
-                # /tmp -> /private/tmp, or any symlinked project dir) --
-                # resolve a second copy so presence-matching isn't silently
-                # broken by a symlink, without breaking the session-file
-                # lookup (which must stay keyed on the raw/logical path).
-                cwd_resolved = str(Path(cwd_raw).resolve()) if cwd_raw else ""
 
-                if cwd_resolved not in live:
+                shell_pid = shell_pids.get(pane_id)
+                live_here = shell_pid is not None and any(
+                    shell_pid in chains[omp_pid] for omp_pid in chains
+                )
+                if not live_here:
                     if pane_id in last_state:
-                        dlog(f"{pane_id}: cwd={cwd_raw!r} no longer in live set -> releasing")
+                        dlog(f"{pane_id}: no live omp under shell {shell_pid!r} -> releasing")
                     release(pane_id)
                     continue
+
+                # A foreign agent-session claim (e.g. herdr:claude, planted by any
+                # claude process that inherited this pane's HERDR_PANE_ID) does NOT
+                # by itself stop our reports from applying -- verified 2026-09-15 on
+                # w6:pJ, where report-agent landed fine with such a claim present.
+                # So NEVER skip or release on sight of one: doing that removed our
+                # reports from a pane whose live occupant is omp, and since herdr
+                # ships no screen manifest for omp the pane then sat on herdr's
+                # "default_known_agent_idle_fallback" -- showing idle while the agent
+                # was demonstrably working. The claim only matters when reports also
+                # stop converging (the w6:p4 freeze), so it is reported there, as a
+                # diagnosis, in the non-convergence path below.
+                claimed_by = foreign_claim(pane)
 
                 # Present -> at least idle. Only upgrade to "working" when
                 # the transcript's last entry represents an unfinished turn;
@@ -614,6 +720,27 @@ def main() -> None:
                     continue
 
                 unconfirmed[pane_id] = unconfirmed.get(pane_id, 0) + 1
+                if (
+                    claimed_by
+                    and unconfirmed[pane_id] > ROTATE_AFTER_SENDS
+                    and foreign_claims.get(pane_id) != claimed_by
+                ):
+                    # Reports are not landing AND a foreign integration owns the
+                    # pane's agent slot: this is the frozen-pane signature (w6:p4,
+                    # 2026-09-15 -- our source, fresh sources, release-agent and a
+                    # no-id report-agent-session from the owning source were all
+                    # no-ops, and the claim persists in session.json across
+                    # restarts). Name it once so the cause is obvious instead of
+                    # looking like a watcher bug; keep reporting regardless.
+                    foreign_claims[pane_id] = claimed_by
+                    claim_agent = (pane.get("agent_session") or {}).get("agent")
+                    print(
+                        f"[omp-watch] {pane_id}: reports not converging AND agent slot "
+                        f"owned by {claimed_by!r} (agent={claim_agent!r}) -- this pane's "
+                        f"status is frozen at herdr's end. Recreate the pane, or stop the "
+                        f"server and run scripts/herdr-clear-agent-claims.sh.",
+                        file=sys.stderr,
+                    )
                 rotate = unconfirmed[pane_id] > ROTATE_AFTER_SENDS
                 if rotate:
                     rotation_counter += 1

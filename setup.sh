@@ -378,27 +378,32 @@ commit_zshrc() {
 # Keep the devcontainer helper functions in ~/.zshrc current, without ever
 # touching anything else you keep there.
 sync_devcontainer_helpers() {
+    # Only the opencode wrapper remains managed here; the claude() wrapper
+    # was removed 2026-09-07 so `claude` in a fresh shell resolves to the
+    # native binary (~/.local/bin/claude) -- the wrapper depended on the
+    # `devcontainer` CLI, which is not installed, so it made `claude`
+    # fail outright. Container claude remains opt-in via `claude-setup`
+    # (scripts/devcontainer/) and the .devcontainer/claude/ template.
+    # Belt-and-braces drop list: strips the old claude() lines from any
+    # zshrc written before this change.
     local zshrc="$HOME/.zshrc"
     local begin_marker="# >>> dotfiles devcontainer helpers >>>"
     local end_marker="# <<< dotfiles devcontainer helpers <<<"
 
     touch "$zshrc"
 
-    # Drop legacy single-line aliases from before scripts/ was reorganized;
-    # the managed block below and the ~/.local/bin symlinks above replace them.
+    # Drop legacy single-line aliases AND the removed claude() wrapper
+    # lines from zshrcs written before 2026-09-07; the managed block below
+    # and the ~/.local/bin symlinks above replace them.
     local work
     work="$(mktemp)"
     grep -vF \
         -e "alias claude-setup=\"~/.dotfiles/scripts/setup-claude-devcontainer.sh\"" \
         -e "alias opencode-setup=\"~/.dotfiles/scripts/setup-opencode-devcontainer.sh\"" \
+        -e "docker exec -it \"\$(devcontainer up --config .devcontainer/claude/devcontainer.json" \
         "$zshrc" > "$work" || true
-
     local block
     block="$(cat <<'BLOCK'
-claude() {
-    docker exec -it "$(devcontainer up --config .devcontainer/claude/devcontainer.json --workspace-folder . --remove-existing-container | grep -o '"containerId":"[^"]*"' | cut -d'"' -f4)" claude
-}
-
 opencode() {
     docker exec -it "$(devcontainer up --config .devcontainer/opencode/devcontainer.json --workspace-folder . --remove-existing-container | grep -o '"containerId":"[^"]*"' | cut -d'"' -f4)" opencode
 }

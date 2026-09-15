@@ -226,6 +226,30 @@ def test_last_recognizable_entry_wins():
     assert last(entries) == "maybe_idle"
 
 
+def test_foreign_claim_detection():
+    # A managed integration's agent-session claim (e.g. herdr:claude, left
+    # by any claude process that inherited the pane's HERDR_PANE_ID) owns
+    # the pane's agent slot: herdr accepts our reports with "ok" and never
+    # applies them, freezing that pane's sidebar status (verified live
+    # 2026-09-15 on w6:p4 -- our source AND never-used fresh sources both
+    # no-ops, release-agent a no-op, claim persisted in session.json).
+    # main() must recognise this exactly: warn once, skip the pane, and
+    # never waste source rotations on it.
+    assert watch.foreign_claim({}) is None
+    assert watch.foreign_claim({"agent_session": None}) is None
+    # our own reports never claim a session, but be explicit about the
+    # base source and its rotation variants
+    assert watch.foreign_claim({"agent_session": {"source": "custom:omp-watch"}}) is None
+    assert watch.foreign_claim({"agent_session": {"source": "custom:omp-watch-r3"}}) is None
+    # foreign claims, whatever the agent label
+    assert watch.foreign_claim(
+        {"agent_session": {"source": "herdr:claude", "agent": "claude"}}
+    ) == "herdr:claude"
+    assert watch.foreign_claim(
+        {"agent_session": {"source": "herdr:omp", "agent": "omp"}}
+    ) == "herdr:omp"
+
+
 def test_registry_matches_is_the_sidebar_truth():
     # The registry is what the sidebar renders; these pairs must count as
     # converged (no report spam) vs diverged (report + eventual rotation).
