@@ -31,6 +31,7 @@ resume_agents_on_restore = false
 # at a glance with plain colored dots.
 status_indicators = "symbols"
 
+agent_panel_sort = "spaces"
 [ui.sidebar.agents]
 # Default rows are [["state_icon", "workspace", "tab"], ["agent"]] -- no
 # state_text anywhere, so the sidebar never spelled out idle/working/blocked
