@@ -25,17 +25,21 @@ providers:
     - mojeek
   memoryModel: online
 modelRoles: 
-  default: openrouter/anthropic/claude-opus-5:xhigh
-  advisor: openrouter/~deepseek/deepseek-v4-flash-latest
+  default: openrouter/deepseek/deepseek-v4.1-flash
+  advisor: openrouter/z-ai/glm-5.3-flash
+  smol: openrouter/z-ai/glm-5.3-flash
+  slow: openrouter/z-ai/glm-5.3-flash
+  task: openrouter/z-ai/glm-5.3-flash
+  commit: openrouter/z-ai/glm-5.3-flash
 symbolPreset: nerd
 theme: 
   dark: titanium
   light: light
 setupVersion: 1
-defaultThinkingLevel: max
+defaultThinkingLevel: medium
 hideThinkingBlock: false
 advisor: 
-  enabled: true
+  enabled: false
 prewalk: 
   enabled: true
 memory: 

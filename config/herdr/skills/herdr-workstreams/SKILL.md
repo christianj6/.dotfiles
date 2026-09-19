@@ -118,6 +118,32 @@ env so no claim is planted:
 
     env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SOCKET_PATH claude -p "..."
 
+## Cost discipline (role-tiered routing)
+
+Model tiers are configured in config.yml modelRoles: the main agent
+(default) runs premium for reasoning; smol/task/commit/slow/advisor roles
+run glm-5.3-flash for mechanical work. prewalk auto-switches the main
+loop to the smol role at the first edit/write after planning. This is
+the setup — your job is to USE it correctly:
+
+**Anti-dithering rules** (learned from a $2.97 zero-output failure on an
+open-ended repo task — 68 turns of pure research, no artifacts):
+- Write SOMETHING within the first 3 turns — a plan file, a skeleton, a
+  test file. Iterate after. Never spend more than 3 consecutive turns on
+  pure research without producing an artifact.
+- When the task is a code feature, write the interface + test plan FIRST
+  (as a file), then implement. The plan is the anti-dithering anchor.
+- When delegating to subagents, write a DIRECTIVE spec: exact file paths,
+  function signatures, test cases. Never "explore X" or "look into Y" —
+  that's your job, not the subagent's.
+
+**Delegation pattern**: self-contained work packages go to @task
+subagents (glm) with complete specs. The main agent (you) keeps only the
+summary — this suppresses context growth AND routes at cheap pricing.
+Best for: implementing a module from a spec, scanning files, writing
+tests. NOT for: ambiguous debugging, architectural decisions, anything
+needing the premium model's judgment.
+
 ## Peer comms (agent-to-agent)
 
 Every agent in a herdr pane can message every other one: the herdr CLI is on

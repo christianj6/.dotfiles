@@ -193,7 +193,8 @@ ln -sf ~/.dotfiles/config/nvim ~/.config
 mkdir -p ~/.omp/agent ~/.omp/plugins
 ln -sf ~/.dotfiles/config/omp/config.yml ~/.omp/agent/config.yml
 ln -sf ~/.dotfiles/config/omp/models.yml ~/.omp/agent/models.yml
-ln -sf ~/.dotfiles/config/omp/plugins/omp-plugins.lock.json ~/.omp/plugins/omp-plugins.lock.json
+ln -sf ~/.dotfiles/config/omp/context-files/APPEND_SYSTEM.md ~/.omp/agent/APPEND_SYSTEM.md
+ln -sf ~/.dotfiles/config/omp/context-files/RULES.md ~/.omp/agent/RULES.md
 
 # Reproduce the configured marketplace and plugin. Non-fatal: a fresh
 # marketplace/network hiccup here must not abort the rest of setup.sh.
@@ -263,6 +264,8 @@ cp ~/.dotfiles/config/herdr/skills/herdr-workstreams/SKILL.md ~/.claude/skills/h
 mkdir -p ~/.local/bin
 cp ~/.dotfiles/config/herdr/skills/herdr-workstreams/peer.py ~/.local/bin/omp-peer || true
 chmod +x ~/.local/bin/omp-peer 2>/dev/null || true
+cp ~/.dotfiles/scripts/omp-session-report.py ~/.local/bin/omp-session-report || true
+chmod +x ~/.local/bin/omp-session-report 2>/dev/null || true
 
 # terminal-browser (https://terminal-browser.com): a real browser that
 # renders inside the terminal via kitty graphics (ghostty/herdr already
