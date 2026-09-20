@@ -1,12 +1,17 @@
-// omp-jev-router — TypeSafe Jev per-turn routing + context pruning for omp.
-// Hooks before_provider_request and fans ONE Jev call out per request:
-//   1. Context pruning: finds function_call_output items (tool results),
-//      batch-evaluates relevance (one Noul question per chunk), and
-//      replaces low-relevance outputs with placeholders.
-//   2. Model routing: classifies the turn (last user message + conversation
-//      summary); reasoning probability < 0.4 reroutes to the glm-5.3-flash
-//      workhorse, otherwise the premium expert model stays.
-//   3. Thinking escalation: difficulty probability > 0.7 raises the
+// omp-jev-router — workhorse-first routing + Jev context pruning for omp.
+// Hooks before_provider_request and per request:
+//   1. Model routing: every request starts on the glm-5.3-flash
+//      workhorse. Escalation to the session's expert model requires a
+//      deterministic struggle trigger (repeat tool calls, repeated tool
+//      outputs, blockage language in the newest user message) AND — when
+//      Jev is reachable — Jev's confirmation that the agent is genuinely
+//      blocked, not just doing normal incremental work. Without a key or
+//      an answer, the deterministic trigger decides alone. Signals
+//      re-evaluate per request, so expert windows self-expire.
+//   2. Context pruning (Jev): finds function_call_output items (tool
+//      results), batch-evaluates relevance (one Noul question per chunk),
+//      and replaces low-relevance outputs with placeholders.
+//   3. Thinking escalation (Jev): difficulty probability > 0.7 raises the
 //      payload's reasoning/thinking parameter when present, else logs a
 //      recommendation to stderr.
 //
@@ -24,10 +29,19 @@ export default function (api) {
   var evaluated = new Set();
   var pruned = new Set();
 
-  var ROUTE_THRESHOLD = 0.4;
   var THINK_THRESHOLD = 0.7;
-  var WORKHORSE_MODEL = "openrouter/z-ai/glm-5.3-flash";
+  // before_provider_request fires AFTER omp resolved the provider and
+  // stripped its prefix: payload.model must be the provider-local ID
+  // ("z-ai/glm-5.3-flash"), not omp's qualified "openrouter/z-ai/..."
+  // form — OpenRouter rejects the 3-segment ID with a 400.
+  var WORKHORSE_MODEL = "z-ai/glm-5.3-flash";
   var MAX_SUMMARY_CHARS = 4000;
+
+  var STRUGGLE_WINDOW = 8; // recent items scanned for struggle signals
+  var STRUGGLE_RE = /\b(still (broken|failing|not working|stuck|blocked)|not working|doesn'?t work|didn'?t work|same error|keeps? (failing|crashing|erroring|breaking)|no progress|you'?re (stuck|blocked)|blocked on|figure out why|why (is|does|do|won'?t)|no luck)\b/i;
+  var LOOP_MIN = 2;  // identical tool+args calls inside the window
+  var STUCK_MIN = 3; // identical tool outputs inside the window
+  var CONFIRM_THRESHOLD = 0.5; // Jev noul below this vetoes escalation
 
   function getApiKey() {
     if (process.env.JEV_API_KEY) return process.env.JEV_API_KEY;
@@ -94,13 +108,68 @@ export default function (api) {
     return summary;
   }
 
+  // Zero-API struggle detection: returns a short reason string when the
+  // transcript shows the agent is blocked or struggling, else null.
+  // Scans backwards from the newest item to the newest user message:
+  //   - call loop: same tool + arguments issued twice in the window
+  //   - stuck outputs: same tool result repeated 3x in the window
+  //   - blockage language in the newest user message
+  function detectStruggle(input) {
+    var calls = [], outs = [], lastUser = "";
+    for (var i = input.length - 1; i >= 0; i--) {
+      var item = input[i];
+      if (item.type === "function_call") {
+        if (calls.length < STRUGGLE_WINDOW) {
+          calls.push((item.name || "?") + " " + String(item.arguments || "").trim());
+        }
+      } else if (item.type === "function_call_output") {
+        var o = typeof item.output === "string" ? item.output : "";
+        if (o.length >= 8 && outs.length < STRUGGLE_WINDOW) outs.push({ h: hashContent(o), s: o.slice(0, 120).replace(/\s+/g, " ") });
+      } else if (item.role === "user") {
+        var c = item.content;
+        lastUser = typeof c === "string" ? c : Array.isArray(c)
+          ? c.filter(function(p) { return p.type === "input_text"; })
+              .map(function(p) { return p.text || ""; }).join(" ")
+          : "";
+        break; // everything relevant sits after the newest user turn
+      }
+    }
+    if (lastUser && STRUGGLE_RE.test(lastUser)) return "user blockage language";
+    var sigs = {};
+    for (var j = 0; j < calls.length; j++) {
+      sigs[calls[j]] = (sigs[calls[j]] || 0) + 1;
+      if (sigs[calls[j]] >= LOOP_MIN) return "repeat call: " + calls[j].slice(0, 120);
+    }
+    var outs2 = {};
+    for (var k = 0; k < outs.length; k++) {
+      outs2[outs[k].h] = (outs2[outs[k].h] || 0) + 1;
+      if (outs2[outs[k].h] >= STUCK_MIN) return "repeated tool output: " + outs[k].s;
+    }
+    return null;
+  }
+
   api.on("before_provider_request", async function (event) {
     if (MODE === "off") return;
-    var apiKey = getApiKey();
-    if (!apiKey) return;
 
     var payload = event.payload;
     if (!payload || !payload.input || !Array.isArray(payload.input)) return;
+
+    // Model routing: workhorse by default; escalation needs a
+    // deterministic struggle trigger, then Jev's final say below.
+    // Expert = payload.model left untouched.
+    var struggle = null;
+    try { struggle = detectStruggle(payload.input); } catch (e) { struggle = null; }
+    if (!struggle) {
+      var prevModel = payload.model;
+      payload.model = WORKHORSE_MODEL;
+      console.error("[jev-router] route: workhorse (was " + prevModel + ")");
+    }
+
+    var apiKey = getApiKey();
+    if (!apiKey) {
+      if (struggle) console.error("[jev-router] route: keep expert " + payload.model + " (deterministic trigger, no Jev key: " + struggle + ")");
+      return;
+    }
 
     var query = extractQuery(payload.input);
     if (!query) return;
@@ -117,8 +186,9 @@ export default function (api) {
 
     try {
       // fan-out: state = query + summary + chunks; questions = one Noul
-      // relevance question per chunk + turn routing + thinking escalation
+      // relevance question per chunk + thinking escalation
       var state = { user_query: query, conversation_summary: buildSummary(payload.input) };
+      if (struggle) state.struggle_signals = struggle;
       var questions = {};
       var keyToIndex = {};
       unevaluated.forEach(function(c, idx) {
@@ -132,14 +202,16 @@ export default function (api) {
         keyToIndex[qKey] = idx;
       });
 
-      questions.route_turn = {
-        type: "noul",
-        instructions: "Does responding to this user message require deep analytical reasoning about code architecture, complex debugging, or nuanced design decisions?"
-      };
       questions.escalate_thinking = {
         type: "noul",
         instructions: "Does this turn involve a genuinely difficult problem that would benefit from extended thinking?"
       };
+      if (struggle) {
+        questions.confirm_struggle = {
+          type: "noul",
+          instructions: "A coding agent tripped this deterministic signal: '" + struggle + "'. Given the user query and conversation summary, is the agent genuinely blocked or struggling on a problem that needs a stronger model for this request? Normal incremental progress (reads, edits, rebuilds that change results) is not struggling."
+        };
+      }
       var body = JSON.stringify({ state: state, model: "jev-latest", questions: questions });
       var resp = await fetch(JEV_ENDPOINT, {
         method: "POST",
@@ -169,15 +241,16 @@ export default function (api) {
         console.error("[jev-router] pruned " + prunedCount + "/" + unevaluated.length + " tool outputs (threshold " + THRESHOLD + ")");
       }
 
-      // per-turn model routing
-      if (answers.route_turn && answers.route_turn.noul !== undefined) {
-        var routeProb = answers.route_turn.noul;
-        if (routeProb < ROUTE_THRESHOLD) {
-          var prevModel = payload.model;
+      // escalation: deterministic trigger fired -> Jev has the final say.
+      // A missing answer (API error) falls back to the trigger alone.
+      if (struggle) {
+        var conf = answers.confirm_struggle;
+        if (conf && conf.noul !== undefined && conf.noul < CONFIRM_THRESHOLD) {
+          var prevModel2 = payload.model;
           payload.model = WORKHORSE_MODEL;
-          console.error("[jev-router] route: reasoning prob " + routeProb.toFixed(2) + " < " + ROUTE_THRESHOLD + " -> " + WORKHORSE_MODEL + " (was " + prevModel + ")");
+          console.error("[jev-router] route: jev veto " + conf.noul.toFixed(2) + " < " + CONFIRM_THRESHOLD + " -> workhorse (was " + prevModel2 + ")");
         } else {
-          console.error("[jev-router] route: reasoning prob " + routeProb.toFixed(2) + " >= " + ROUTE_THRESHOLD + " -> keep " + payload.model);
+          console.error("[jev-router] route: expert kept " + payload.model + " (trigger: " + struggle + (conf && conf.noul !== undefined ? ", jev " + conf.noul.toFixed(2) : ", jev unavailable -> deterministic fallback") + ")");
         }
       }
 

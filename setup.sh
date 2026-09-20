@@ -190,11 +190,16 @@ ln -sf ~/.dotfiles/config/nvim ~/.config
 # `omp plugin install` report "already exists"/"already installed" and
 # skip re-fetching, leaving a broken reference. The commands below are the
 # only safe way to (re)materialize them on any machine.
-mkdir -p ~/.omp/agent ~/.omp/plugins
+mkdir -p ~/.omp/agent ~/.omp/agent/extensions ~/.omp/plugins
 ln -sf ~/.dotfiles/config/omp/config.yml ~/.omp/agent/config.yml
 ln -sf ~/.dotfiles/config/omp/models.yml ~/.omp/agent/models.yml
 ln -sf ~/.dotfiles/config/omp/context-files/APPEND_SYSTEM.md ~/.omp/agent/APPEND_SYSTEM.md
 ln -sf ~/.dotfiles/config/omp/context-files/RULES.md ~/.omp/agent/RULES.md
+# Extensions are symlinked, not copied: copies drift silently from the
+# versioned source (a stale copy shipped the provider-prefixed workhorse
+# model ID that 400'd every routed subagent request on 2026-09-19).
+ln -sf ~/.dotfiles/config/omp/extensions/omp-jev-router.ts ~/.omp/agent/extensions/omp-jev-router.ts
+ln -sf ~/.dotfiles/config/omp/extensions/anti-dither.ts ~/.omp/agent/extensions/anti-dither.ts
 
 # Reproduce the configured marketplace and plugin. Non-fatal: a fresh
 # marketplace/network hiccup here must not abort the rest of setup.sh.

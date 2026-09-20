@@ -29,7 +29,7 @@ modelRoles:
   advisor: openrouter/z-ai/glm-5.3-flash
   smol: openrouter/z-ai/glm-5.3-flash
   slow: openrouter/z-ai/glm-5.3-flash
-  task: openrouter/z-ai/glm-5.3-flash
+  task: openrouter/anthropic/claude-sonnet-5
   commit: openrouter/z-ai/glm-5.3-flash
 symbolPreset: nerd
 theme: 
