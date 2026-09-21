@@ -25,11 +25,11 @@ providers:
     - mojeek
   memoryModel: online
 modelRoles: 
-  default: openrouter/deepseek/deepseek-v4.1-flash
+  default: openrouter/z-ai/glm-5.3-flash
   advisor: openrouter/z-ai/glm-5.3-flash
   smol: openrouter/z-ai/glm-5.3-flash
   slow: openrouter/z-ai/glm-5.3-flash
-  task: openrouter/anthropic/claude-sonnet-5
+  task: openrouter/z-ai/glm-5.3-flash
   commit: openrouter/z-ai/glm-5.3-flash
 symbolPreset: nerd
 theme: 
@@ -56,14 +56,5 @@ display:
   shimmer: classic
 dev: 
   autoqaConsent: denied
-
-# Tool toggles — every built-in tool has a <tool>.enabled boolean (default
-# true); disabled tools vanish from the agent's toolset entirely. Annotated
-# catalog: `omp config list --json | jq -r '.[].key'`. Per-run adjustments:
-# `omp --tools=<list>` (allowlist), `omp --no-tools`, `omp --config=<file>`
-# (repeatable yml overlay). Keys: advisor ask async autolearn bash browser
-# checkpoint compaction computer debug exa fetch generate_image git github
-# glob goal grep inspect_image launch lsp memories plan prewalk recap retry
-# secrets security skills speech speechgen stt todo ttsr vault web_search.
-browser:
-  enabled: false # bundled puppeteer Chromium tool; agents use the terminal-browser skill instead
+browser: 
+  enabled: false
