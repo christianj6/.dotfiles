@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""herdr-img — display an image over the current herdr pane (kitty graphics).
+
+WORKAROUND: omp sessions in this setup run inside nvim (:terminal), which has
+no kitty-graphics support, so the omp TUI cannot render images itself. This
+helper places the image as an overlay over the pane via herdr's socket API
+(pane.graphics.set), which works regardless of the pane's app. Revisit/remove
+once nvim :terminal gains graphics passthrough or rendering.
+
+Placement is bottom-left of the pane's viewport, always fitted into a fixed
+box (default 60x20 cells) so every overlay is the same reasonable size.
+
+Successive placements are serialized by a token file: only the newest
+overlay's auto-clear timer is live, so an older timer can never erase a
+newer image early.
+
+Usage:
+  herdr-img <image> [--cols N] [--rows N] [--hold] [--timeout SEC]
+  herdr-img --clear
+  herdr-img --info
+
+  <image>     PNG (or other image on macOS, auto-converted via sips)
+  --cols/--rows  override the fit box in terminal cells
+  --hold      keep the overlay until `herdr-img --clear` (default: auto-clear
+              after --timeout seconds in a detached background process)
+  --timeout   auto-clear delay in seconds [12]
+"""
+import argparse, base64, json, os, shutil, struct, subprocess, sys, tempfile, time
+
+SOCKET_PATH = os.environ.get("HERDR_SOCKET_PATH") or os.path.expanduser(
+    "~/.config/herdr/herdr.sock")
+PANE_ID = os.environ.get("HERDR_PANE_ID")
+TOKEN_FILE = "/tmp/herdr-img-last-placement"
+DEFAULT_TIMEOUT = 12
+BOX_COLS, BOX_ROWS = 60, 20          # default overlay box, terminal cells
+MAX_COLS, MAX_ROWS = 120, 40         # hard caps even when overriding
+# herdr 0.8.2 closes the socket when an inline request exceeds roughly 1MB
+# of base64 (verified empirically: 512KB ok, 1024KB dropped). Stay under it.
+SAFE_B64_BYTES = 512 * 1024
+
+
+def call(method, **params):
+    """One fresh connection per request: herdr 0.8.2 closes the socket after
+    answering, so reusing a connection for a second call breaks the pipe."""
+    import socket
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(SOCKET_PATH)
+    f = s.makefile("rw")
+    try:
+        rid = f"herdr-img-{os.getpid()}"
+        f.write(json.dumps({"id": rid, "method": method,
+                            "params": params}) + "\n")
+        f.flush()
+        while True:
+            line = f.readline()
+            if not line:
+                raise RuntimeError("herdr socket closed unexpectedly")
+            msg = json.loads(line)
+            if msg.get("id") == rid:
+                if "error" in msg:
+                    err = msg["error"]
+                    detail = err.get("message") or json.dumps(err)
+                    if "feature_disabled" in detail or "kitty_graphics" in detail:
+                        detail += (" — enable [experimental] kitty_graphics "
+                                   "in ~/.config/herdr/config.toml (herdr "
+                                   "0.8.x; [terminal] on 0.9+) and restart "
+                                   "the server")
+                    raise RuntimeError(detail)
+                return msg["result"]
+    finally:
+        s.close()
+
+
+def die(msg):
+    print(f"herdr-img: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def png_dims(path):
+    with open(path, "rb") as fh:
+        head = fh.read(24)
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return struct.unpack(">II", head[16:24])
+
+
+def to_png(path):
+    """Return (png_path, width, height). Converts via sips when needed."""
+    path = os.path.realpath(path)
+    if not os.path.isfile(path):
+        die(f"no such file: {path}")
+    dims = png_dims(path)
+    if dims:
+        return path, dims[0], dims[1]
+    if shutil.which("sips"):
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp.close()
+        r = subprocess.run(["sips", "-s", "format", "png", path,
+                            "--out", tmp.name], capture_output=True)
+        if r.returncode != 0:
+            die(f"sips conversion failed: {r.stderr.decode(errors='replace')}")
+        dims = png_dims(tmp.name)
+        if not dims:
+            die("sips output is not a PNG")
+        return tmp.name, dims[0], dims[1]
+    die("only PNG input is supported (macOS sips unavailable for conversion)")
+
+
+def resample(src, out_w, out_h):
+    """Resample to exactly out_w x out_h; returns (path, w, h) or None."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp.close()
+    r = subprocess.run(["sips", "--resampleHeightWidth", str(out_h),
+                        str(out_w), src, "--out", tmp.name],
+                       capture_output=True)
+    if r.returncode != 0:
+        return None
+    dims = png_dims(tmp.name)
+    if not dims:
+        return None
+    return tmp.name, dims[0], dims[1]
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True, description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("image", nargs="?")
+    ap.add_argument("--cols", type=int)
+    ap.add_argument("--rows", type=int)
+    ap.add_argument("--hold", action="store_true")
+    ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    ap.add_argument("--clear", action="store_true")
+    ap.add_argument("--info", action="store_true")
+    args = ap.parse_args()
+
+    if not PANE_ID:
+        die("HERDR_PANE_ID not set — run inside a herdr pane")
+
+    if args.info:
+        print(json.dumps(call("pane.graphics.info", pane_id=PANE_ID),
+                         indent=2))
+        return
+    if args.clear:
+        call("pane.graphics.clear", pane_id=PANE_ID)
+        try:
+            os.unlink(TOKEN_FILE)
+        except FileNotFoundError:
+            pass
+        print("overlay cleared")
+        return
+    if not args.image:
+        ap.error("an image path is required (or --clear / --info)")
+
+    src, img_w, img_h = to_png(args.image)
+    info = call("pane.graphics.info", pane_id=PANE_ID)
+    cell_w = max(1, info.get("cell_width_px", 15))
+    cell_h = max(1, info.get("cell_height_px", 32))
+
+    # Bottom-left anchor: the pane's viewport rect comes from pane.layout
+    # (rect width/height are terminal cells). Fall back to a 200x50 viewport
+    # if the layout tree does not include this pane.
+    view_w, view_h = 200, 50
+    try:
+        layout = call("pane.layout", pane_id=PANE_ID)["result"]["layout"]
+        for pane in layout.get("panes", []):
+            if pane.get("pane_id") == PANE_ID:
+                view_w = max(4, pane["rect"]["width"])
+                view_h = max(2, pane["rect"]["height"])
+                break
+    except Exception:
+        pass
+
+    # A hidden pane defers placement; herdr replays it when visible. Extend
+    # the auto-clear so the overlay isn't erased before it is ever shown.
+    if info.get("pane_visible") is False:
+        args.timeout = max(args.timeout, 60)
+
+    # Fit the image into the fixed overlay box (cell-aspect aware), so every
+    # overlay is the same reasonable size regardless of source resolution.
+    box_cols = min(args.cols or BOX_COLS, MAX_COLS, view_w - 2)
+    box_rows = min(args.rows or BOX_ROWS, MAX_ROWS, view_h - 2)
+    box_w_px = box_cols * cell_w
+    box_h_px = box_rows * cell_h
+    scale = min(box_w_px / img_w, box_h_px / img_h)
+    disp_w = max(1, round(img_w * scale))
+    disp_h = max(1, round(img_h * scale))
+    cols = max(4, min(box_cols, round(disp_w / cell_w)))
+    rows = max(2, min(box_rows, round(disp_h / cell_h)))
+
+    # Resample to the exact display size, shrinking the box only if the
+    # inline payload still exceeds herdr's request-size budget.
+    for attempt in range(5):
+        out = resample(src, disp_w, disp_h)
+        if not out:
+            break  # keep original pixels; herdr scales into the grid anyway
+        src, disp_w, disp_h = out
+        with open(src, "rb") as fh:
+            png = fh.read()
+        if len(base64.b64encode(png)) <= SAFE_B64_BYTES:
+            break
+        scale *= 0.7  # pathological payload: shrink the box and retry
+        disp_w = max(32, round(img_w * scale))
+        disp_h = max(32, round(img_h * scale))
+        cols = max(4, round(disp_w / cell_w))
+        rows = max(2, round(disp_h / cell_h))
+    else:
+        with open(src, "rb") as fh:
+            png = fh.read()
+
+    call("pane.graphics.set", pane_id=PANE_ID, format="png",
+         image_width=disp_w, image_height=disp_h,
+         data_base64=base64.b64encode(png).decode(),
+         placement={"viewport_col": 0, "viewport_row": max(0, view_h - rows - 1),
+                    "grid_cols": cols, "grid_rows": rows})
+    label = f"{disp_w}x{disp_h}px as {cols}x{rows} cells"
+    # Every placement invalidates older auto-clear timers, hold or not.
+    token = str(time.time_ns())
+    with open(TOKEN_FILE, "w") as fh:
+        fh.write(token)
+    if args.hold:
+        print(f"overlay placed ({label}); clear with: herdr-img --clear")
+    else:
+        if os.fork() == 0:
+            os.setsid()
+            try:
+                time.sleep(max(1, args.timeout))
+                # clear only if no newer placement superseded us
+                with open(TOKEN_FILE) as fh:
+                    current = fh.read().strip()
+                if current == token:
+                    call("pane.graphics.clear", pane_id=PANE_ID)
+                    try:
+                        os.unlink(TOKEN_FILE)
+                    except FileNotFoundError:
+                        pass
+            except Exception:
+                pass
+            os._exit(0)
+        print(f"overlay placed ({label}); auto-clears in {args.timeout}s "
+              f"(--hold to keep)")
+
+
+if __name__ == "__main__":
+    main()

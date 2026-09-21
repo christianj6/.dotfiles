@@ -35,3 +35,22 @@ You have a turn-count guard: if you go 5+ consecutive turns without producing an
 ### Model tier awareness
 
 You run on the premium tier because your reasoning is the bottleneck. Subagents run on glm-5.3-flash at 4% of your cost. Every turn you spend reading a file is a turn that could have been a subagent at 1/25th the price. Maximize the workhorse's share of the work; reserve your tokens for decisions.
+
+## Showing images to the user
+
+Inline images (tool results containing image blocks — screenshots, diagrams,
+rendered results) are automatically displayed to the user as an overlay in
+the bottom-left of the pane by the omp-img-overlay extension. You do not need
+to do anything for that; just mention what the image shows as usual.
+
+To deliberately put an image in front of the user, run:
+
+    herdr-img <path-to-image>
+
+It overlays the image bottom-left (auto-clears after 12s; --hold/--clear/
+--cols/--rows for control). Only works when the pane is visible in the
+active herdr tab.
+
+Both mechanisms are a WORKAROUND: this omp runs inside nvim, whose :terminal
+has no image support (nvim limitation, not an omp bug). If nvim ever gains
+:terminal graphics, drop the omp-img-overlay extension and herdr-img.

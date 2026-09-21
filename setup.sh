@@ -200,6 +200,7 @@ ln -sf ~/.dotfiles/config/omp/context-files/RULES.md ~/.omp/agent/RULES.md
 # model ID that 400'd every routed subagent request on 2026-09-19).
 ln -sf ~/.dotfiles/config/omp/extensions/omp-jev-router.ts ~/.omp/agent/extensions/omp-jev-router.ts
 ln -sf ~/.dotfiles/config/omp/extensions/anti-dither.ts ~/.omp/agent/extensions/anti-dither.ts
+ln -sf ~/.dotfiles/config/omp/extensions/omp-img-overlay.ts ~/.omp/agent/extensions/omp-img-overlay.ts
 
 # Reproduce the configured marketplace and plugin. Non-fatal: a fresh
 # marketplace/network hiccup here must not abort the rest of setup.sh.
@@ -271,6 +272,13 @@ cp ~/.dotfiles/config/herdr/skills/herdr-workstreams/peer.py ~/.local/bin/omp-pe
 chmod +x ~/.local/bin/omp-peer 2>/dev/null || true
 cp ~/.dotfiles/scripts/omp-session-report.py ~/.local/bin/omp-session-report || true
 chmod +x ~/.local/bin/omp-session-report 2>/dev/null || true
+
+# herdr pane-graphics overlay helper: agents in any pane (notably omp inside
+# nvim, whose :terminal cannot render kitty graphics) flash images over their
+# pane via herdr's socket API pane.graphics.set. WORKAROUND until nvim gains
+# :terminal image support. Symlinked, not copied, so fixes land without
+# re-running setup (same drift rationale as the omp extensions above).
+ln -sf ~/.dotfiles/config/herdr/bin/herdr-img ~/.local/bin/herdr-img
 
 # terminal-browser (https://terminal-browser.com): a real browser that
 # renders inside the terminal via kitty graphics (ghostty/herdr already
