@@ -221,6 +221,7 @@ ln -sf ~/.dotfiles/config/omp/skills/grilling ~/.omp/agent/skills/grilling
 ln -sf ~/.dotfiles/config/omp/skills/domain-modeling ~/.omp/agent/skills/domain-modeling
 ln -sf ~/.dotfiles/config/omp/skills/research ~/.omp/agent/skills/research
 ln -sf ~/.dotfiles/config/omp/skills/prototype ~/.omp/agent/skills/prototype
+ln -sf ~/.dotfiles/config/omp/skills/issue-tracker-trello ~/.omp/agent/skills/issue-tracker-trello
 
 # Reproduce the configured marketplace and plugin. Non-fatal: a fresh
 # marketplace/network hiccup here must not abort the rest of setup.sh.

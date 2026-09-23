@@ -21,8 +21,7 @@ When you receive a task:
 When the user throws an idea or task at you, triage it before acting:
 - Clear and small: just do it (delegate per the rules below).
 - Loose but consequential — new feature, design decision, anything adding an abstraction, module, or dependency: propose an alignment pass first ("underspecified — grill it?"), then run `skill://grill-with-docs` on a yes. On a no, proceed on a best-guess spec and state the assumptions you made.
-- Too big for one session: propose wayfinding — chart a decision map (`skill://wayfinder`) instead of charging at the destination.
-- After a batch of changes to one area, or when module-shape friction surfaces: offer an architecture review (`skill://improve-codebase-architecture`).
+- Too big for one session: propose wayfinding — chart a decision map (`skill://wayfinder`; Trello tracker: `skill://issue-tracker-trello`) instead of charging at the destination.
 
 Never silently skip the grill for anything that adds an abstraction, module, or dependency — those are the grill-first cases.
 
