@@ -210,6 +210,18 @@ ln -sf ~/.dotfiles/config/omp/agents/implementer.md ~/.omp/agent/agents/implemen
 ln -sf ~/.dotfiles/config/omp/rules/image-overlay.md ~/.omp/agent/rules/image-overlay.md
 ln -sf ~/.dotfiles/config/omp/skills/code-style/SKILL.md ~/.omp/agent/skills/code-style/SKILL.md
 
+# Vendored mattpocock/skills set (grill-with-docs, improve-codebase-architecture,
+# wayfinder + their support skills): dir-level symlinks, versioned source in
+# config/omp/skills/<name>/.
+ln -sf ~/.dotfiles/config/omp/skills/grill-with-docs ~/.omp/agent/skills/grill-with-docs
+ln -sf ~/.dotfiles/config/omp/skills/improve-codebase-architecture ~/.omp/agent/skills/improve-codebase-architecture
+ln -sf ~/.dotfiles/config/omp/skills/wayfinder ~/.omp/agent/skills/wayfinder
+ln -sf ~/.dotfiles/config/omp/skills/codebase-design ~/.omp/agent/skills/codebase-design
+ln -sf ~/.dotfiles/config/omp/skills/grilling ~/.omp/agent/skills/grilling
+ln -sf ~/.dotfiles/config/omp/skills/domain-modeling ~/.omp/agent/skills/domain-modeling
+ln -sf ~/.dotfiles/config/omp/skills/research ~/.omp/agent/skills/research
+ln -sf ~/.dotfiles/config/omp/skills/prototype ~/.omp/agent/skills/prototype
+
 # Reproduce the configured marketplace and plugin. Non-fatal: a fresh
 # marketplace/network hiccup here must not abort the rest of setup.sh.
 omp plugin marketplace add anthropics/claude-plugins-official || true
