@@ -7,8 +7,8 @@
 //   - In Progress cards (resume or release)
 //   - no Roadmap — <project> card (the anti "hack away from memory" trigger)
 // Fail-open and silent: board unreachable, work-scope cwd (Tallence), or
-// nothing actionable → no message, session starts untouched. The board is a
-// source of truth, not baggage: this hook is the entire per-session cost.
+// nothing actionable → no message, session starts untouched. Set
+// BOARD_CHECKPOINT_DEBUG=1 to trace decisions on stderr.
 export default function (api) {
   var BOARD_ID = process.env.DEV_BOARD_ID || "6ab3e379437eaab1279a7e77";
   var CRED_FILES = ["/.omp/agent/.env", "/.dotfiles/.env"];
@@ -38,13 +38,21 @@ export default function (api) {
   }
 
   api.on("before_agent_start", async function (event) {
+    var DBG = process.env.BOARD_CHECKPOINT_DEBUG;
     if (done) return;
     done = true;
     try {
       var cwd = (event && (event.cwd || (event.ctx && event.ctx.cwd))) || process.cwd();
-      if (!cwd || cwd.indexOf("Desktop/tallence") !== -1) return; // work space: out of scope
+      if (DBG) console.error("[board-checkpoint] fired; cwd=" + cwd);
+      if (!cwd || cwd.indexOf("Desktop/tallence") !== -1) {
+        if (DBG) console.error("[board-checkpoint] skip: work scope or no cwd");
+        return;
+      }
       var c = creds();
-      if (!c) return;
+      if (!c) {
+        if (DBG) console.error("[board-checkpoint] skip: no creds");
+        return;
+      }
       var project = cwd.split("/").filter(Boolean).pop();
 
       var u = new URL("https://api.trello.com/1/boards/" + BOARD_ID + "/cards");
@@ -52,6 +60,7 @@ export default function (api) {
       u.searchParams.set("token", c.token);
       u.searchParams.set("fields", "name,idList,idMembers,labels");
       var res = await fetch(u, { signal: AbortSignal.timeout(4000) });
+      if (DBG) console.error("[board-checkpoint] cards status=" + res.status);
       if (!res.ok) return;
       var cards = await res.json();
 
@@ -60,6 +69,7 @@ export default function (api) {
       ul.searchParams.set("token", c.token);
       ul.searchParams.set("fields", "name");
       var rl = await fetch(ul, { signal: AbortSignal.timeout(4000) });
+      if (DBG) console.error("[board-checkpoint] lists status=" + rl.status);
       if (!rl.ok) return;
       var lists = await rl.json();
       var listId = {};
@@ -79,9 +89,14 @@ export default function (api) {
       var roadmap = cards.some(function (card) {
         return card.idList === listId["Maps"] && label(card, "context") && card.name.toLowerCase().indexOf(project.toLowerCase()) !== -1;
       });
+      if (DBG) console.error("[board-checkpoint] project=" + project + " cards=" + cards.length + " triage=" + triage.length + " inprog=" + inprog.length + " roadmap=" + roadmap);
       if (!roadmap) lines.push("No Roadmap — " + project + " card yet: create label + roadmap card before significant work (skill://issue-tracker-trello)");
 
-      if (!lines.length) return;
+      if (!lines.length) {
+        if (DBG) console.error("[board-checkpoint] nothing actionable -> silent");
+        return;
+      }
+      if (DBG) console.error("[board-checkpoint] injecting " + lines.length + " line(s)");
       return {
         message: {
           customType: "board-checkpoint",
