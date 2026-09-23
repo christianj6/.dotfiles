@@ -1,8 +1,8 @@
-// omp-jev-router — workhorse-first routing + Jev context pruning for omp.
+// omp-jev-router — Jev context pruning + opt-in workhorse-first routing for omp.
 // Hooks before_provider_request and per request:
-//   1. Model routing: every request starts on the glm-5.3-flash
-//      workhorse. Escalation to the session's expert model requires a
-//      deterministic struggle trigger (repeat tool calls, repeated tool
+//   1. Model routing (opt-in: JEV_ROUTE=1): every request starts on the
+//      glm-5.3-flash workhorse. Escalation to the session's expert model
+//      requires a deterministic struggle trigger (repeat tool calls, repeated tool
 //      outputs, blockage language in the newest user message) AND — when
 //      Jev is reachable — Jev's confirmation that the agent is genuinely
 //      blocked, not just doing normal incremental work. Without a key or
@@ -19,12 +19,14 @@
 //   JEV_API_KEY    TypeSafe API key
 //   JEV_THRESHOLD  prune when relevance probability < threshold [0.2]
 //   JEV_MODE       "prune" (default) | "observe" | "off"
+//   JEV_ROUTE      "1" enables workhorse-first model routing [off]
 
 export default function (api) {
   console.error("[jev-router] extension loaded");
   var JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
   var THRESHOLD = parseFloat(process.env.JEV_THRESHOLD || "0.2");
   var MODE = process.env.JEV_MODE || "prune";
+  var ROUTE = process.env.JEV_ROUTE === "1"; // routing off by default
   var MAX_CHARS = 6000;
   var evaluated = new Set();
   var pruned = new Set();
@@ -159,7 +161,7 @@ export default function (api) {
     // Expert = payload.model left untouched.
     var struggle = null;
     try { struggle = detectStruggle(payload.input); } catch (e) { struggle = null; }
-    if (!struggle) {
+    if (ROUTE && !struggle) {
       var prevModel = payload.model;
       payload.model = WORKHORSE_MODEL;
       console.error("[jev-router] route: workhorse (was " + prevModel + ")");
@@ -167,21 +169,14 @@ export default function (api) {
 
     var apiKey = getApiKey();
     if (!apiKey) {
-      if (struggle) console.error("[jev-router] route: keep expert " + payload.model + " (deterministic trigger, no Jev key: " + struggle + ")");
+      if (ROUTE && struggle) console.error("[jev-router] route: keep expert " + payload.model + " (deterministic trigger, no Jev key: " + struggle + ")");
       return;
     }
 
     var query = extractQuery(payload.input);
     if (!query) return;
 
-    for (var di = 0; di < payload.input.length; di++) {
-        var item = payload.input[di];
-        var otype = typeof item.output;
-        var olen = typeof item.output === "string" ? item.output.length : 0;
-        console.error("[jev-router:dbg] item[" + di + "] type=" + (item.type || "?") + " role=" + (item.role || "?") + " output_type=" + otype + " output_len=" + olen);
-    }
     var unevaluated = extractToolOutputs(payload.input);
-    console.error("[jev-router:dbg2] unevaluated=" + unevaluated.length);
     if (unevaluated.length > 0) unevaluated.forEach(function(c) { evaluated.add(c.hash); });
 
     try {
@@ -206,7 +201,7 @@ export default function (api) {
         type: "noul",
         instructions: "Does this turn involve a genuinely difficult problem that would benefit from extended thinking?"
       };
-      if (struggle) {
+      if (ROUTE && struggle) {
         questions.confirm_struggle = {
           type: "noul",
           instructions: "A coding agent tripped this deterministic signal: '" + struggle + "'. Given the user query and conversation summary, is the agent genuinely blocked or struggling on a problem that needs a stronger model for this request? Normal incremental progress (reads, edits, rebuilds that change results) is not struggling."
@@ -243,7 +238,7 @@ export default function (api) {
 
       // escalation: deterministic trigger fired -> Jev has the final say.
       // A missing answer (API error) falls back to the trigger alone.
-      if (struggle) {
+      if (ROUTE && struggle) {
         var conf = answers.confirm_struggle;
         if (conf && conf.noul !== undefined && conf.noul < CONFIRM_THRESHOLD) {
           var prevModel2 = payload.model;
