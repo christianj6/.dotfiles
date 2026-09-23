@@ -17,14 +17,14 @@
 //
 // Env:
 //   JEV_API_KEY    TypeSafe API key
-//   JEV_THRESHOLD  prune when relevance probability < threshold [0.2]
+//   JEV_THRESHOLD  prune when relevance probability < threshold [0.1]
 //   JEV_MODE       "prune" (default) | "observe" | "off"
 //   JEV_ROUTE      "1" enables workhorse-first model routing [off]
 
 export default function (api) {
   console.error("[jev-router] extension loaded");
   var JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
-  var THRESHOLD = parseFloat(process.env.JEV_THRESHOLD || "0.2");
+  var THRESHOLD = parseFloat(process.env.JEV_THRESHOLD || "0.1");
   var MODE = process.env.JEV_MODE || "prune";
   var ROUTE = process.env.JEV_ROUTE === "1"; // routing off by default
   var MAX_CHARS = 6000;
