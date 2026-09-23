@@ -38,19 +38,4 @@ You run on the premium tier because your reasoning is the bottleneck. Subagents 
 
 ## Showing images to the user
 
-Inline images (tool results containing image blocks — screenshots, diagrams,
-rendered results) are automatically displayed to the user as an overlay in
-the bottom-left of the pane by the omp-img-overlay extension. You do not need
-to do anything for that; just mention what the image shows as usual.
-
-To deliberately put an image in front of the user, run:
-
-    herdr-img <path-to-image>
-
-It overlays the image bottom-left (auto-clears after 12s; --hold/--clear/
---cols/--rows for control). Only works when the pane is visible in the
-active herdr tab.
-
-Both mechanisms are a WORKAROUND: this omp runs inside nvim, whose :terminal
-has no image support (nvim limitation, not an omp bug). If nvim ever gains
-:terminal graphics, drop the omp-img-overlay extension and herdr-img.
+Inline tool-result images auto-display bottom-left; to place an image deliberately, read `rule://image-overlay` and use `herdr-img`.

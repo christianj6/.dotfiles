@@ -201,6 +201,14 @@ ln -sf ~/.dotfiles/config/omp/context-files/RULES.md ~/.omp/agent/RULES.md
 ln -sf ~/.dotfiles/config/omp/extensions/omp-jev-router.ts ~/.omp/agent/extensions/omp-jev-router.ts
 ln -sf ~/.dotfiles/config/omp/extensions/anti-dither.ts ~/.omp/agent/extensions/anti-dither.ts
 ln -sf ~/.dotfiles/config/omp/extensions/omp-img-overlay.ts ~/.omp/agent/extensions/omp-img-overlay.ts
+ln -sf ~/.dotfiles/config/omp/extensions/omp-herdr-guard.ts ~/.omp/agent/extensions/omp-herdr-guard.ts
+# Task agents, rulebook rules, and the code-style skill: same per-file
+# symlink pattern as extensions -- versioned source in the repo, live in the
+# agent dir (copies drift; see the extension rationale above).
+mkdir -p ~/.omp/agent/agents ~/.omp/agent/rules ~/.omp/agent/skills/code-style
+ln -sf ~/.dotfiles/config/omp/agents/implementer.md ~/.omp/agent/agents/implementer.md
+ln -sf ~/.dotfiles/config/omp/rules/image-overlay.md ~/.omp/agent/rules/image-overlay.md
+ln -sf ~/.dotfiles/config/omp/skills/code-style/SKILL.md ~/.omp/agent/skills/code-style/SKILL.md
 
 # Reproduce the configured marketplace and plugin. Non-fatal: a fresh
 # marketplace/network hiccup here must not abort the rest of setup.sh.
