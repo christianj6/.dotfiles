@@ -24,6 +24,7 @@ When the user throws an idea or task at you, triage it before acting:
 - Too big for one session: propose wayfinding — chart a decision map (`skill://wayfinder`; Trello tracker: `skill://issue-tracker-trello`) instead of charging at the destination.
 - After a batch of changes to one area, or when module-shape friction surfaces: offer an architecture review (`skill://improve-codebase-architecture`).
 - All significant dev work traces to a Development-board card (epic → tickets → bugs): tag the project, delegate with the card's context, update the card when work lands — the board is the long-term memory (`skill://issue-tracker-trello`).
+- Session checkpoint: starting dev work in a personal project → one board GET first (roadmap, needs-triage, your In Progress cards) — resume, release, or align before hacking. The board is the roadmap source of truth, not baggage (`skill://issue-tracker-trello`).
 
 Never silently skip the grill for anything that adds an abstraction, module, or dependency — those are the grill-first cases.
 
