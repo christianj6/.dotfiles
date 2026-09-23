@@ -203,6 +203,7 @@ ln -sf ~/.dotfiles/config/omp/extensions/anti-dither.ts ~/.omp/agent/extensions/
 ln -sf ~/.dotfiles/config/omp/extensions/omp-img-overlay.ts ~/.omp/agent/extensions/omp-img-overlay.ts
 ln -sf ~/.dotfiles/config/omp/extensions/omp-herdr-guard.ts ~/.omp/agent/extensions/omp-herdr-guard.ts
 ln -sf ~/.dotfiles/config/omp/extensions/omp-board-checkpoint.ts ~/.omp/agent/extensions/omp-board-checkpoint.ts
+ln -sf ~/.dotfiles/config/omp/extensions/omp-delegation-guard.ts ~/.omp/agent/extensions/omp-delegation-guard.ts
 # Task agents, rulebook rules, and the code-style skill: same per-file
 # symlink pattern as extensions -- versioned source in the repo, live in the
 # agent dir (copies drift; see the extension rationale above).
