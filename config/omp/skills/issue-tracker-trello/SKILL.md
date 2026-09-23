@@ -25,7 +25,7 @@ Resolve ids by name once per session (cache them):
 
 - **Board**: `Development`. **Lists** are the pipeline: `Maps` (standing cards: wayfinding maps, epics, per-project context), `Frontier` (ready, unclaimed tickets), `In Progress` (claimed tickets), `Done` (resolved or ruled out).
 - **Map**: a card in `Maps` labelled `wayfinder:map`. Its description IS the map body, sections exactly: `## Destination`, `## Notes`, `## Decisions so far`, `## Not yet specified`, `## Out of scope` (semantics as in `skill://wayfinder`).
-- **Ticket**: a card on the same board labelled `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`) or `bug`, plus **exactly one project label** (`prescient`, `dotfiles`, ... — resolve from the repo you are in; unknown project → ask the user, never guess). Description starts with `## Question` and the question; a `Blocked by: <card shortUrl>, ...` line sits at the top when blocked, and an `Epic: <epic shortUrl>` line when it belongs to a workstream.
+- **Ticket**: a card on the same board labelled `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`) or `bug`, plus **exactly one project label** — resolved from the repo you are in (repo dir name). No label for it yet → create it yourself (`POST /1/labels?idBoard=<boardId>`, any free color — the name is the identity) plus the `Roadmap — <project>` context card, and say so once. Work-scope (Tallence) or ambiguous → stop and ask; never guess. Description starts with `## Question` and the question; a `Blocked by: <card shortUrl>, ...` line sits at the top when blocked, and an `Epic: <epic shortUrl>` line when it belongs to a workstream.
 - **Epic (workstream)**: one long-lived card in `Maps` per significant chunk of work (e.g. `Mesh Rendering — prescient`), labelled `epic` + project. Description sections: `## Goal` (what done means), `## Design decisions` (durable, agent-facing), `## Work items` (index: `- [<name>](<shortUrl>): <status one-liner>`), `## Log` (dated one-liners: shipped, incidents, recurrences). Every ticket or bug under it carries the `Epic:` line and an index entry. Create the epic BEFORE its tickets.
 - **Claim** = assign yourself as a member AND move the card to `In Progress` — the session's first write. Unclaimed = no members.
 - **Blocking** (Trello has no native dependencies): the `Blocked by:` line lists card shortUrls. A ticket is unblocked when every listed card is in `Done`.
@@ -76,13 +76,14 @@ The orchestrator owns ALL board writes; subagents never touch Trello.
 ## Scenario → board action
 
 - Significant work starts — or you notice you are working on something the board does not track: stop, create/locate the epic, create the ticket, then work.
+- New personal project surfaces on the board (repo or chat): create its project label + `Roadmap — <project>` card immediately, mention it, keep going. Work-scope project → refuse and say why.
 - Design decision crystallizes (grilling, review): epic `## Design decisions` or `Roadmap — <project>` updated the same turn.
 - Bug or regression: Bugs and recurrence, above.
 - Work lands or is abandoned: card moves; epic index and `## Log` updated; nothing leaves the board unrecorded.
 
 ## Board hygiene
 
-At the start of board work: `GET /1/boards/<boardId>/cards?fields=name,labels,idList` and flag (a) cards with no project label, (b) epic `## Work items` entries pointing at cards no longer in Frontier/In Progress/Done. Fix before proceeding.
+At the start of board work AND after any batch of card creations: `GET /1/boards/<boardId>/cards?fields=name,labels,idList` and flag (a) cards with no project label, (b) epic `## Work items` entries pointing at cards no longer in Frontier/In Progress/Done. Fix before proceeding.
 
 ## Parallel sessions
 
