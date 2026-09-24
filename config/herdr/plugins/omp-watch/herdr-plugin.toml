@@ -1,11 +1,27 @@
 id = "dotfiles.omp-watch"
 name = "omp session watcher"
-version = "0.9.2"
+version = "0.9.3"
 min_herdr_version = "0.9.1"
 description = "Reports omp agent state to herdr by tailing omp's own session transcript, since omp's extension API does not deliver lifecycle events and herdr ships no screen-manifest fallback for omp."
 platforms = ["linux", "macos"]
 #
-# 0.9.2: repeated-"done" fix (2026-09-24, w8:p1 demoenvironment). The
+#
+# 0.9.3: roster config-version naming (2026-09-24). omp-config-version.ts
+# (agent extension) injects a "config v<N>" custom entry at session start,
+# read from config/omp/VERSION via the ~/.omp/agent/VERSION symlink --
+# snapshotted ONCE per process, so an agent started at v22 keeps showing
+# v22 after the repo moves on (parallel agents on different versions are
+# the point). watch.py reads the newest such entry from the transcript
+# HEAD (config_version()) and renames the roster entry "omp-v<N>" via
+# `herdr agent rename` -- names are separate from the agent kind ("omp"
+# stays the kind; renaming does not affect status convergence, verified
+# live). Renames only touch our own naming shape (unset/"omp"/omp-v<N>);
+# user-given agent names always win. Sessions older than the feature keep
+# no version. Also: --daemon mode (double-fork, ppid-1 aware) so the
+# watcher can be hot-swapped from a short-lived launcher -- the daemon
+# exits when the herdr server dies (SERVER_DEATH_TICKS consecutive failed
+# ticks), releasing the lock for the next server start's [[startup]]
+# instance; and SIGHUP re-execs a foreground watcher for code reload.
 # maybe_idle grace clock ran on the session FILE's mtime, but the harness
 # appends UNrecognizable entries long after a turn's final assistant
 # message -- 15-min subagent-check-in nudges, anti-dither/delegation

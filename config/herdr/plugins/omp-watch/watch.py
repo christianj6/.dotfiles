@@ -49,6 +49,8 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
 import time
@@ -82,6 +84,12 @@ POLL_SECONDS = 3
 # entries carry no verdict signal, so they must not carry a wake signal
 # either.
 IDLE_GRACE_SECONDS = 45
+# Daemon mode (--daemon): consecutive all-failing ticks before the watcher
+# concludes the herdr server itself is gone and exits cleanly, freeing the
+# singleton lock for the next server start's [[startup]] instance. Without
+# this a daemonized watcher would hold the lock forever after a server
+# death and permanently block its replacement.
+SERVER_DEATH_TICKS = 10
 # How herdr's agent registry is kept honest. Confirmed live 2026-09-05
 # (w5:p8, the heinzel-haus pane): reports from OUR source can silently
 # stop applying -- exit 0, no error body, registry state frozen -- while
@@ -177,6 +185,26 @@ def newest_session_file(cwd: str) -> Optional[Path]:
             if files:
                 return files[0]
     return None
+
+
+def config_version(path: Path, max_bytes: int = 64 * 1024) -> Optional[str]:
+    """The harness config version recorded at session start, if any.
+
+    omp-config-version.ts injects a custom_message entry ("config v<N>")
+    once per process right after the first agent run, so it sits near the
+    HEAD of the transcript. Read from the head deliberately: the version is
+    start-of-session state -- older agents keep their older version even
+    after the repo's VERSION file moves on. Sessions started before the
+    feature (or run with --no-session) have no entry -> None -> the roster
+    entry stays unversioned.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(max_bytes)
+    except OSError:
+        return None
+    m = re.search(r"config v(\d+)", head)
+    return m.group(1) if m else None
 
 
 def classify_entry(e: dict) -> Optional[str]:
@@ -495,7 +523,7 @@ def load_registry() -> Optional[Dict[str, str]]:
             [HERDR_BIN, "agent", "list"], capture_output=True, text=True, timeout=10
         )
         agents = json.loads(out.stdout)["result"]["agents"]
-        return {a["pane_id"]: a.get("agent_status") for a in agents}
+        return {a["pane_id"]: (a.get("agent_status"), a.get("name")) for a in agents}
     except Exception as exc:
         print(f"[omp-watch] agent list failed: {exc}", file=sys.stderr)
         return None
@@ -560,16 +588,27 @@ def load_panes() -> List[dict]:
 
 
 DEBUG = os.environ.get("OMP_WATCH_DEBUG") == "1"
+DAEMONIZED = False
 
 
 def dlog(msg: str) -> None:
     if DEBUG:
         print(f"[omp-watch:debug {time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
 
+_HUP = {"flag": False}
+
+
+def _on_sighup(signum: int, frame: object) -> None:
+    _HUP["flag"] = True
+
+
+signal.signal(signal.SIGHUP, _on_sighup)
+
 
 def main() -> None:
     parent_pid_at_start = os.getppid()
     last_state: Dict[str, str] = {}
+    tick_errors = 0
     # Per-pane reporting source. Starts as the shared default; a pane
     # whose reports stop converging the registry gets rotated onto a
     # fresh source name (see the constants block + registry_matches --
@@ -632,12 +671,22 @@ def main() -> None:
         # stayed stuck on "unknown"). A dead parent reparents us; exit for
         # good the instant that happens -- the new server spawns its own
         # fresh instance, and this one must not linger to duplicate it.
-        if os.getppid() != parent_pid_at_start:
+        if not DAEMONIZED and os.getppid() != parent_pid_at_start:
             print(
                 f"[omp-watch] orphaned (parent {parent_pid_at_start} -> {os.getppid()}); exiting for good",
                 file=sys.stderr,
             )
             sys.exit(0)
+        if DAEMONIZED and tick_errors >= SERVER_DEATH_TICKS:
+            print(
+                "[omp-watch] herdr server unreachable for too long -- daemon exiting; "
+                "the next server start will spawn a fresh watcher",
+                file=sys.stderr,
+            )
+            sys.exit(0)
+        if _HUP["flag"]:
+            print("[omp-watch] SIGHUP -> re-exec (code reload)", file=sys.stderr)
+            os.execv(sys.executable, [sys.executable, __file__])
 
         try:
             live, all_ppids = live_omp_pids()
@@ -745,7 +794,30 @@ def main() -> None:
                 if registry is None:
                     dlog(f"{pane_id}: registry unavailable this tick -- skipping cross-check")
                     continue
-                reg_status = registry.get(pane_id)
+                reg_status, reg_name = registry.get(pane_id, (None, None))
+                # Harness config version naming (omp-config-version.ts):
+                # the transcript records "config v<N>" at session start;
+                # name the roster entry "omp-v<N>" so parallel agents on
+                # different config versions are distinguishable. Renames
+                # only touch our own naming shape (unset/"omp"/omp-v<N>) --
+                # a user-given agent name always wins. No recorded version
+                # (pre-feature session) keeps the entry unversioned, and a
+                # leftover omp-v* name from our own earlier run is cleared.
+                desired_name = None
+                if sfile is not None:
+                    ver = config_version(sfile)
+                    if ver:
+                        desired_name = f"omp-v{ver}"
+                want_rename = None
+                if desired_name and reg_name != desired_name and (
+                    not reg_name or reg_name == "omp" or re.match(r"^omp-v\d+$", reg_name)
+                ):
+                    want_rename = desired_name
+                elif not desired_name and reg_name and re.match(r"^omp-v\d+$", reg_name):
+                    want_rename = "--clear"
+                if want_rename:
+                    if run_herdr("agent", "rename", pane_id, want_rename):
+                        dlog(f"{pane_id}: renamed -> {want_rename!r}")
                 if registry_matches(verdict, reg_status):
                     unconfirmed.pop(pane_id, None)
                     rotations.pop(pane_id, None)
@@ -823,8 +895,10 @@ def main() -> None:
                 # If the send reached herdr, the next tick's registry check
                 # converges and resets the counters; if herdr silently
                 # dropped it, the counters keep climbing until rotation.
+            tick_errors = 0
         except Exception as exc:  # never let one bad tick kill the watcher
-            print(f"[omp-watch] tick error: {exc}", file=sys.stderr)
+            tick_errors += 1
+            print(f"[omp-watch] tick error ({tick_errors} consecutive): {exc}", file=sys.stderr)
             if DEBUG:
                 import traceback
                 traceback.print_exc(file=sys.stderr)
@@ -838,6 +912,28 @@ if __name__ == "__main__":
     # *within the same process*, and re-acquiring a flock from a second
     # freshly-opened file handle would see this process's own still-held
     # first handle as "another instance" and wrongly self-exit.
+    # --daemon: double-fork so the watcher detaches from any short-lived
+    # launcher (shell, agent bash tool) and reparents to launchd with ppid 1.
+    # A bash-launched foreground copy would self-terminate the moment its
+    # parent exited (the orphan check is keyed to the spawning parent); a
+    # daemonized copy skips that check (DAEMONIZED) and instead exits when
+    # the herdr server itself goes away. The double-fork guarantees the
+    # surviving grandchild is never a session leader and has ppid 1 from
+    # its first tick onward.
+    if "--daemon" in sys.argv:
+        sys.argv.remove("--daemon")
+        if os.fork():
+            sys.exit(0)
+        os.setsid()
+        if os.fork():
+            sys.exit(0)
+        DAEMONIZED = True
+        devnull = os.open(os.devnull, os.O_RDWR)
+        os.dup2(devnull, 0)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+        if devnull > 2:
+            os.close(devnull)
     acquire_singleton_lock()
     # Respawn on an unexpected crash (main()'s own per-tick try/except
     # already handles routine failures, so this is a last-resort net);

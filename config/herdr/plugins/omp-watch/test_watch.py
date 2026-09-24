@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Regression tests for watch.py's infer_state() verdict table.
-
 Plain asserts, no framework: `python3 test_watch.py` runs everything and
 prints one line per group. These pin the OBSERVABLE contract that matters
 to the herdr sidebar: which transcript tails mean "working", which mean
@@ -325,6 +324,27 @@ def test_registry_matches_is_the_sidebar_truth():
     # must be (re-)reported at least once or it never shows in the sidebar.
     assert not watch.registry_matches("idle", None)
     assert not watch.registry_matches("idle", "unknown")
+
+
+def test_config_version_from_head():
+    # omp-config-version.ts injects a "config v<N>" custom entry at session
+    # start; the watcher reads it from the HEAD of the transcript --
+    # start-of-session state, so older agents keep their older version even
+    # after the repo's VERSION file moves on.
+    p = _tmp_jsonl([
+        json.dumps({"type": "custom_message", "customType": "config-version", "content": "config v23"}).encode(),
+        _msg_entry("user", [block("text")]),
+    ])
+    assert watch.config_version(p) == "23"
+    p.unlink()
+
+
+def test_config_version_absent_for_pre_feature_sessions():
+    # Sessions started before the feature (or with --no-session) carry no
+    # version entry: the roster entry must stay unversioned, never guess.
+    p = _tmp_jsonl([_msg_entry("user", [block("text")])])
+    assert watch.config_version(p) is None
+    p.unlink()
 
 
 def main():
