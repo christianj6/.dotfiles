@@ -332,8 +332,8 @@ def test_config_version_from_head():
     # start-of-session state, so older agents keep their older version even
     # after the repo's VERSION file moves on.
     p = _tmp_jsonl([
-        json.dumps({"type": "custom_message", "customType": "config-version", "content": "config v23"}).encode(),
-        _msg_entry("user", [block("text")]),
+        json.dumps({"type": "custom_message", "customType": "config-version", "content": "config v23"}).encode() + b"\n"
+        + _msg_entry("user", [block("text")]),
     ])
     assert watch.config_version(p) == "23"
     p.unlink()
@@ -343,6 +343,59 @@ def test_config_version_absent_for_pre_feature_sessions():
     # Sessions started before the feature (or with --no-session) carry no
     # version entry: the roster entry must stay unversioned, never guess.
     p = _tmp_jsonl([_msg_entry("user", [block("text")])])
+    assert watch.config_version(p) is None
+    p.unlink()
+
+
+def test_config_version_resume_append_wins():
+    # The user's REPL flow RESUMES into the same jsonl: a fresh process
+    # appends its snapshot at the tail of a big transcript, and the newest
+    # entry is the running agent's version.
+    p = _tmp_jsonl([
+        json.dumps({"type": "message", "message": {"role": "user", "content": [
+            {"type": "text", "text": "x" * 5000}]}}).encode() + b"\n",
+    ])
+    assert watch.config_version(p) is None
+    with open(p, "ab") as f:
+        f.write(json.dumps({"type": "custom_message", "customType": "config-version", "content": "config v23"}).encode() + b"\n")
+    assert watch.config_version(p) == "23"
+    p.unlink()
+
+
+def test_config_version_newest_wins_on_multiple():
+    p = _tmp_jsonl([
+        json.dumps({"type": "custom_message", "customType": "config-version", "content": "config v22"}).encode() + b"\n",
+    ])
+    assert watch.config_version(p) == "22"
+    with open(p, "ab") as f:
+        f.write(json.dumps({"type": "custom_message", "customType": "config-version", "content": "config v24"}).encode() + b"\n")
+    assert watch.config_version(p) == "24"
+    p.unlink()
+
+
+def test_config_version_truncated_file_resets():
+    # A shrunken file (fresh/truncated session at the same path) must reset
+    # the consumed-offset cache, not keep the stale version.
+    p = _tmp_jsonl([
+        json.dumps({"type": "custom_message", "customType": "config-version", "content": "config v23"}).encode() + b"\n",
+    ])
+    assert watch.config_version(p) == "23"
+    p.write_bytes(b"")
+    assert watch.config_version(p) is None
+    p.unlink()
+
+
+def test_config_version_ignores_conversation_echoes():
+    # A 2026-09-24 live false positive: the main agent's transcript quoted
+    # the injected entry inside conversation text (probe outputs), and the
+    # raw-substring scanner renamed that pane from its own chatter. Only a
+    # line that PARSES as the actual config-version entry counts; echoes
+    # inside message entries are ignored.
+    echo = json.dumps({"type": "message", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": 'output was {"type":"custom_message","customType":"config-version","content":"config v23"} quoted'}]}}).encode() + b"\n"
+    p = _tmp_jsonl([
+        echo + _msg_entry("user", [block("text")]),
+    ])
     assert watch.config_version(p) is None
     p.unlink()
 

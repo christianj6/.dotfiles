@@ -187,24 +187,72 @@ def newest_session_file(cwd: str) -> Optional[Path]:
     return None
 
 
-def config_version(path: Path, max_bytes: int = 64 * 1024) -> Optional[str]:
-    """The harness config version recorded at session start, if any.
+_ver_cache: Dict[str, Tuple[int, Optional[str], bytes]] = {}
+SCAN_CHUNK_BYTES = 2 * 1024 * 1024
+CARRY_BYTES = 64
 
-    omp-config-version.ts injects a custom_message entry ("config v<N>")
-    once per process right after the first agent run, so it sits near the
-    HEAD of the transcript. Read from the head deliberately: the version is
-    start-of-session state -- older agents keep their older version even
-    after the repo's VERSION file moves on. Sessions started before the
-    feature (or run with --no-session) have no entry -> None -> the roster
-    entry stays unversioned.
+
+def config_version(path: Path) -> Optional[str]:
+    """The RUNNING agent's harness config version, or None.
+
+    omp-config-version.ts appends a custom_message entry ("config v<N>")
+    at every process start. Sessions RESUME into the same jsonl (the
+    user's REPL flow), so on a resumed transcript the newest entry sits
+    near the tail of a multi-MB file -- a head-only scan never sees it.
+    Newest match wins by design: a resumed process is a new agent start,
+    and its snapshot is the running version. Scanned INCREMENTALLY: a
+    per-file (consumed-offset, version, carry) cache forward-reads at
+    most SCAN_CHUNK_BYTES of new bytes per call, so quiet multi-MB
+    transcripts cost nothing and active ones catch up within a few
+    ticks. A shrunken file (fresh/truncated session) resets the scan.
+    Matches are raw substring finds, NOT line-gated: an entry can span a
+    chunk boundary (customType in one chunk, the version digits in the
+    next), so the last CARRY_BYTES ride along to stitch the seam -- the
+    same seam failure class the fan-out guards exist for.
     """
+    key = str(path)
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            head = f.read(max_bytes)
+        fsize = path.stat().st_size
     except OSError:
-        return None
-    m = re.search(r"config v(\d+)", head)
-    return m.group(1) if m else None
+        return _ver_cache.pop(key, (0, None, b""))[1]
+    offset, ver, carry = _ver_cache.get(key, (0, None, b""))
+    if fsize < offset:
+        offset, ver, carry = 0, None, b""
+    if offset >= fsize:
+        return ver
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            chunk = f.read(min(fsize - offset, SCAN_CHUNK_BYTES))
+    except OSError:
+        return ver
+    data = carry + chunk
+    new_offset = offset + len(chunk)
+    for line in data.split(b"\n"):
+        if b"config-version" not in line:
+            continue
+        # Structural check, not substring: the line must PARSE as the actual
+        # injected entry (custom_message/config-version). Conversation text
+        # quoting "config v23" lives inside message entries whose parse
+        # yields type=message -- skipped. Seam-split partial lines fail to
+        # parse -- skipped; the carry makes the complete line available in
+        # the next chunk.
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        if (
+            not isinstance(entry, dict)
+            or entry.get("type") != "custom_message"
+            or entry.get("customType") != "config-version"
+        ):
+            continue
+        m = re.search(rb"config v(\d+)", line)
+        if m:
+            ver = m.group(1).decode()
+    carry = chunk[-CARRY_BYTES:] if len(chunk) >= CARRY_BYTES else carry + chunk
+    _ver_cache[key] = (new_offset, ver, carry)
+    return ver
 
 
 def classify_entry(e: dict) -> Optional[str]:
@@ -928,12 +976,16 @@ if __name__ == "__main__":
         if os.fork():
             sys.exit(0)
         DAEMONIZED = True
-        devnull = os.open(os.devnull, os.O_RDWR)
-        os.dup2(devnull, 0)
-        os.dup2(devnull, 1)
-        os.dup2(devnull, 2)
-        if devnull > 2:
-            os.close(devnull)
+        # Detach stdio to a log file, not /devnull: a silent daemon is
+        # undebuggable -- a failed re-exec crash-loops invisibly under the
+        # crash-retry net (hit live 2026-09-24).
+        log_path = os.environ.get("OMP_WATCH_LOG", "/tmp/omp-watch-daemon.log")
+        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        os.dup2(log_fd, 0)
+        os.dup2(log_fd, 1)
+        os.dup2(log_fd, 2)
+        if log_fd > 2:
+            os.close(log_fd)
     acquire_singleton_lock()
     # Respawn on an unexpected crash (main()'s own per-tick try/except
     # already handles routine failures, so this is a last-resort net);
