@@ -91,7 +91,7 @@ Starting dev work in a personal project → ONE board GET (`GET /1/boards/<board
 
 After any batch of card creations, hygiene: flag cards with no project label, epic `## Work items` entries pointing at cards no longer in Frontier/In Progress/Done, and subsystems with 2+ open bug cards (propose epic). Fix before proceeding.
 
-omp injects this checkpoint automatically at session start (`omp-board-checkpoint` extension: once per process, silent when nothing is actionable, skipped for work-scope cwd). The manual rule above is the fallback — and what you act on when the injection names cards.
+omp injects this checkpoint automatically at session start (`omp-board-checkpoint` extension: once per process, with the project's roadmap gist, open epics, and any needs-triage/In Progress cards; skipped only for work-scope cwd). The manual rule above is the fallback — act on what the injection names.
 
 ## Parallel sessions
 

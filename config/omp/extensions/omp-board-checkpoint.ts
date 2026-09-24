@@ -1,14 +1,16 @@
-// omp-board-checkpoint — the Development board announces itself at session start.
-// Solves: prompt-level "session checkpoint" bullets get skipped when the user
-// hands the agent a direct task (observed live on the prescient agent,
-// 2026-09-23). Hooks before_agent_start ONCE per process and injects a short
-// custom message ONLY when there is something actionable for this project:
-//   - needs-triage cards (the human's admin lane)
-//   - In Progress cards (resume or release)
-//   - no Roadmap — <project> card (the anti "hack away from memory" trigger)
-// Fail-open and silent: board unreachable, work-scope cwd (Tallence), or
-// nothing actionable → no message, session starts untouched. Set
-// BOARD_CHECKPOINT_DEBUG=1 to trace decisions on stderr.
+// omp-board-checkpoint — the Development board opens every session itself.
+// History: v1 injected ONLY on actionable states (needs-triage, In Progress,
+// missing roadmap) and stayed silent otherwise — observed live 2026-09-23:
+// a fresh session in a fully-onboarded project got nothing, skipped the
+// prompt-level checkpoint, and the board was "lost in the shuffle". Lesson:
+// a source of truth needs a PRESENCE signal, not just alarms. v2 ALWAYS
+// injects a compact summary for personal projects (skips work-scope cwd):
+//   Roadmap: <gist>          — standing context, one line
+//   Epics: <name> — <goal>   — what workstreams exist (max 4)
+//   needs-triage / In Progress lines — only when present
+// One board GET by the hook, once per process, ~4 lines of context: the
+// model never has to remember the board exists. Fail-open and silent on
+// creds/network problems. BOARD_CHECKPOINT_DEBUG=1 traces on stderr.
 export default function (api) {
   var BOARD_ID = process.env.DEV_BOARD_ID || "6ab3e379437eaab1279a7e77";
   var CRED_FILES = ["/.omp/agent/.env", "/.dotfiles/.env"];
@@ -37,13 +39,38 @@ export default function (api) {
     return (card.labels || []).some(function (l) { return l.name === name; });
   }
 
+  function cap(s, n) {
+    s = String(s || "").trim();
+    return s.length > n ? s.slice(0, n - 3) + "..." : s;
+  }
+
+  function firstLine(text) {
+    var lines = String(text || "").split("\n");
+    for (var i = 0; i < lines.length; i++) {
+      var l = lines[i].trim();
+      if (l) return cap(l.replace(/^#+\s*/, ""), 110);
+    }
+    return "";
+  }
+
+  function goalOf(text) {
+    var lines = String(text || "").split("\n");
+    for (var i = 0; i < lines.length; i++) {
+      if (/^##\s*goal/i.test(lines[i])) {
+        for (var j = i + 1; j < lines.length; j++) {
+          if (lines[j].trim()) return cap(lines[j].replace(/^#+\s*/, "").replace(/^-\s*/, ""), 90);
+        }
+      }
+    }
+    return firstLine(text);
+  }
+
   api.on("before_agent_start", async function (event) {
     var DBG = process.env.BOARD_CHECKPOINT_DEBUG;
     if (done) return;
     done = true;
     try {
       var cwd = (event && (event.cwd || (event.ctx && event.ctx.cwd))) || process.cwd();
-      if (DBG) console.error("[board-checkpoint] fired; cwd=" + cwd);
       if (!cwd || cwd.indexOf("Desktop/tallence") !== -1) {
         if (DBG) console.error("[board-checkpoint] skip: work scope or no cwd");
         return;
@@ -58,7 +85,7 @@ export default function (api) {
       var u = new URL("https://api.trello.com/1/boards/" + BOARD_ID + "/cards");
       u.searchParams.set("key", c.key);
       u.searchParams.set("token", c.token);
-      u.searchParams.set("fields", "name,idList,idMembers,labels");
+      u.searchParams.set("fields", "name,idList,idMembers,labels,desc");
       var res = await fetch(u, { signal: AbortSignal.timeout(4000) });
       if (DBG) console.error("[board-checkpoint] cards status=" + res.status);
       if (!res.ok) return;
@@ -69,34 +96,44 @@ export default function (api) {
       ul.searchParams.set("token", c.token);
       ul.searchParams.set("fields", "name");
       var rl = await fetch(ul, { signal: AbortSignal.timeout(4000) });
-      if (DBG) console.error("[board-checkpoint] lists status=" + rl.status);
       if (!rl.ok) return;
       var lists = await rl.json();
       var listId = {};
       lists.forEach(function (l) { listId[l.name] = l.id; });
 
-      var names = function (cs) { return cs.slice(0, 3).map(function (card) { return card.name; }).join("; "); };
       var lines = [];
+      var roadmapCard = cards.filter(function (card) {
+        return card.idList === listId["Maps"] && label(card, "context") && card.name.toLowerCase().indexOf(project.toLowerCase()) !== -1;
+      })[0];
+      if (roadmapCard) {
+        var gist = firstLine(roadmapCard.desc) || roadmapCard.name;
+        lines.push("Roadmap: " + gist);
+      }
+
+      var epics = cards.filter(function (card) {
+        return card.idList === listId["Maps"] && label(card, "epic") && label(card, project);
+      });
+      if (epics.length) {
+        var items = epics.slice(0, 4).map(function (card) {
+          return card.name.replace(/ — .*/, "") + " — " + goalOf(card.desc);
+        });
+        if (epics.length > 4) items.push("(" + (epics.length - 4) + " more)");
+        lines.push("Epics: " + items.join(" | "));
+      }
 
       var triage = cards.filter(function (card) {
         return label(card, "needs-triage") && (label(card, project) || !(card.labels || []).some(function (l) { return l.name; }));
       });
-      if (triage.length) lines.push("needs-triage (" + triage.length + "): " + names(triage) + " — triage first");
+      if (triage.length) lines.push("needs-triage (" + triage.length + "): " + triage.slice(0, 3).map(function (card) { return card.name; }).join("; ") + " — triage first");
 
       var inprog = cards.filter(function (card) { return card.idList === listId["In Progress"] && label(card, project); });
-      if (inprog.length) lines.push("In Progress (" + inprog.length + "): " + names(inprog) + " — resume or release");
+      if (inprog.length) lines.push("In Progress (" + inprog.length + "): " + inprog.slice(0, 3).map(function (card) { return card.name; }).join("; ") + " — resume or release");
 
-      var roadmap = cards.some(function (card) {
-        return card.idList === listId["Maps"] && label(card, "context") && card.name.toLowerCase().indexOf(project.toLowerCase()) !== -1;
-      });
-      if (DBG) console.error("[board-checkpoint] project=" + project + " cards=" + cards.length + " triage=" + triage.length + " inprog=" + inprog.length + " roadmap=" + roadmap);
-      if (!roadmap) lines.push("No Roadmap — " + project + " card yet: create label + roadmap card before significant work (skill://issue-tracker-trello)");
-
-      if (!lines.length) {
-        if (DBG) console.error("[board-checkpoint] nothing actionable -> silent");
-        return;
+      if (!roadmapCard && !epics.length) {
+        lines.push("This project is not tracked yet: create label + Roadmap — " + project + " card before significant work (skill://issue-tracker-trello)");
       }
-      if (DBG) console.error("[board-checkpoint] injecting " + lines.length + " line(s)");
+      if (DBG) console.error("[board-checkpoint] project=" + project + " roadmap=" + !!roadmapCard + " epics=" + epics.length + " lines=" + lines.length);
+
       return {
         message: {
           customType: "board-checkpoint",
