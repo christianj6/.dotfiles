@@ -59,7 +59,7 @@ def test_latest_verdict_survives_giant_entries():
         giant_tool_result, b"\n",
     ])
     try:
-        assert watch.latest_verdict(p) == "working"
+        assert watch.latest_verdict(p) == ("working", None)
     finally:
         p.unlink()
 
@@ -78,7 +78,7 @@ def test_latest_verdict_skips_giant_unrecognized_and_partial_tail():
         giant_unrecognized, b"\n",
     ])
     try:
-        assert watch.latest_verdict(p) == "working"
+        assert watch.latest_verdict(p)[0] == "working"
     finally:
         p.unlink()
     # 2) partial final line (no trailing newline) -> skipped
@@ -88,7 +88,7 @@ def test_latest_verdict_skips_giant_unrecognized_and_partial_tail():
         giant_unrecognized,  # deliberately no b"\n"
     ])
     try:
-        assert watch.latest_verdict(p) == "working"
+        assert watch.latest_verdict(p)[0] == "working"
     finally:
         p.unlink()
 
@@ -99,15 +99,68 @@ def test_latest_verdict_maybe_idle_and_empty():
         _msg_entry("assistant", [block("thinking"), block("text")]), b"\n",
     ])
     try:
-        assert watch.latest_verdict(p) == "maybe_idle"
+        assert watch.latest_verdict(p)[0] == "maybe_idle"
     finally:
         p.unlink()
     p = _tmp_jsonl([])
     try:
-        assert watch.latest_verdict(p) is None
+        assert watch.latest_verdict(p) == (None, None)
     finally:
         p.unlink()
 
+
+def test_latest_verdict_returns_signal_age_not_file_age():
+    # The 2026-09-24 w8:p1 repeated-"done" flap: the harness appends
+    # UNrecognizable entries (subagent-check-in / anti-dither nudges,
+    # model_change records) long after the turn's final assistant message.
+    # The idle-grace clock must run on the newest RECOGNIZABLE entry's own
+    # timestamp, not the file mtime -- otherwise every such append re-arms
+    # the 45s window, flips the verdict back to "working", and re-fires the
+    # working->idle transition (and its Discord ping) forever.
+    import time as _time
+    old = _time.strftime("%Y-%m-%dT%H:%M:%S.000Z", _time.gmtime(_time.time() - 3600))
+    p = _tmp_jsonl([
+        _msg_entry("user", [block("text")]), b"\n",
+        # final assistant message: one hour old by its own timestamp
+        json.dumps({"type": "message", "timestamp": old, "message": {
+            "role": "assistant", "content": [{"type": "text", "text": "done"}],
+            "stopReason": "stop"}}).encode(), b"\n",
+        # fresh unrecognizable harness append (bumps mtime to NOW)
+        json.dumps({"type": "custom_message", "customType": "subagent-checkin",
+                    "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%S.000Z", _time.gmtime()),
+                    "content": []}).encode(), b"\n",
+    ])
+    try:
+        verdict, tail_epoch = watch.latest_verdict(p)
+        assert verdict == "maybe_idle"
+        assert tail_epoch is not None
+        # the signal is an hour old even though the FILE was just written
+        assert _time.time() - tail_epoch > 3500
+        # ...so main()'s gate reads idle, not working, despite fresh mtime
+        assert _time.time() - p.stat().st_mtime < 60
+    finally:
+        p.unlink()
+
+
+def test_latest_verdict_newer_recognizable_entry_resets_signal_age():
+    # A genuine continuation (new toolCall/user entry) IS a signal: its
+    # own timestamp becomes the grace anchor and the verdict reopens.
+    import time as _time
+    old = _time.strftime("%Y-%m-%dT%H:%M:%S.000Z", _time.gmtime(_time.time() - 3600))
+    now = _time.strftime("%Y-%m-%dT%H:%M:%S.000Z", _time.gmtime())
+    p = _tmp_jsonl([
+        json.dumps({"type": "message", "timestamp": old, "message": {
+            "role": "assistant", "content": [{"type": "text", "text": "interim"}],
+            "stopReason": "stop"}}).encode(), b"\n",
+        json.dumps({"type": "message", "timestamp": now, "message": {
+            "role": "user", "content": [{"type": "text", "text": "go on"}]}}).encode(), b"\n",
+    ])
+    try:
+        verdict, tail_epoch = watch.latest_verdict(p)
+        assert verdict == "working"
+        assert tail_epoch is not None and _time.time() - tail_epoch < 60
+    finally:
+        p.unlink()
 
 def custom(custom_type):
     return {"type": "custom", "customType": custom_type}
@@ -196,7 +249,7 @@ def test_latest_verdict_error_tail():
             "errorStatus": 404}}).encode(), b"\n",
     ])
     try:
-        assert watch.latest_verdict(p) == "blocked"
+        assert watch.latest_verdict(p)[0] == "blocked"
     finally:
         p.unlink()
 

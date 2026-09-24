@@ -1,11 +1,26 @@
 id = "dotfiles.omp-watch"
 name = "omp session watcher"
-version = "0.9.1"
+version = "0.9.2"
 min_herdr_version = "0.9.1"
 description = "Reports omp agent state to herdr by tailing omp's own session transcript, since omp's extension API does not deliver lifecycle events and herdr ships no screen-manifest fallback for omp."
 platforms = ["linux", "macos"]
-
-# herdr's 
+#
+# 0.9.2: repeated-"done" fix (2026-09-24, w8:p1 demoenvironment). The
+# maybe_idle grace clock ran on the session FILE's mtime, but the harness
+# appends UNrecognizable entries long after a turn's final assistant
+# message -- 15-min subagent-check-in nudges, anti-dither/delegation
+# nudges, model_change records. Every such append re-armed the 45s
+# window: the verdict flipped back to "working", expired to "idle" again
+# ~45s later, and each cycle re-fired the working->idle transition that
+# agent-discord's notify hook turns into a "done" ping -- five pings for
+# ONE turn (11:16:10, 11:21:37, 11:45:06, 11:49:31, 11:51:35), then
+# again at 12:06:37, each exactly 45s after the triggering append.
+# latest_verdict() now also returns the newest recognizable entry's own
+# "timestamp" as an epoch, and main() keys the grace clock on that
+# signal age (mtime only as fallback for timestamp-less entries).
+# Unrecognizable entries carry no verdict signal, so they carry no wake
+# signal either; a genuine continuation still reopens "working" the
+# moment its recognizable entry lands.
 #
 # 0.9.0: pid-based omp attribution (2026-09-15). The cwd-keyed presence
 # match mis-credited ANY pane sharing a cwd with a live omp process --
@@ -40,7 +55,7 @@ platforms = ["linux", "macos"]
 # or scripts/herdr-clear-agent-claims.sh (stops the server, strips
 # claims). Prevention is in the herdr-workstreams skill: strip HERDR_*
 # before invoking another agent CLI as a subprocess.
-[[startup]] hook has no ongoing crash supervision AND does not
+# herdr's [[startup]] hook has no ongoing crash supervision AND does not
 # signal this process when the server itself shuts down -- both verified
 # empirically 2026-09-04. A shell respawn-loop wrapper (`while true; do
 # python3 watch.py; done`) fixed the first problem but made the second one

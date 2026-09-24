@@ -31,8 +31,9 @@ Two signals that work regardless of either broken path:
    continuations vs 861 genuine ends across all local transcripts, with
    NO per-entry field distinguishing the two (same keys, stopReason
    "stop" on both). The continuation lands p50 12.7s / p90 42s after the
-   interim text, so that tail is held "working" until the session file
-   goes quiet.
+   interim text, so that tail is held "working" until the transcript goes
+   quiet -- quiet measured from the newest recognizable entry's own
+   timestamp (see IDLE_GRACE_SECONDS for why that is not the file mtime).
 
 Reports via the documented custom-integration CLI pattern:
 https://herdr.dev/docs/integrations/#integrate-your-own-agent
@@ -51,8 +52,9 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 POLL_SECONDS = 3
 # How long a session file must stay silent after a text-only assistant
@@ -64,8 +66,21 @@ POLL_SECONDS = 3
 # 259s after the interim text, and the interim entry is indistinguishable
 # from a genuine final (same keys, stopReason "stop" on both). 45s covers
 # ~90% of continuations outright; the rest self-correct the moment the
-# marker lands, because ANY new byte refreshes mtime and flips the
-# verdict straight back to "working".
+# continuation lands, because any newer RECOGNIZABLE entry (toolCall,
+# user message, toolResult) re-opens the verdict to "working" immediately.
+# The quiet clock is keyed to the NEWEST RECOGNIZABLE ENTRY'S OWN
+# timestamp, never the file mtime: harness background machinery appends
+# UNrecognizable entries long after the turn ended (subagent-check-in
+# nudges, anti-dither/mid-run-todo nudges, model_change records --
+# confirmed live 2026-09-24 on w8:p1, whose transcript kept receiving
+# custom_message/model_change appends for hours after the final
+# assistant message). Keying on mtime made every such append reset the
+# 45s window: verdict flipped back to "working", expired to "idle" again
+# ~45s later, and each cycle re-fired the working->idle transition that
+# agent-discord's notify hook turns into a repeated "done" ping (five
+# pings for one turn, each exactly 45s after an append). Unrecognizable
+# entries carry no verdict signal, so they must not carry a wake signal
+# either.
 IDLE_GRACE_SECONDS = 45
 # How herdr's agent registry is kept honest. Confirmed live 2026-09-05
 # (w5:p8, the heinzel-haus pane): reports from OUR source can silently
@@ -205,8 +220,10 @@ def classify_entry(e: dict) -> Optional[str]:
         # continuations vs 861 genuine ends across all local
         # transcripts, with NO per-entry field distinguishing the two
         # (same keys, stopReason "stop" on both). Returned as
-        # "maybe_idle" so main() can hold it working until the file
-        # goes quiet (IDLE_GRACE_SECONDS). Thinking-only/empty
+        # "maybe_idle" so main() can hold it working until the transcript
+        # goes quiet (IDLE_GRACE_SECONDS, measured from the newest
+        # recognizable entry's own timestamp, not the file mtime).
+        # Thinking-only/empty
         # content still means reasoning, not yet answered.
         # stopReason is the turn's exit status and outranks content shape:
         # "error" is a DEAD turn -- model/provider failure (verified live
@@ -239,7 +256,7 @@ def infer_state(entries: List[dict]) -> Optional[str]:
     """Walk entries oldest->newest; the LAST recognizable entry decides.
     Kept as the list-based form of latest_verdict() for tests and
     one-off replays. The ambiguous text-only-assistant tail returns
-    "maybe_idle" rather than "idle"; main() gates that on file
+    "maybe_idle" rather than "idle"; main() gates that on signal
     quiescence (IDLE_GRACE_SECONDS) before reporting idle to herdr."""
     verdict: Optional[str] = None
     for e in entries:
@@ -249,11 +266,26 @@ def infer_state(entries: List[dict]) -> Optional[str]:
     return verdict
 
 
-def latest_verdict(path: Path, max_bytes: int = 8 * 1024 * 1024, max_parsed: int = 4000) -> Optional[str]:
-    """Verdict of the newest COMPLETE recognizable entry, scanning the
-    file backwards from EOF. Replaced a fixed 32KB tail window after it
-    collapsed to "no recognizable entries -> default idle" whenever the
-    newest entry was bigger than the window: seek(size - 32KB) lands
+def _entry_epoch(e: dict) -> Optional[float]:
+    """Wall-clock epoch of an entry's own "timestamp" field, or None.
+    omp timestamps are ISO-8601 with a trailing Z; parsed here so the
+    idle-grace clock can run on signal age instead of file mtime."""
+    ts = e.get("timestamp")
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def latest_verdict(
+    path: Path, max_bytes: int = 8 * 1024 * 1024, max_parsed: int = 4000
+) -> Tuple[Optional[str], Optional[float]]:
+    """(verdict, tail_epoch) of the newest COMPLETE recognizable entry,
+    scanning the file backwards from EOF. Replaced a fixed 32KB tail window
+    after it collapsed to "no recognizable entries -> default idle" whenever
+    the newest entry was bigger than the window: seek(size - 32KB) lands
     mid-line, readline() discards everything to EOF, and a heinzel-
     exploration-sized agent (40-60KB toolResult/assistant entries from
     big file reads, back to back) left the window empty for ~100s of
@@ -263,8 +295,11 @@ def latest_verdict(path: Path, max_bytes: int = 8 * 1024 * 1024, max_parsed: int
     mid-flush = skip, never mis-parse), unparseable lines are skipped,
     and the scan stops at the first recognizable entry -- exactly
     infer_state's "last recognizable entry wins" semantics, made robust
-    to any entry size. Budget-bounded; exhausting it returns None,
-    which main() treats like any other unrecognizable tail."""
+    to any entry size. Budget-bounded; exhausting it returns (None, None),
+    which main() treats like any other unrecognizable tail. tail_epoch is
+    the newest recognizable entry's OWN timestamp (see the
+    IDLE_GRACE_SECONDS block for why that must not be the file mtime);
+    None when the entry carries no parseable timestamp."""
     size = path.stat().st_size
     pos = size
     carry = b""  # head-fragment of a line whose tail was already scanned
@@ -301,8 +336,8 @@ def latest_verdict(path: Path, max_bytes: int = 8 * 1024 * 1024, max_parsed: int
                 parsed += 1
                 v = classify_entry(e)
                 if v is not None:
-                    return v
-    return None
+                    return v, _entry_epoch(e)
+    return None, None
 
 
 def process_cwd(pid: int) -> Optional[str]:
@@ -651,16 +686,21 @@ def main() -> None:
                 # mean idle. Unfinished-turn entries hold "working" no
                 # matter how long the model thinks silently; the ONLY
                 # time-gated path is the ambiguous text-only assistant
-                # tail ("maybe_idle"), held working until the file has
+                # tail ("maybe_idle"), held working until the transcript has
                 # been quiet for IDLE_GRACE_SECONDS (see infer_state --
                 # omp's loop continues the turn after interim text-only
-                # answers, and any new byte flips this back to working).
+                # answers, and any newer recognizable entry flips this
+                # back to working; unrecognizable background appends --
+                # nudges, model_change -- do not, or every such append
+                # would re-fire a working->idle transition and its
+                # Discord "done" ping, the 2026-09-24 w8:p1 flap).
                 verdict = "idle"
                 sfile = newest_session_file(cwd_raw)
                 tail_verdict = None
+                tail_epoch = None
                 quiet = None
                 if sfile is not None:
-                    tail_verdict = latest_verdict(sfile)
+                    tail_verdict, tail_epoch = latest_verdict(sfile)
                     if tail_verdict == "blocked":
                         # Turn-level failure (model/provider error): hold
                         # blocked until the transcript's next entry -- a new
@@ -671,7 +711,17 @@ def main() -> None:
                     elif tail_verdict == "working":
                         verdict = "working"
                     elif tail_verdict == "maybe_idle":
-                        quiet = time.time() - sfile.stat().st_mtime
+                        # Signal age, not file age: unrecognized appends
+                        # (harness nudges, model_change) bump mtime for
+                        # hours after the turn ended without carrying any
+                        # verdict signal; keying on mtime re-armed the
+                        # grace window on each one. Fall back to mtime only
+                        # when the entry itself carries no parseable
+                        # timestamp.
+                        signal_ts = tail_epoch
+                        if signal_ts is None:
+                            signal_ts = sfile.stat().st_mtime
+                        quiet = time.time() - signal_ts
                         verdict = "working" if quiet < IDLE_GRACE_SECONDS else "idle"
                 dlog(
                     f"{pane_id}: cwd={cwd_raw!r} sfile={sfile.name if sfile else None} "
