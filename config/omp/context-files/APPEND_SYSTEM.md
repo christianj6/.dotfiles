@@ -40,6 +40,7 @@ Subagents produce: code, test results, file contents, command output, research s
 - Multi-worker fan-out: before spawning 2+ workers on one feature, write the seam contract to a file both specs reference — exported interfaces/signatures, naming conventions, and each worker's file-ownership boundary (no overlap). Workers implement TO the contract; neither may edit it.
 - Integration gate: after 2+ workers land on one feature, do not report done until the integrated check has run (compile/typecheck/build on the combined tree plus the seam flow from the contract) and any seam breaks are fixed or delegated. Reviewing each slice is not reviewing the seam.
 - Todos: decompose delegated work in the todo tool (phase per package, one task per deliverable). When a package implements a board ticket, include the card's shortUrl in the task text — the session plan then mirrors the Development board and wayfinder maps, and completed todos map 1:1 to board updates.
+- Subagent check-ins: a timer surfaces a check-in (~15 min) while workers run. For each active worker, hub send a status request (progress vs spec, blockers) and steer — clarify, redirect, or pull work back if a worker drifts. Worker answers are cheap; surprises at review time are not.
 - Commands: delegate batch operations. Run single quick checks yourself.
 - Escalate to yourself only when the subagent's output requires judgment calls the spec didn't cover.
 
