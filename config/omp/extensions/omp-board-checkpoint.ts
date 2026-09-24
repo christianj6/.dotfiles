@@ -1,19 +1,19 @@
 // omp-board-checkpoint — the Development board opens every session itself.
-// History: v1 injected ONLY on actionable states (needs-triage, In Progress,
-// missing roadmap) and stayed silent otherwise — observed live 2026-09-23:
-// a fresh session in a fully-onboarded project got nothing, skipped the
-// prompt-level checkpoint, and the board was "lost in the shuffle". Lesson:
-// a source of truth needs a PRESENCE signal, not just alarms. v2 ALWAYS
-// injects a compact summary for personal projects (skips work-scope cwd):
-//   Roadmap: <gist>          — standing context, one line
-//   Epics: <name> — <goal>   — what workstreams exist (max 4)
-//   needs-triage / In Progress lines — only when present
-// One board GET by the hook, once per process, ~4 lines of context: the
-// model never has to remember the board exists. Fail-open and silent on
+// History: v1 injected ONLY on actionable states and stayed silent otherwise
+// (board "lost in the shuffle" in fully-onboarded projects); v2 ALWAYS
+// injects a compact summary for personal projects: roadmap gist, open epics,
+// needs-triage / In Progress lines when present. The board is a source of
+// truth: it needs a PRESENCE signal, not just alarms.
+// Scope: personal development only. Work-scope sessions are skipped —
+// detected by resolving the session's repo root (herdr worktrees live under
+// ~/.herdr/worktrees/ and point back at the main repo via their .git file,
+// so the raw cwd path is not enough; the .git pointer is resolved and the
+// check applied to the resolved main repo). Fail-open and silent on
 // creds/network problems. BOARD_CHECKPOINT_DEBUG=1 traces on stderr.
 export default function (api) {
   var BOARD_ID = process.env.DEV_BOARD_ID || "6ab3e379437eaab1279a7e77";
   var CRED_FILES = ["/.omp/agent/.env", "/.dotfiles/.env"];
+  var WORK_MARKER = "Desktop/tallence";
   var done = false;
 
   function creds() {
@@ -33,6 +33,28 @@ export default function (api) {
       }
     } catch (e) {}
     return null;
+  }
+
+  // True when the session's repo (resolving herdr/git worktrees to their main
+  // checkout) lives under the work space.
+  function workScope(cwd) {
+    var fs = require("fs");
+    var path = require("path");
+    var dir = cwd;
+    for (var i = 0; i < 20; i++) {
+      var gitPath = path.join(dir, ".git");
+      if (fs.existsSync(gitPath)) {
+        var st = fs.statSync(gitPath);
+        if (st.isDirectory()) return dir.indexOf(WORK_MARKER) !== -1; // main checkout
+        var m = /gitdir:\s*(.+)/.exec(fs.readFileSync(gitPath, "utf8")); // worktree pointer
+        if (m) return m[1].replace(/\/\.git\/worktrees\/.*$/, "").indexOf(WORK_MARKER) !== -1;
+        return false;
+      }
+      var parent = path.dirname(dir);
+      if (parent === dir) return false;
+      dir = parent;
+    }
+    return false;
   }
 
   function label(card, name) {
@@ -71,8 +93,9 @@ export default function (api) {
     done = true;
     try {
       var cwd = (event && (event.cwd || (event.ctx && event.ctx.cwd))) || process.cwd();
-      if (!cwd || cwd.indexOf("Desktop/tallence") !== -1) {
-        if (DBG) console.error("[board-checkpoint] skip: work scope or no cwd");
+      if (!cwd) return;
+      if (workScope(cwd)) {
+        if (DBG) console.error("[board-checkpoint] skip: work scope (" + cwd + ")");
         return;
       }
       var c = creds();
