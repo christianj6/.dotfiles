@@ -852,8 +852,18 @@ def main() -> None:
                 # (pre-feature session) keeps the entry unversioned, and a
                 # leftover omp-v* name from our own earlier run is cleared.
                 desired_name = None
+                caught_up = True
                 if sfile is not None:
                     ver = config_version(sfile)
+                    # caught-up = the incremental scanner has consumed the
+                    # whole file. While it is still catching up (fresh
+                    # re-exec over a multi-MB transcript), ver=None means
+                    # "not scanned yet", NOT "no version": hold the existing
+                    # name instead of clearing it, or every re-exec flaps
+                    # named panes through --clear for a few ticks.
+                    st = _ver_cache.get(str(sfile))
+                    if st:
+                        caught_up = st[0] >= sfile.stat().st_size
                     if ver:
                         desired_name = f"omp-v{ver}"
                 want_rename = None
@@ -861,7 +871,7 @@ def main() -> None:
                     not reg_name or reg_name == "omp" or re.match(r"^omp-v\d+$", reg_name)
                 ):
                     want_rename = desired_name
-                elif not desired_name and reg_name and re.match(r"^omp-v\d+$", reg_name):
+                elif not desired_name and caught_up and reg_name and re.match(r"^omp-v\d+$", reg_name):
                     want_rename = "--clear"
                 if want_rename:
                     if run_herdr("agent", "rename", pane_id, want_rename):
