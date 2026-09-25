@@ -35,10 +35,18 @@ export default function (api) {
       }
       if (cached > 0) {
         api.appendEntry("dotfiles.config-version", { version: cached });
+        log("appended config v" + cached);
       }
     } catch (e) {
       if (cached === null) cached = 0; // unreadable: stop retrying, stay unversioned
-      console.error("[config-version] skipped: " + (e && e.message));
+      log("skipped: " + (e && e.message) + (e && e.stack ? " | " + String(e.stack).split("\n")[1] : ""));
     }
   });
+}
+
+function log(msg) {
+  try {
+    require("fs").appendFileSync("/tmp/omp-config-version.log",
+      new Date().toISOString() + " [" + process.pid + "] " + msg + "\n");
+  } catch (e) {}
 }
