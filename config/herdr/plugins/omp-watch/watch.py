@@ -187,72 +187,21 @@ def newest_session_file(cwd: str) -> Optional[Path]:
     return None
 
 
-_ver_cache: Dict[str, Tuple[int, Optional[str], bytes]] = {}
-SCAN_CHUNK_BYTES = 2 * 1024 * 1024
-CARRY_BYTES = 64
+def version_for_pid(pid: int) -> Optional[str]:
+    """The harness config version a given omp process started with.
 
-
-def config_version(path: Path) -> Optional[str]:
-    """The RUNNING agent's harness config version, or None.
-
-    omp-config-version.ts appends a custom_message entry ("config v<N>")
-    at every process start. Sessions RESUME into the same jsonl (the
-    user's REPL flow), so on a resumed transcript the newest entry sits
-    near the tail of a multi-MB file -- a head-only scan never sees it.
-    Newest match wins by design: a resumed process is a new agent start,
-    and its snapshot is the running version. Scanned INCREMENTALLY: a
-    per-file (consumed-offset, version, carry) cache forward-reads at
-    most SCAN_CHUNK_BYTES of new bytes per call, so quiet multi-MB
-    transcripts cost nothing and active ones catch up within a few
-    ticks. A shrunken file (fresh/truncated session) resets the scan.
-    Matches are raw substring finds, NOT line-gated: an entry can span a
-    chunk boundary (customType in one chunk, the version digits in the
-    next), so the last CARRY_BYTES ride along to stitch the seam -- the
-    same seam failure class the fan-out guards exist for.
+    omp-config-version.ts writes /tmp/omp-config-versions/<pid> at
+    EXTENSION LOAD -- i.e. at process start, before any UI, session, or
+    agent run. Reading the marker (not the transcript) means idle and
+    resumed sessions are versioned the moment the agent registers, and an
+    agent started at v22 keeps v22 while newer processes report v23: the
+    marker is written once per process and never re-read from disk.
     """
-    key = str(path)
     try:
-        fsize = path.stat().st_size
+        raw = (Path("/tmp/omp-config-versions") / str(pid)).read_text().strip()
     except OSError:
-        return _ver_cache.pop(key, (0, None, b""))[1]
-    offset, ver, carry = _ver_cache.get(key, (0, None, b""))
-    if fsize < offset:
-        offset, ver, carry = 0, None, b""
-    if offset >= fsize:
-        return ver
-    try:
-        with open(path, "rb") as f:
-            f.seek(offset)
-            chunk = f.read(min(fsize - offset, SCAN_CHUNK_BYTES))
-    except OSError:
-        return ver
-    data = carry + chunk
-    new_offset = offset + len(chunk)
-    for line in data.split(b"\n"):
-        if b"config-version" not in line:
-            continue
-        # Structural check, not substring: the line must PARSE as the actual
-        # injected entry (custom_message/config-version). Conversation text
-        # quoting "config v23" lives inside message entries whose parse
-        # yields type=message -- skipped. Seam-split partial lines fail to
-        # parse -- skipped; the carry makes the complete line available in
-        # the next chunk.
-        try:
-            entry = json.loads(line)
-        except Exception:
-            continue
-        if (
-            not isinstance(entry, dict)
-            or entry.get("type") != "custom"
-            or entry.get("customType") != "dotfiles.config-version"
-        ):
-            continue
-        data_ver = (entry.get("data") or {}).get("version")
-        if data_ver:
-            ver = str(data_ver)
-    carry = chunk[-CARRY_BYTES:] if len(chunk) >= CARRY_BYTES else carry + chunk
-    _ver_cache[key] = (new_offset, ver, carry)
-    return ver
+        return None
+    return raw if raw.isdigit() else None
 
 
 def classify_entry(e: dict) -> Optional[str]:
@@ -755,9 +704,13 @@ def main() -> None:
                 cwd_raw = pane.get("cwd", "")
 
                 shell_pid = shell_pids.get(pane_id)
-                live_here = shell_pid is not None and any(
-                    shell_pid in chains[omp_pid] for omp_pid in chains
-                )
+                live_pid = None
+                if shell_pid is not None:
+                    for omp_pid in chains:
+                        if shell_pid in chains[omp_pid]:
+                            live_pid = omp_pid
+                            break
+                live_here = live_pid is not None
                 if not live_here:
                     if pane_id in last_state:
                         dlog(f"{pane_id}: no live omp under shell {shell_pid!r} -> releasing")
@@ -852,23 +805,18 @@ def main() -> None:
                 # (pre-feature session) keeps the entry unversioned, and a
                 # leftover omp-v* name from our own earlier run is cleared.
                 desired_name = None
-                caught_up = True
-                if sfile is not None:
-                    ver = config_version(sfile)
-                    # caught-up = the incremental scanner has consumed the
-                    # whole file. While it is still catching up (fresh
-                    # re-exec over a multi-MB transcript), ver=None means
-                    # "not scanned yet", NOT "no version": hold the existing
-                    # name instead of clearing it, or every re-exec flaps
-                    # named panes through --clear for a few ticks.
-                    st = _ver_cache.get(str(sfile))
-                    if st:
-                        caught_up = st[0] >= sfile.stat().st_size
+                if live_pid is not None:
+                    ver = version_for_pid(live_pid)
                     if ver:
-                        desired_name = f"omp-v{ver}"
+                        # herdr agent names are UNIQUE among live agents:
+                        # two same-version agents cannot both be "omp-v23"
+                        # (agent_name_taken, seen live 2026-09-24) -- the
+                        # pane id suffix disambiguates while keeping the
+                        # version prominent.
+                        desired_name = f"omp-v{ver}-{pane_id.replace(':', '').lower()}"
                 want_rename = None
                 if desired_name and reg_name != desired_name and (
-                    not reg_name or reg_name == "omp" or re.match(r"^omp-v\d+$", reg_name)
+                    not reg_name or reg_name == "omp" or re.match(r"^omp-v\d+", reg_name)
                 ):
                     want_rename = desired_name
                 # No --clear: clearing on a not-yet-annotated transcript

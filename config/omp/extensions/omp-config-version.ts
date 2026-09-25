@@ -1,52 +1,34 @@
-// omp-config-version — snapshots the dotfiles config version per agent run.
+// omp-config-version — publishes the dotfiles config version per omp process.
 // config/omp/VERSION (a plain incrementing integer) is bumped as the harness
-// config evolves. The version VALUE is captured once per process (an agent
-// started at v22 keeps v22 even if the repo moves on mid-session), and a
-// config-version entry is appended to the session transcript on EVERY
-// before_agent_start: long-running omp processes host MULTIPLE sessions
-// over their lifetime (the user's REPL flow starts new sessions in the same
-// process), and a once-per-process flag starved later sessions of their
-// entry (observed live 2026-09-24: heinzel-exploration's new session had
-// zero entries). The herdr omp-watch plugin reads the NEWEST such entry per
-// transcript and names the roster entry "omp-v<N>".
-//
-// The entry is persisted with pi.appendEntry (session entry, type "custom")
-// — NOT a custom LLM message: it never reaches the model and never renders
-// in the TUI. A custom-message injection with display:false still rendered
-// visibly every turn (observed live 2026-09-24).
-//
-// VERSION is read from ~/.omp/agent/VERSION (env PI_CODING_AGENT_DIR
-// honored) — a setup.sh symlink to config/omp/VERSION. The agent-dir path
-// is used instead of import.meta because omp's extension loader transforms
-// import metadata. Fails silently if missing/unreadable: a session without
-// a version entry simply shows unversioned in the roster.
+// config evolves. This extension runs at EXTENSION LOAD — i.e. at process
+// start, before any UI, session, or agent run — and writes a marker file
+// /tmp/omp-config-versions/<pid> containing the version. The herdr omp-watch
+// plugin maps each pane to its live omp pid (ancestor-chain matching) and
+// reads the marker to name the roster entry "omp-v<N>-<pane>", so:
+//   - the version shows the moment the agent registers, prompted or not
+//     (before_agent_start fires per RUN, which starved idle/resumed
+//     sessions -- observed live 2026-09-24 on heinzel-exploration);
+//   - an agent started at v22 keeps v22 while newer processes get v23
+//     (the marker is written once per process, never re-read);
+//   - nothing touches the LLM stream or the TUI (appendEntry/custom
+//     messages either rendered visibly or never fired).
+// Fails silently: no marker -> the roster entry stays unversioned.
 export default function (api) {
-  var cached = null;
-
-  api.on("before_agent_start", async function () {
-    try {
-      if (cached === null) {
-        var fs = require("fs");
-        var dir = process.env.PI_CODING_AGENT_DIR
-          || require("os").homedir() + "/.omp/agent";
-        var raw = fs.readFileSync(dir + "/VERSION", "utf8").trim();
-        var v = parseInt(raw, 10);
-        cached = v > 0 ? v : 0;
-      }
-      if (cached > 0) {
-        api.appendEntry("dotfiles.config-version", { version: cached });
-        log("appended config v" + cached);
-      }
-    } catch (e) {
-      if (cached === null) cached = 0; // unreadable: stop retrying, stay unversioned
-      log("skipped: " + (e && e.message) + (e && e.stack ? " | " + String(e.stack).split("\n")[1] : ""));
-    }
-  });
-}
-
-function log(msg) {
   try {
-    require("fs").appendFileSync("/tmp/omp-config-version.log",
-      new Date().toISOString() + " [" + process.pid + "] " + msg + "\n");
-  } catch (e) {}
+    var fs = require("fs");
+    var dir = process.env.PI_CODING_AGENT_DIR
+      || require("os").homedir() + "/.omp/agent";
+    var v = parseInt(fs.readFileSync(dir + "/VERSION", "utf8").trim(), 10);
+    if (!(v > 0)) return;
+    var root = "/tmp/omp-config-versions";
+    try {
+      fs.mkdirSync(root, { recursive: true });
+    } catch (e) {}
+    fs.writeFileSync(root + "/" + process.pid, String(v));
+  } catch (e) {
+    try {
+      require("fs").appendFileSync("/tmp/omp-config-version.log",
+        new Date().toISOString() + " [" + process.pid + "] skipped: " + (e && e.message) + "\n");
+    } catch (e2) {}
+  }
 }

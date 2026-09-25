@@ -326,78 +326,18 @@ def test_registry_matches_is_the_sidebar_truth():
     assert not watch.registry_matches("idle", "unknown")
 
 
-def test_config_version_from_head():
-    # omp-config-version.ts injects a "config v<N>" custom entry at session
-    # start; the watcher reads it from the HEAD of the transcript --
-    # start-of-session state, so older agents keep their older version even
-    # after the repo's VERSION file moves on.
-    p = _tmp_jsonl([
-        json.dumps({"type": "custom", "customType": "dotfiles.config-version", "data": {"version": 23}}).encode() + b"\n"
-        + _msg_entry("user", [block("text")]),
-    ])
-    assert watch.config_version(p) == "23"
-    p.unlink()
-
-
-def test_config_version_absent_for_pre_feature_sessions():
-    # Sessions started before the feature (or with --no-session) carry no
-    # version entry: the roster entry must stay unversioned, never guess.
-    p = _tmp_jsonl([_msg_entry("user", [block("text")])])
-    assert watch.config_version(p) is None
-    p.unlink()
-
-
-def test_config_version_resume_append_wins():
-    # The user's REPL flow RESUMES into the same jsonl: a fresh process
-    # appends its snapshot at the tail of a big transcript, and the newest
-    # entry is the running agent's version.
-    p = _tmp_jsonl([
-        json.dumps({"type": "message", "message": {"role": "user", "content": [
-            {"type": "text", "text": "x" * 5000}]}}).encode() + b"\n",
-    ])
-    assert watch.config_version(p) is None
-    with open(p, "ab") as f:
-        f.write(json.dumps({"type": "custom", "customType": "dotfiles.config-version", "data": {"version": 23}}).encode() + b"\n")
-    assert watch.config_version(p) == "23"
-    p.unlink()
-
-
-def test_config_version_newest_wins_on_multiple():
-    p = _tmp_jsonl([
-        json.dumps({"type": "custom", "customType": "dotfiles.config-version", "data": {"version": 22}}).encode() + b"\n",
-    ])
-    assert watch.config_version(p) == "22"
-    with open(p, "ab") as f:
-        f.write(json.dumps({"type": "custom", "customType": "dotfiles.config-version", "data": {"version": 24}}).encode() + b"\n")
-    assert watch.config_version(p) == "24"
-    p.unlink()
-
-
-def test_config_version_truncated_file_resets():
-    # A shrunken file (fresh/truncated session at the same path) must reset
-    # the consumed-offset cache, not keep the stale version.
-    p = _tmp_jsonl([
-        json.dumps({"type": "custom", "customType": "dotfiles.config-version", "data": {"version": 23}}).encode() + b"\n",
-    ])
-    assert watch.config_version(p) == "23"
-    p.write_bytes(b"")
-    assert watch.config_version(p) is None
-    p.unlink()
-
-
-def test_config_version_ignores_conversation_echoes():
-    # A 2026-09-24 live false positive: the main agent's transcript quoted
-    # the injected entry inside conversation text (probe outputs), and the
-    # raw-substring scanner renamed that pane from its own chatter. Only a
-    # line that PARSES as the actual config-version entry counts; echoes
-    # inside message entries are ignored.
-    echo = json.dumps({"type": "message", "message": {"role": "assistant", "content": [
-        {"type": "text", "text": 'output was {"type":"custom","customType":"dotfiles.config-version","data":{"version":23}} quoted'}]}}).encode() + b"\n"
-    p = _tmp_jsonl([
-        echo + _msg_entry("user", [block("text")]),
-    ])
-    assert watch.config_version(p) is None
-    p.unlink()
+def test_version_for_pid_reads_marker():
+    # omp-config-version.ts writes /tmp/omp-config-versions/<pid> at
+    import os
+    # process start; the watcher maps each live omp pid to its marker --
+    # version presence no longer depends on prompts or transcript scans.
+    os.makedirs("/tmp/omp-config-versions", exist_ok=True)
+    open(f"/tmp/omp-config-versions/{os.getpid()}", "w").write("23\n")
+    try:
+        assert watch.version_for_pid(os.getpid()) == "23"
+        assert watch.version_for_pid(999999999) is None
+    finally:
+        os.unlink(f"/tmp/omp-config-versions/{os.getpid()}")
 
 
 def main():
