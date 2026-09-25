@@ -243,13 +243,13 @@ def config_version(path: Path) -> Optional[str]:
             continue
         if (
             not isinstance(entry, dict)
-            or entry.get("type") != "custom_message"
-            or entry.get("customType") != "config-version"
+            or entry.get("type") != "custom"
+            or entry.get("customType") != "dotfiles.config-version"
         ):
             continue
-        m = re.search(rb"config v(\d+)", line)
-        if m:
-            ver = m.group(1).decode()
+        data_ver = (entry.get("data") or {}).get("version")
+        if data_ver:
+            ver = str(data_ver)
     carry = chunk[-CARRY_BYTES:] if len(chunk) >= CARRY_BYTES else carry + chunk
     _ver_cache[key] = (new_offset, ver, carry)
     return ver
@@ -871,8 +871,11 @@ def main() -> None:
                     not reg_name or reg_name == "omp" or re.match(r"^omp-v\d+$", reg_name)
                 ):
                     want_rename = desired_name
-                elif not desired_name and caught_up and reg_name and re.match(r"^omp-v\d+$", reg_name):
-                    want_rename = "--clear"
+                # No --clear: clearing on a not-yet-annotated transcript
+                # (fresh session before its first run lands the entry)
+                # flaps the roster name. A stale omp-v* name on a pane
+                # whose transcript predates the feature is cosmetic and
+                # self-corrects on the session's next process restart.
                 if want_rename:
                     if run_herdr("agent", "rename", pane_id, want_rename):
                         dlog(f"{pane_id}: renamed -> {want_rename!r}")

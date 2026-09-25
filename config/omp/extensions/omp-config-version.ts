@@ -1,16 +1,19 @@
 // omp-config-version — snapshots the dotfiles config version per agent run.
 // config/omp/VERSION (a plain incrementing integer) is bumped as the harness
 // config evolves. The version VALUE is captured once per process (an agent
-// started at v22 keeps v22 even if the repo moves on mid-session), but the
-// config-version entry is injected into the session transcript on EVERY
+// started at v22 keeps v22 even if the repo moves on mid-session), and a
+// config-version entry is appended to the session transcript on EVERY
 // before_agent_start: long-running omp processes host MULTIPLE sessions
 // over their lifetime (the user's REPL flow starts new sessions in the same
 // process), and a once-per-process flag starved later sessions of their
 // entry (observed live 2026-09-24: heinzel-exploration's new session had
 // zero entries). The herdr omp-watch plugin reads the NEWEST such entry per
-// transcript and names the roster entry "omp-v<N>". Entries are ~150 bytes
-// and the watcher renames only when the version changes, so per-run
-// injection costs nothing visible.
+// transcript and names the roster entry "omp-v<N>".
+//
+// The entry is persisted with pi.appendEntry (session entry, type "custom")
+// — NOT a custom LLM message: it never reaches the model and never renders
+// in the TUI. A custom-message injection with display:false still rendered
+// visibly every turn (observed live 2026-09-24).
 //
 // VERSION is read from ~/.omp/agent/VERSION (env PI_CODING_AGENT_DIR
 // honored) — a setup.sh symlink to config/omp/VERSION. The agent-dir path
@@ -28,16 +31,11 @@ export default function (api) {
           || require("os").homedir() + "/.omp/agent";
         var raw = fs.readFileSync(dir + "/VERSION", "utf8").trim();
         var v = parseInt(raw, 10);
-        if (!(v > 0)) return;
-        cached = v;
+        cached = v > 0 ? v : 0;
       }
-      return {
-        message: {
-          customType: "config-version",
-          display: false,
-          content: "config v" + cached
-        }
-      };
+      if (cached > 0) {
+        api.appendEntry("dotfiles.config-version", { version: cached });
+      }
     } catch (e) {
       if (cached === null) cached = 0; // unreadable: stop retrying, stay unversioned
       console.error("[config-version] skipped: " + (e && e.message));
