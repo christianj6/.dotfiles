@@ -808,26 +808,12 @@ def main() -> None:
                 if live_pid is not None:
                     ver = version_for_pid(live_pid)
                     if ver:
-                        # herdr agent names are UNIQUE among live agents
-                        # (agent_name_taken, seen live 2026-09-24), but the
-                        # user wants a clean "omp-v<N>" display. Allocate the
-                        # canonical name to the first same-version agent and
-                        # hand extras "omp-v<N>-2", "-3"... When a holder
-                        # exits, the next tick renames a sibling back down
-                        # to the canonical name.
-                        base = f"omp-v{ver}"
-                        taken = {
-                            n for pid2, (st2, n2) in registry.items()
-                            if n2 and pid2 != pane_id
-                        }
-                        if base not in taken or reg_name == base:
-                            desired_name = base
-                        else:
-                            for i in range(2, 50):
-                                cand = f"{base}-{i}"
-                                if cand not in taken:
-                                    desired_name = cand
-                                    break
+                        # herdr agent names are UNIQUE among live agents,
+                        # and the user wants EVERY versioned omp pane to
+                        # carry the pane id suffix -- "omp-v23-w9p1" -- so
+                        # the suffix doubles as the uniqueness guarantee.
+                        # No canonical-name allocation, no --2/-3 churn.
+                        desired_name = f"omp-v{ver}-{pane_id.replace(':', '').lower()}"
                 want_rename = None
                 if desired_name and reg_name != desired_name and (
                     not reg_name or reg_name == "omp" or re.match(r"^omp-v\d+", reg_name)
