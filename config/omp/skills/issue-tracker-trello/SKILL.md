@@ -23,14 +23,16 @@ Resolve ids by name once per session (cache them):
 
 ## Conventions
 
-- **Board**: `Development`. **Lists** are the pipeline: `Maps` (standing cards: wayfinding maps, epics, per-project context), `Frontier` (ready, unclaimed tickets), `In Progress` (claimed tickets), `Done` (resolved or ruled out).
+2026-10-05: live convention on the shared Development board.
+
+- **Board**: `Development`. **Lists** are the pipeline: `Maps` (standing cards: wayfinding maps, epics, per-project context), `Frontier` (ready, unclaimed tickets), `Todo` (selected-for-now, pulled from Frontier), `In Progress` (claimed tickets), `Review` (owner-only gate between In Progress and Done), `Done` (resolved or ruled out).
 - **Map**: a card in `Maps` labelled `wayfinder:map`. Its description IS the map body, sections exactly: `## Destination`, `## Notes`, `## Decisions so far`, `## Not yet specified`, `## Out of scope` (semantics as in `skill://wayfinder`). A map spawned under an epic carries an `Epic: <shortUrl>` line; the epic indexes the map with one `## Work items` line — the map resolves its own tickets, and the epic `## Log` gets one line at map completion.
 - **Ticket**: a card on the same board labelled `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`) or `bug`, plus **exactly one project label** — resolved from the repo you are in (repo dir name). No label for it yet → create it yourself (`POST /1/labels?idBoard=<boardId>`, any free color — the name is the identity) plus the `Roadmap — <project>` context card, and say so once. Work-scope (Tallence) or ambiguous → stop and ask; never guess. Description starts with `## Question` and the question; a `Blocked by: <card shortUrl>, ...` line sits at the top when blocked, and an `Epic: <epic shortUrl>` line when it belongs to a workstream. Cross-project card: primary project label plus an `Also: <project>` line.
 - **Epic (workstream)**: one long-lived card in `Maps` per significant chunk of work (e.g. `Mesh Rendering — prescient`), labelled `epic` + project. Description sections: `## Goal` (what done means), `## Design decisions` (durable, agent-facing — summarizes and links repo ADRs like `ADR-0007 (repo)`, never restates them; CONTEXT.md stays in the repo), `## Work items` (index of maps and direct tickets: `- [<name>](<shortUrl>): <status one-liner>`), `## Log` (dated one-liners: shipped, incidents, recurrences). Every ticket or bug under it carries the `Epic:` line and an index entry. Create the epic BEFORE its tickets.
 - **When work needs a card** (the baggage line): card it if it touches an existing epic's scope, spans more than one session, adds an abstraction/module/dependency, or changes user-visible behavior. Anything smaller is a drive-by — just work, no card; but the 3rd drive-by in the same subsystem promotes it: create the epic.
-- **Claim** = assign yourself as a member AND move the card to `In Progress` — the session's first write. Unclaimed = no members.
+- **Claim** = assign yourself as a member AND move the card to `In Progress` — the session's first write. Unclaimed = no members. `Todo` is the selected staging list: the owner (or a planning session) pulls cards from Frontier into `Todo` before claiming, but claiming itself still lands the card directly in `In Progress`.
 - **Blocking** (Trello has no native dependencies): the `Blocked by:` line lists card shortUrls. A ticket is unblocked when every listed card is in `Done`.
-- **Resolve**: post the answer as a card comment, move to `Done`, append `- [<ticket name>](<shortUrl>): <one-line gist>` under `## Decisions so far` on the map.
+- **Resolve**: post the answer as a card comment, move to `Done`, append `- [<ticket name>](<shortUrl>): <one-line gist>` under `## Decisions so far` on the map. Owner review happens via the `Review` list (owner-only gate between `In Progress` and `Done`); agent resolves still go straight to `Done` per this convention.
 - **Out of scope**: move the card to `Done`, add a line (gist + why + shortUrl) under `## Out of scope` on the map. A scope boundary is not a step on the route; it never enters Decisions so far.
 - **Project context / roadmap**: one card per project in `Maps` labelled `context` (`Roadmap — <project>`): standing product context. Read the relevant ones when charting a map or choosing tickets; keep them current as roadmap decisions land.
 - **Triage labels** (plain task cards, no wayfinder involvement): `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`.
@@ -54,9 +56,9 @@ Used by `skill://wayfinder`. The **map** is a card in `Maps`; tickets are cards 
 - **Chart — create the map**: `POST /1/cards?idList=<Maps>&name=<effort> map&desc=<body>`, then label `wayfinder:map` (`POST /1/cards/<cardId>/idLabels?value=<labelId>`).
 - **Create ticket**: `POST /1/cards?idList=<Frontier>&name=<question as title>&desc=## Question ...`, then labels `wayfinder:<type>` + project. Create-then-wire: all tickets exist before blocking lines reference them.
 - **Wire blocking**: `PUT /1/cards/<cardId>?desc=<desc with Blocked by: <shortUrl>, ...>`.
-- **Frontier query**: `GET /1/lists/<Frontier-id>/cards?fields=name,desc,idMembers,shortUrl,idList`; keep cards with empty `idMembers` whose every `Blocked by:` card is in `Done` (check each: `GET /1/cards/<shortUrl>?fields=idList`). First in list order wins.
+- **Frontier query**: `GET /1/lists/<Frontier-id>/cards?fields=name,desc,idMembers,shortUrl,idList`; keep cards with empty `idMembers` whose every `Blocked by:` card is in `Done` (check each: `GET /1/cards/<shortUrl>?fields=idList`). First in list order wins. Cards sitting in `Todo` are already selected-for-now — not Frontier candidates.
 - **Claim**: `PUT /1/cards/<cardId>/idMembers?value=<myMemberId>`, then `PUT /1/cards/<cardId>?idList=<In Progress-id>`.
-- **Resolve**: `POST /1/cards/<cardId>/actions/comments?text=<answer>`, `PUT /1/cards/<cardId>?idList=<Done-id>`, then GET the map card and PUT its description with the new Decisions-so-far line.
+- **Resolve**: `POST /1/cards/<cardId>/actions/comments?text=<answer>`, `PUT /1/cards/<cardId>?idList=<Done-id>`, then GET the map card and PUT its description with the new Decisions-so-far line. (Owner review via `Review` happens outside this op; the resolve mechanics are unchanged.)
 - **Research tickets** fire as parallel subagents; each resolves its own card (claim → work → resolve) so concurrent sessions never touch the same card.
 
 ## Bugs and recurrence
@@ -89,7 +91,7 @@ Starting dev work in a personal project → ONE board GET (`GET /1/boards/<board
 2. Your claimed `In Progress` cards → resume or release (unclaim + snapshot comment). Claims never rot.
 3. The project's `Roadmap — <project>` card → structure the session against it.
 
-After any batch of card creations, hygiene: flag cards with no project label, epic `## Work items` entries pointing at cards no longer in Frontier/In Progress/Done, and subsystems with 2+ open bug cards (propose epic). Fix before proceeding.
+After any batch of card creations, hygiene: flag cards with no project label, epic `## Work items` entries pointing at cards no longer in Frontier/Todo/In Progress/Review/Done, and subsystems with 2+ open bug cards (propose epic). Fix before proceeding.
 
 omp injects this checkpoint automatically at session start (`omp-board-checkpoint` extension: once per process, with the project's roadmap gist, open epics, and any needs-triage/In Progress cards; skipped only for work-scope cwd). The manual rule above is the fallback — act on what the injection names.
 
