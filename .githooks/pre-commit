@@ -1,0 +1,5 @@
+#!/bin/sh
+# Privacy guard: this repo is PUBLIC. Block any commit whose staged content
+# matches scripts/private-patterns.txt (credential values, home-anchored
+# private paths, personal planning/transcript content).
+exec python3 "$(git rev-parse --show-toplevel)/scripts/check-private.py" --staged

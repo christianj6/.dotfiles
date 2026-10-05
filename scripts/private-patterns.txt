@@ -1,0 +1,34 @@
+# Patterns that must never appear in tracked content of this PUBLIC repo.
+# One Python regex per line; the nearest comment above a line labels it in
+# findings. Lines starting with "!" are ALLOWLIST regexes: a line matching
+# any allowlist regex is never flagged. The owner tunes this file; agents
+# propose changes, never silent bypasses.
+#
+# Scope notes (owner decision 2026-10-05): project NAMES and one-line board
+# bookkeeping are fine to publish (auditable from commit history anyway).
+# What is never fine: credential VALUES, home-anchored private paths, and
+# personal planning/transcript CONTENT.
+
+# Credential values (env-var names, $VAR reads, and parsing regexes are fine)
+TRELLO_(KEY|TOKEN)=[A-Za-z0-9]{24,}
+(SUNSAMA_API_KEY|JEV_API_KEY|OPENROUTER_API_KEY)=[A-Za-z0-9_\-]{16,}
+\bsk-[A-Za-z0-9_\-]{20,}
+-----BEGIN [A-Z ]*PRIVATE KEY-----
+(?i)\b(api[_-]?key|secret|password|bearer)\b\s*[:=]\s*["']?[A-Za-z0-9_\-\.]{28,}
+
+# Private filesystem layout (home-anchored Desktop paths reveal the
+# personal/work project layout. Bare scope markers like "Desktop/tallence"
+# in scope-rule code, the GitHub username, and ~/.omp cache paths are fine)
+/Users/[^/"']+/Desktop/
+~/Desktop/personal
+~/Desktop/tallence/repos
+Desktop/personal/repos
+
+# Personal planning / transcript content (never publish: task bodies,
+# session dumps, chat logs -- not the mere mention of a path convention)
+Source: sunsama task
+sessions/[0-9A-Za-z_]+/[0-9T_.\-]+\.jsonl
+\.claude/(projects|sessions|history)
+
+# Allowlist: the scanner's own pattern file quotes these regexes
+!private-patterns\.txt

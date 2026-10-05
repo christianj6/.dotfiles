@@ -207,6 +207,12 @@ ln -sf ~/.dotfiles/config/omp/extensions/omp-delegation-guard.ts ~/.omp/agent/ex
 ln -sf ~/.dotfiles/config/omp/extensions/omp-scope-filter.ts ~/.omp/agent/extensions/omp-scope-filter.ts
 ln -sf ~/.dotfiles/config/omp/extensions/omp-config-version.ts ~/.omp/agent/extensions/omp-config-version.ts
 ln -sf ~/.dotfiles/config/omp/VERSION ~/.omp/agent/VERSION
+ln -sf ~/.dotfiles/config/omp/extensions/omp-privacy-guard.ts ~/.omp/agent/extensions/omp-privacy-guard.ts
+
+# Pre-commit privacy guard: the repo is public; .githooks runs
+# scripts/check-private.py --staged on every local commit (see AGENTS.md).
+git -C ~/.dotfiles config core.hooksPath .githooks
+
 # Task agents, rulebook rules, and the code-style skill: same per-file
 # symlink pattern as extensions -- versioned source in the repo, live in the
 # agent dir (copies drift; see the extension rationale above).
