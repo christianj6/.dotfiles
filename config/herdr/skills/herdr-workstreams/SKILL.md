@@ -146,8 +146,11 @@ needing the premium model's judgment.
 
 ## Peer comms (agent-to-agent)
 
-Every agent in a herdr pane can message every other one: the herdr CLI is on
-every pane's PATH and `HERDR_ENV=1` reaches agents through the env chain.
+**DEFAULT comm strategy for agent-to-agent messaging: the `omp-peer`
+helper** — use it before any other channel (`herdr agent prompt`,
+raw pane send-text, hub/IRC). Every agent in a herdr pane can message
+every other one: the herdr CLI is on every pane's PATH and `HERDR_ENV=1`
+reaches agents through the env chain.
 The address book is `herdr agent list` (names + pane ids). Give every agent
 you start a name (`agent start` takes one); adopt an existing unnamed one
 with `herdr agent rename <pane_id> <name>`.
