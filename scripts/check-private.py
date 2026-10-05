@@ -11,7 +11,7 @@ Modes:
   --staged        scan staged changes (added lines; whole content for new
                   files) -- used by .githooks/pre-commit and the
                   omp-privacy-guard extension
-  --all           scan every tracked file (CI + manual audit)
+  --all           scan every tracked file (manual audit)
   paths...        scan those files/directories directly
 
 Exit codes: 0 clean, 1 findings (printed to stderr as file:line [label]).
