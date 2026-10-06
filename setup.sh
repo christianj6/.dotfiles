@@ -314,10 +314,10 @@ ln -sf ~/.dotfiles/config/herdr/bin/herdr-img ~/.local/bin/herdr-img
 
 # terminal-browser (https://terminal-browser.com): a real browser that
 # renders inside the terminal via kitty graphics. DISABLED 2026-10-05 by
-# owner decision: painfully slow in practice; root-cause investigation
-# pending. Re-enable: set TB_DISABLED=0 below, re-run setup.sh (the sync
-# loop below restores the agent skill copies), and read
-# config/herdr/skills/terminal-browser-quirks/SKILL.md for the workflow.
+# owner decision: painfully slow in practice. Root-cause analysis:
+# docs/terminal-browser-perf.md. Re-enable: set TB_DISABLED=0 below,
+# re-run setup.sh (the sync loop below restores the agent skill copies),
+# and read config/herdr/skills/terminal-browser-quirks/SKILL.md.
 TB_DISABLED=1
 if [ "$TB_DISABLED" = 0 ]; then
     if ! command -v terminal-browser &> /dev/null; then
