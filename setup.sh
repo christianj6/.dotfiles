@@ -313,13 +313,18 @@ chmod +x ~/.local/bin/omp-session-report 2>/dev/null || true
 ln -sf ~/.dotfiles/config/herdr/bin/herdr-img ~/.local/bin/herdr-img
 
 # terminal-browser (https://terminal-browser.com): a real browser that
-# renders inside the terminal via kitty graphics (ghostty/herdr already
-# carry it; `terminal-browser setup` only touches VS Code-family editors).
-# Install is required (same bar as herdr); `setup` is non-fatal.
-if ! command -v terminal-browser &> /dev/null; then
-    curl -fsSL "${CURL_RETRY[@]}" https://terminal-browser.sh/install | bash
+# renders inside the terminal via kitty graphics. DISABLED 2026-10-05 by
+# owner decision: painfully slow in practice; root-cause investigation
+# pending. Re-enable: set TB_DISABLED=0 below, re-run setup.sh (the sync
+# loop below restores the agent skill copies), and read
+# config/herdr/skills/terminal-browser-quirks/SKILL.md for the workflow.
+TB_DISABLED=1
+if [ "$TB_DISABLED" = 0 ]; then
+    if ! command -v terminal-browser &> /dev/null; then
+        curl -fsSL "${CURL_RETRY[@]}" https://terminal-browser.sh/install | bash
+    fi
+    terminal-browser setup || true
 fi
-terminal-browser setup || true
 
 # Agent skill copies + machine banner. The tool's own skill manifest lists
 # only claude/codex/cursor/gemini -- omp is absent -- so both agents get
@@ -337,6 +342,7 @@ terminal-browser setup || true
 #     drive via the bundled agent-browser CLI over http://127.0.0.1:<port>).
 #     Retire it when an upgrade fixes the wrapper.
 _TB_CANONICAL=~/.local/share/terminal-browser/app/skills/default/terminal-browser/SKILL.md
+if [ "$TB_DISABLED" = 0 ]; then
 for d in ~/.omp/agent/skills ~/.claude/skills; do
     # Replace any pre-existing symlink entry (e.g. one the tool itself
     # placed) with a real dir BEFORE writing: cat-ing through a symlink
@@ -353,6 +359,7 @@ for d in ~/.omp/agent/skills ~/.claude/skills; do
     cp ~/.dotfiles/config/herdr/skills/terminal-browser-quirks/SKILL.md \
         "$d/terminal-browser-quirks/SKILL.md" || true
 done
+fi
 
 # Link the omp session watcher plugin: reports omp agent state to herdr by
 # tailing omp's own session transcript, since omp's extension/hook API does
