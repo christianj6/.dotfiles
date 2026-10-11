@@ -25,11 +25,11 @@ providers:
     - mojeek
   memoryModel: online
 modelRoles: 
-  default: openrouter/z-ai/glm-5.3-flash
+  default: opencode-go/glm-5.3-flash
   advisor: openrouter/z-ai/glm-5.3-flash
-  smol: openrouter/z-ai/glm-5.3-flash
-  slow: openrouter/z-ai/glm-5.3-flash
-  task: openrouter/z-ai/glm-5.3-flash
+  smol: opencode-go/glm-5.3-flash
+  slow: opencode-go/glm-5.3-flash
+  task: opencode-go/glm-5.3-flash
   commit: openrouter/z-ai/glm-5.3-flash
 symbolPreset: nerd
 theme: 

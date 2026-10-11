@@ -25,14 +25,40 @@ Resolve ids by name once per session (cache them):
 
 2026-10-05: live convention on the shared Development board — Frontier renamed to `Messy`, Todo renamed to `Selected for development`; the `Maps` list was DEPRECATED the same day: every project's standing cards migrated into its repo and the (empty) list archived. The board holds tickets only.
 
-- **Board**: `Development`. **Lists** are the pipeline, and there are no standing lists: `Messy` (rough ideas — the entry point), `Selected for development` (scoped, definitely happening), `In Progress` (claimed tickets), `Review` (owner-only gate between In Progress and Done), `Done` (resolved or ruled out). **Per-project work structure, standing context, epics, and wayfinder maps live IN THE REPO** — convention: `docs/DEV_BOARD.md` at the repo root unless the project chose otherwise (e.g. heinzel-exploration: `release/docs/07_DEV_BOARD.md`). Never create context/epic/map cards on the board.
+- **Board**: `Development`. **Lists** are the pipeline, renamed 2026-10-11 to
+  match the owner's mode-flavored working style (not a ticket-flow):
+  `Ideas` (spoken/rough, the entry point), `Ready` (scoped, dispatch-ready),
+  `Active` (the in-flight working set this week, cap ~5), `Check`
+  (agent-done, awaiting the owner's verdict — the gate reviews pass through),
+  `Done` (recently landed; periodically purged of stale cards with a dated
+  close comment; nothing deleted without a trace), and `Parked`
+  (long-horizon ideas, 2027 planning, the concept frontier — not queued
+  work). Predecessor names (2026-10-05–2026-10-11): Frontier = Messy,
+  Todo/Selected for development = Ready, In Progress = Active, Review =
+  Check, Backburner = Parked.
+  **Per-project work structure, standing context, epics, and wayfinder maps
+  live IN THE REPO** — convention: `docs/DEV_BOARD.md` at the repo root
+  unless the project chose otherwise (e.g. heinzel-exploration:
+  `release/docs/07_DEV_BOARD.md`). Never create context/epic/map cards on
+  the board.
+  **Session intake card (standing artifact, also 2026-10-11):** at every
+  coordinated session handoff (e.g. a playtest loop), the coordinator creates
+  ONE card naming the session directory + the owner's spoken findings; it
+  lives in Ideas and either graduates to Ready as a scoped ticket, is folded
+  into the in-flight fix pass, or is closed with a dated comment at the next
+  session — never silently rots.
 - **Map**: a section of the project's repo doc — NOT a Trello card. Body sections exactly: `## Destination`, `## Notes`, `## Decisions so far`, `## Not yet specified`, `## Out of scope` (semantics as in `skill://wayfinder`). The map resolves its own tickets; the doc's epic `## Log` gets one line at map completion.
 - **Ticket**: a card on the board labelled `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`) or `bug`, plus **exactly one project label** — resolved from the repo you are in (repo dir name). No label for it yet → create it yourself (`POST /1/labels?idBoard=<boardId>`, any free color — the name is the identity). Work-scope (Tallence) or ambiguous → stop and ask; never guess. Description starts with `## Question` and the question; a `Blocked by: <card shortUrl>, ...` line sits at the top when blocked. Cross-project card: primary project label plus an `Also: <project>` line.
 - **Epic (workstream)**: a section in the project's repo doc per significant chunk of work, with sections: `## Goal` (what done means), `## Design decisions` (durable, agent-facing — summarizes and links repo ADRs like `ADR-0007 (repo)`, never restates them; CONTEXT.md stays in the repo), `## Work items` (index of maps and direct tickets: `- [<name>](<shortUrl>): <status one-liner>` — shortUrls still resolve into board history), `## Log` (dated one-liners: shipped, incidents, recurrences). Every ticket or bug under it names the epic in its description; the doc's Work items index carries the card shortUrl. Chart the epic BEFORE its tickets.
 - **When work needs a card** (the baggage line): card it if it touches an existing epic's scope, spans more than one session, adds an abstraction/module/dependency, or changes user-visible behavior. Anything smaller is a drive-by — just work, no card; but the 3rd drive-by in the same subsystem promotes it: create an epic section in the repo doc.
-- **Claim** = assign yourself as a member AND move the card to `In Progress` — the session's first write. Unclaimed = no members. `Selected for development` is the scoped staging list: the owner (or a planning session) pulls cards from `Messy` into `Selected for development` once scoped, but claiming itself still lands the card directly in `In Progress`.
+- **Claim** = assign yourself as a member AND move the card to `Active` — the
+  session's first write; honor the ~5-card working-set cap (release a card
+  with a status snapshot when it must wait). Unclaimed = no members.
+  `Ready` is the scoped staging list: the owner (or a planning session) pulls
+  cards from `Ideas` into `Ready` once scoped, but claiming itself still
+  lands the card directly in `Active`.
 - **Blocking** (Trello has no native dependencies): the `Blocked by:` line lists card shortUrls. A ticket is unblocked when every listed card is in `Done`.
-- **Resolve**: post the answer as a card comment, move to `Done`, append `- [<ticket name>](<shortUrl>): <one-line gist>` under `## Decisions so far` in the repo doc's map section. Owner review happens via the `Review` list (owner-only gate between `In Progress` and `Done`); agent resolves still go straight to `Done` per this convention.
+- **Resolve**: post the answer as a card comment, move to `Done`, append `- [<ticket name>](<shortUrl>): <one-line gist>` under `## Decisions so far` in the repo doc's map section. Owner review happens via the `Check` list (owner-only gate between `Active` and `Done`); agent resolves still go straight to `Done` per this convention.
 - **Out of scope**: move the card to `Done`, add a line (gist + why + shortUrl) under `## Out of scope` in the repo doc's map section. A scope boundary is not a step on the route; it never enters Decisions so far.
 - **Project context / roadmap**: the repo doc IS the standing context (`docs/DEV_BOARD.md` at the repo root unless the project chose otherwise). Read it when charting a map or choosing tickets; keep it current as roadmap decisions land.
 - **Triage labels** (plain task cards, no wayfinder involvement): `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`.
@@ -54,18 +80,18 @@ Board `POST /1/boards?name=Development&defaultLists=false&prefs_permissionLevel=
 Used by `skill://wayfinder`. The **map** is a section of the project's repo doc (the `Maps` list is archived); tickets are cards on the board.
 
 - **Chart — create the map**: create/extend the map section in the project's repo doc (`docs/DEV_BOARD.md`-style) with the exact body sections; tickets land on the board as below.
-- **Create ticket**: `POST /1/cards?idList=<Messy-id>&name=<question as title>&desc=## Question ...`, then labels `wayfinder:<type>` + project. Create-then-wire: all tickets exist before blocking lines reference them.
+- **Create ticket**: `POST /1/cards?idList=<Ideas-id>&name=<question as title>&desc=## Question ...`, then labels `wayfinder:<type>` + project. Create-then-wire: all tickets exist before blocking lines reference them.
 - **Wire blocking**: `PUT /1/cards/<cardId>?desc=<desc with Blocked by: <shortUrl>, ...>`.
-- **Messy query** (formerly Frontier query): `GET /1/lists/<Messy-id>/cards?fields=name,desc,idMembers,shortUrl,idList`; keep cards with empty `idMembers` whose every `Blocked by:` card is in `Done` (check each: `GET /1/cards/<shortUrl>?fields=idList`). First in list order wins. Cards sitting in `Selected for development` are already scoped/selected — not Messy candidates.
-- **Claim**: `PUT /1/cards/<cardId>/idMembers?value=<myMemberId>`, then `PUT /1/cards/<cardId>?idList=<In Progress-id>`.
-- **Resolve**: `POST /1/cards/<cardId>/actions/comments?text=<answer>`, `PUT /1/cards/<cardId>?idList=<Done-id>`, then edit the repo doc: append the new Decisions-so-far line to the map section. (Owner review via `Review` happens outside this op; the resolve mechanics are unchanged.)
+- **Ideas query** (formerly Frontier/Messy query): `GET /1/lists/<Ideas-id>/cards?fields=name,desc,idMembers,shortUrl,idList`; keep cards with empty `idMembers` whose every `Blocked by:` card is in `Done` (check each: `GET /1/cards/<shortUrl>?fields=idList`). First in list order wins. Cards sitting in `Ready` are already scoped/selected — not Ideas candidates.
+- **Claim**: `PUT /1/cards/<cardId>/idMembers?value=<myMemberId>`, then `PUT /1/cards/<cardId>?idList=<Active-id>`.
+- **Resolve**: `POST /1/cards/<cardId>/actions/comments?text=<answer>`, `PUT /1/cards/<cardId>?idList=<Done-id>`, then edit the repo doc: append the new Decisions-so-far line to the map section. (Owner review via `Check` happens outside this op; the resolve mechanics are unchanged.)
 - **Research tickets** fire as parallel subagents; each resolves its own card (claim → work → resolve) so concurrent sessions never touch the same card.
 
 ## Bugs and recurrence
 
 A bug tied to tracked work never becomes an isolated card:
-1. Check the repo doc's epic `## Work items` for a `bug` card in the same area. Open one → comment (`recurred <date>: <symptom>; suspicion: ...`) + epic `## Log` line. Closed with the same root cause → REOPEN it (move back to `Messy`, add the recurrence comment). One card per recurring issue.
-2. No matching card → create in `Messy`, label `bug` + project, name the epic in the description, add the index line to the doc's epic Work items.
+1. Check the repo doc's epic `## Work items` for a `bug` card in the same area. Open one → comment (`recurred <date>: <symptom>; suspicion: ...`) + epic `## Log` line. Closed with the same root cause → REOPEN it (move back to `Ideas`, add the recurrence comment). One card per recurring issue.
+2. No matching card → create in `Ideas`, label `bug` + project, name the epic in the description, add the index line to the doc's epic Work items.
 
 Bugs outside any epic: same, minus the epic reference — still project-labelled. Two or more open bug cards in the same subsystem → propose an epic section in the repo doc (hygiene flags this).
 
@@ -74,7 +100,7 @@ Bugs outside any epic: same, minus the epic reference — still project-labelled
 The orchestrator owns ALL board writes; subagents never touch Trello.
 - **Down**: a delegation spec for card work must carry the card's context — epic `## Goal` + relevant `## Design decisions`, the ticket's `## Question`, and acceptance criteria (inline for short, `local://` file for long).
 - **Up**: when reviewed work lands, the orchestrator updates the board in the same turn: resolve ops, epic `## Work items` line, and distills anything durable into the repo doc's `## Design decisions`. The board is long-term memory for tickets; the repo doc is long-term memory for structure — decisions that live only in a session are lost.
-- **Unfinished at session end**: comment a state snapshot (done / next) on the card; it stays `In Progress` as the handoff.
+- **Unfinished at session end**: comment a state snapshot (done / next) on the card; it stays in `Active` as the handoff.
 
 ## Scenario → board action
 
@@ -88,12 +114,12 @@ The orchestrator owns ALL board writes; subagents never touch Trello.
 
 Starting dev work in a personal project → ONE board GET (`GET /1/boards/<boardId>/cards?fields=name,labels,idList,idMembers`), then:
 1. `needs-triage` cards (yours or the human's) → triage first: fold into epics/tickets or report back. Cards the human adds carry this label.
-2. Your claimed `In Progress` cards → resume or release (unclaim + snapshot comment). Claims never rot.
+2. Your claimed `Active` cards → resume or release (unclaim + snapshot comment). Claims never rot.
 3. The project's repo doc (work structure + standing context) → structure the session against it.
 
-After any batch of card creations, hygiene: flag cards with no project label, repo-doc Work items entries pointing at cards no longer in Messy/Selected for development/In Progress/Review/Done, and subsystems with 2+ open bug cards (propose an epic section). Fix before proceeding.
+After any batch of card creations, hygiene: flag cards with no project label, repo-doc Work items entries pointing at cards no longer in Ideas/Ready/Active/Check/Done, and subsystems with 2+ open bug cards (propose an epic section). Fix before proceeding.
 
-omp injects this checkpoint automatically at session start (`omp-board-checkpoint extension: once per process, with the project's roadmap gist, open epics, and any needs-triage/In Progress cards; skipped only for work-scope cwd). The manual rule above is the fallback — act on what the injection names. Deprecation implication for the extension: ALL per-project Roadmap cards were archived 2026-10-05 when Maps was deprecated — the checkpoint must tolerate a missing Roadmap card for every project and point at the repo work-structure doc instead.
+omp injects this checkpoint automatically at session start (`omp-board-checkpoint extension: once per process, with the project's roadmap gist, open epics, and any needs-triage/Active cards; skipped only for work-scope cwd). The manual rule above is the fallback — act on what the injection names. Deprecation implication for the extension: ALL per-project Roadmap cards were archived 2026-10-05 when Maps was deprecated — the checkpoint must tolerate a missing Roadmap card for every project and point at the repo work-structure doc instead.
 
 ## Parallel sessions
 
