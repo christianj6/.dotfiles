@@ -195,12 +195,22 @@ transcript instead:
 ## Config rollout
 
 Running agents keep the config version they started with (the
-`omp-v<N>-<pane>` roster name). To move a whole workspace onto a new one:
+`omp-v<N>-<pane>` roster name). The rollout unit is one project TAB. In
+herdr's own terms a *workspace* is a space (system / work / personal) holding
+one tab per project (tab ids like `w7:tP`); passing a workspace id instead
+rolls every tab in that space.
 
 1. Make the config change in ~/.dotfiles and bump `config/omp/VERSION`.
-2. Preview: `workspace-rollout <workspace_id> --dry-run` (panes, kinds,
-   current versions, intended action; touches nothing).
-3. Run: `workspace-rollout <workspace_id> [--wait-timeout MS] [--skip PANE]...`
+2. Find the tab: `workspace-rollout --list [workspace_id|label]` (read-only:
+   spaces > tabs > agent panes with kind, version marker, cwd; `*` = stale).
+3. Preview: `workspace-rollout <tab_id> --dry-run` (panes, kinds, versions,
+   cwd, intended action; touches nothing).
+4. Run: `workspace-rollout <tab_id> [--only PANE|AGENT_NAME]... [--skip PANE]... [--wait-timeout MS]`
+
+`--only` (repeatable, pane id or agent name) restricts the rollout to those
+panes, for a tab that holds extra panes that must stay untouched. A
+worktree pane and the main checkout differ only by cwd, so check that column.
+An `--only` value matching no pane in the target is an error, never a no-op.
 
 Each stale agent restarts at its next idle point (default wait 120s, else
 `SKIPPED-BUSY`; re-run later), resuming the exact session it had open:

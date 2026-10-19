@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# workspace-rollout -- bring every agent pane in ONE herdr workspace to the
-# current harness config version (config/omp/VERSION), each at its own next
-# stopping point, keeping its conversation.
+# workspace-rollout -- bring the agent panes of ONE project tab (or a whole
+# herdr workspace) to the current harness config version (config/omp/VERSION),
+# each at its own next stopping point, keeping its conversation.
+#
+# herdr's object model, as the CLI reports it: a herdr WORKSPACE is a space
+# (e.g. system / work / personal), it holds TABS (one per project, ids like
+# w7:tP), and tabs hold PANES. The project tab is the rollout unit: pass a tab
+# id; a workspace id rolls every tab in that space. `--list` shows the tree.
 #
 # omp-config-version.ts writes /tmp/omp-config-versions/<pid> once at process
 # load, so a running agent keeps its version until its process restarts. This
@@ -27,32 +32,56 @@ set -uo pipefail
 
 usage() {
     cat <<'EOF'
-usage: workspace-rollout <workspace-id> [--dry-run] [--wait-timeout MS] [--skip PANE_ID]...
+usage: workspace-rollout <tab-id|workspace-id> [--dry-run] [--wait-timeout MS]
+                         [--only PANE_ID|AGENT_NAME]... [--skip PANE_ID]...
+       workspace-rollout --list [WORKSPACE_ID|LABEL]
 
-Restarts stale agent panes in <workspace-id> onto config/omp/VERSION at their
-next idle point, resuming each session. --dry-run prints the plan only.
---wait-timeout: how long to wait for a busy agent (default 120000 ms).
+Restarts stale agent panes onto config/omp/VERSION at their next idle point,
+resuming each session. Target a project tab (herdr tab id, e.g. w7:tP); a herdr
+workspace id (a space: system/work/personal) targets every tab in it.
+  --dry-run        print the plan only (panes, kinds, versions, cwd, action)
+  --wait-timeout   how long to wait for a busy agent (default 120000 ms)
+  --only X         restrict to these panes (pane id or agent name; repeatable)
+  --skip PANE_ID   leave this pane alone (repeatable)
+  --list [SPACE]   read-only: herdr workspaces (spaces) > tabs > agent panes
+                   with kind, cwd and config version marker
 EOF
 }
 
-WID=""
+TARGET=""
 DRY=0
+LIST=0
+LIST_SPACE=""
 WAIT_MS=120000
 SKIPS=()
+ONLY=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY=1 ;;
+        --list) LIST=1; case "${2:-}" in ''|-*) ;; *) shift; LIST_SPACE="$1" ;; esac ;;
+        --list=*) LIST=1; LIST_SPACE="${1#*=}" ;;
+        --only) shift; ONLY+=("${1:-}") ;;
+        --only=*) ONLY+=("${1#*=}") ;;
         --wait-timeout) shift; WAIT_MS="${1:-}" ;;
         --wait-timeout=*) WAIT_MS="${1#*=}" ;;
         --skip) shift; SKIPS+=("${1:-}") ;;
         --skip=*) SKIPS+=("${1#*=}") ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "workspace-rollout: unknown option $1" >&2; usage >&2; exit 2 ;;
-        *) [ -z "$WID" ] || { usage >&2; exit 2; }; WID="$1" ;;
+        *) [ -z "$TARGET" ] || { usage >&2; exit 2; }; TARGET="$1" ;;
     esac
     shift
 done
-[ -n "$WID" ] || { usage >&2; exit 2; }
+if [ $LIST = 1 ]; then
+    [ -z "$TARGET" ] || { usage >&2; exit 2; }
+else
+    [ -n "$TARGET" ] || { usage >&2; exit 2; }
+fi
+# A tab id is "<workspace>:<tab>"; panes are listed per workspace, then
+# filtered to the tab.
+WID="${TARGET%%:*}"
+TAB=""
+case "$TARGET" in *:*) TAB="$TARGET" ;; esac
 case "$WAIT_MS" in ''|*[!0-9]*) echo "workspace-rollout: --wait-timeout needs milliseconds" >&2; exit 2 ;; esac
 
 DOTFILES="${DOTFILES:-$HOME/.dotfiles}"
@@ -72,23 +101,30 @@ sleep_s() { perl -e "select(undef,undef,undef,$1)"; }
 
 # --- JSON / process helpers (python3 is already a harness requirement) -------
 
-# Rows of "pane_id name agent status", separated by
-# US (0x1f): fields can be empty, and tab is IFS-whitespace that read collapses.
-# for every pane in $WID. workspace_id is re-checked per row: never trust the
-# filter alone with another workspace's panes.
+# Rows of "pane_id name agent status tab_id cwd" for every pane in $WID (and
+# in $TAB when targeting a tab), separated by US (0x1f): fields can be empty,
+# and tab is IFS-whitespace that read collapses. workspace_id/tab_id are
+# re-checked per row: never trust the CLI filter alone with other panes.
+# cwd is ~-abbreviated; a worktree and its main checkout differ only there.
 workspace_rows() {
     local panes agents
-    panes="$(herdr pane list --workspace "$WID")" || return 1
+    panes="$(herdr pane list --workspace "$1")" || return 1
     agents="$(herdr agent list)" || return 1
-    python3 - "$WID" "$panes" "$agents" <<'PY'
+    python3 - "$1" "$2" "$HOME" "$panes" "$agents" <<'PY'
 import json, sys
-wid, panes, agents = sys.argv[1], json.loads(sys.argv[2]), json.loads(sys.argv[3])
+wid, tab, home = sys.argv[1], sys.argv[2], sys.argv[3]
+panes, agents = json.loads(sys.argv[4]), json.loads(sys.argv[5])
 names = {a["pane_id"]: a.get("name") or "" for a in agents["result"]["agents"]}
 for p in panes["result"]["panes"]:
-    if p.get("workspace_id") != wid:
+    if p.get("workspace_id") != wid or (tab and p.get("tab_id") != tab):
         continue
+    # the pane cwd, not foreground_cwd: that follows whatever tool
+    # subprocess a working agent is running
+    cwd = p.get("cwd") or p.get("foreground_cwd") or ""
+    if cwd == home or cwd.startswith(home + "/"):
+        cwd = "~" + cwd[len(home):]
     print("\x1f".join([p["pane_id"], names.get(p["pane_id"], ""), p.get("agent") or "",
-                     p.get("agent_status") or "unknown"]))
+                     p.get("agent_status") or "unknown", p.get("tab_id") or "", cwd]))
 PY
 }
 
@@ -298,6 +334,15 @@ is_skipped() {
     return 1
 }
 
+# --only: no filter given -> every pane; else the pane id or its agent name
+# must be listed.
+is_selected() {
+    local o
+    [ ${#ONLY[@]} = 0 ] && return 0
+    for o in "${ONLY[@]}"; do [ "$o" = "$1" ] || { [ -n "$2" ] && [ "$o" = "$2" ]; } && return 0; done
+    return 1
+}
+
 # Fills PLAN_* globals for one pane row. ACTION is one of: up-to-date, skip,
 # restart, NEEDS-MANUAL, no-agent.
 plan_pane() {
@@ -322,6 +367,7 @@ plan_pane() {
     if [ "$k" = omp ]; then PLAN_OLD="$(omp_marker "$pid" "$name")"; else PLAN_OLD="$(claude_marker "$pid")"; fi
 
     if [ "$pane" = "$SELF_PANE" ]; then PLAN_ACTION="skip"; PLAN_WHY="this pane runs the rollout"; return; fi
+    if ! is_selected "$pane" "$name"; then PLAN_ACTION="skip"; PLAN_WHY="not in --only"; return; fi
     if is_skipped "$pane"; then PLAN_ACTION="skip"; PLAN_WHY="--skip"; return; fi
     if [ "$PLAN_OLD" = "$CUR" ] || [ "$PLAN_OLD" = "~$CUR" ]; then PLAN_ACTION="up-to-date"; return; fi
     [ "$hagent" = "$k" ] && PLAN_HAGENT="$hagent"
@@ -546,19 +592,69 @@ restart_pane() {
     fi
 }
 
+# --- list (read-only) ----------------------------------------------------------
+
+# Spaces (herdr workspaces) > tabs > agent panes, with kind, version marker and
+# cwd. Reads herdr, ps and the marker files only; never sends anything.
+list_mode() {
+    local spaces ws label tab tlabel row pane name hagent status ptab cwd sp agents k pid nvpid chain kind ver
+    spaces="$(herdr workspace list | python3 -c '
+import json, sys
+want = sys.argv[1]
+for w in json.load(sys.stdin)["result"]["workspaces"]:
+    if not want or want in (w["workspace_id"], w.get("label")):
+        print(w["workspace_id"] + "\x1f" + (w.get("label") or ""))' "$LIST_SPACE")" || return 1
+    [ -n "$spaces" ] || { echo "workspace-rollout: no herdr workspace matches '$LIST_SPACE'" >&2; return 1; }
+    echo "config/omp/VERSION = $CUR   (* = stale)"
+    while IFS=$'\x1f' read -r ws label; do
+        echo "workspace $ws ($label)"
+        ROWS="$(workspace_rows "$ws" "")" || continue
+        herdr tab list --workspace "$ws" | python3 -c '
+import json, sys
+for t in json.load(sys.stdin)["result"]["tabs"]:
+    print(t["tab_id"] + "\x1f" + (t.get("label") or ""))' | while IFS=$'\x1f' read -r tab tlabel; do
+            echo "  tab $tab ($tlabel)"
+            while IFS=$'\x1f' read -r pane name hagent status ptab cwd; do
+                [ "$ptab" = "$tab" ] || continue
+                sp="$(shell_pid "$pane")"
+                agents="$([ -n "$sp" ] && pane_agents "$sp")"
+                [ -n "$agents" ] || continue
+                while IFS=$'\t' read -r k pid nvpid chain; do
+                    kind="$k"; [ "$nvpid" = "-" ] || kind="$k-in-nvim"
+                    if [ "$k" = omp ]; then ver="$(omp_marker "$pid" "$name")"; else ver="$(claude_marker "$pid")"; fi
+                    [ "$ver" = "$CUR" ] || [ "$ver" = "~$CUR" ] || ver="$ver*"
+                    printf '    %-8s %-15s v%-6s %-8s %-18s %s\n' "$pane" "$kind" "$ver" "$status" "${name:--}" "$cwd"
+                done <<< "$agents"
+            done <<< "$ROWS"
+        done
+    done <<< "$spaces"
+}
+
 # --- main ---------------------------------------------------------------------
 
-ROWS="$(workspace_rows)" || { echo "workspace-rollout: herdr query failed for $WID" >&2; exit 1; }
-[ -n "$ROWS" ] || { echo "workspace-rollout: no panes in workspace $WID" >&2; exit 1; }
+if [ $LIST = 1 ]; then list_mode < /dev/null; exit $?; fi
 
-echo "workspace-rollout: workspace $WID -> config v$CUR$([ $DRY = 1 ] && echo ' (dry run)')"
+ROWS="$(workspace_rows "$WID" "$TAB")" || { echo "workspace-rollout: herdr query failed for $TARGET" >&2; exit 1; }
+[ -n "$ROWS" ] || { echo "workspace-rollout: no panes in $TARGET (see --list)" >&2; exit 1; }
+
+# Every --only value must name a pane in the target: a typo must not silently
+# turn into "nothing selected" (or worse, be read as no filter).
+for o in ${ONLY[@]+"${ONLY[@]}"}; do
+    if ! printf '%s\n' "$ROWS" | awk -F $'\x1f' -v o="$o" '$1 == o || ($2 != "" && $2 == o) { f = 1 } END { exit !f }'; then
+        echo "workspace-rollout: --only '$o' matches no pane in $TARGET (see --list)" >&2; exit 2
+    fi
+done
+
+if [ -n "$TAB" ]; then SCOPE="tab $TAB"; else SCOPE="workspace $WID (all tabs)"; fi
+echo "workspace-rollout: $SCOPE -> config v$CUR$([ $DRY = 1 ] && echo ' (dry run)')"
+[ $DRY = 1 ] && printf '  %-8s %-15s %-6s %-8s %-13s %-40s %s\n' PANE KIND VER STATUS ACTION CWD NOTE
 RESULTS=()
 FAILED=0
-while IFS=$'\x1f' read -r pane name hagent status; do
+while IFS=$'\x1f' read -r pane name hagent status ptab cwd; do
     plan_pane "$pane" "$name" "$hagent" "$status" < /dev/null
     [ "$PLAN_ACTION" = no-agent ] && continue
     if [ $DRY = 1 ]; then
-        printf '  %-8s %-15s %-6s %-8s %-13s %s\n' "$pane" "$PLAN_KIND" "v$PLAN_OLD" "$PLAN_STATUS" "$PLAN_ACTION" "$PLAN_WHY"
+        printf '  %-8s %-15s %-6s %-8s %-13s %-40s %s\n' "$pane" "$PLAN_KIND" "v$PLAN_OLD" "$PLAN_STATUS" "$PLAN_ACTION" "$cwd" "$PLAN_WHY"
         continue
     fi
     case "$PLAN_ACTION" in
@@ -570,10 +666,10 @@ while IFS=$'\x1f' read -r pane name hagent status; do
         *) R_NEW="$PLAN_OLD" R_RESUMED="-" R_RESULT="NEEDS-MANUAL" R_NOTE="$PLAN_WHY" ;;
     esac
     [ "$R_RESULT" = FAILED ] && FAILED=1
-    RESULTS+=("$(printf '%-8s %-15s %-6s %-6s %-8s %-20s %s' "$pane" "$PLAN_KIND" "v$PLAN_OLD" "v$R_NEW" "$R_RESUMED" "$R_RESULT" "$R_NOTE")")
+    RESULTS+=("$(printf '%-8s %-15s %-6s %-6s %-8s %-20s %-40s %s' "$pane" "$PLAN_KIND" "v$PLAN_OLD" "v$R_NEW" "$R_RESUMED" "$R_RESULT" "$cwd" "$R_NOTE")")
 done <<< "$ROWS"
 
 if [ $DRY = 1 ]; then echo "(dry run: nothing touched)"; exit 0; fi
-printf '\n%-8s %-15s %-6s %-6s %-8s %-20s %s\n' PANE KIND OLD NEW RESUMED RESULT NOTE
+printf '\n%-8s %-15s %-6s %-6s %-8s %-20s %-40s %s\n' PANE KIND OLD NEW RESUMED RESULT CWD NOTE
 for r in ${RESULTS[@]+"${RESULTS[@]}"}; do echo "$r"; done
 exit $FAILED
