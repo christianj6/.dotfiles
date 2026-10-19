@@ -224,6 +224,15 @@ REPL whose omp-last lookup would pick another session); the note says how
 to resume by hand. The pane running the rollout is always skipped. Binary
 upgrades (`omp update`) are out of scope.
 
+After each omp restart the script watches 60s for a herdr registry wedge
+(herdr accepting omp-watch's reports but applying none, so the sidebar
+freezes). omp-watch's daemon log naming the pane ("reports not converging"
+/ "registry stuck at") -> `ROLLOUT-WEDGED`: the restart itself worked, but
+close the pane, re-split it in the tab, and re-attach omp (ctrl+a). A turn
+seen landing (transcript grows and herdr says working) clears it early; with
+no turn in the window the note says the check was inconclusive, since a
+wedge only shows during a turn.
+
 ## Find and verify
 
     herdr workspace list

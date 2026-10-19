@@ -25,6 +25,8 @@
 # The nvim pane itself is never restarted. Busy agents are never sent keys:
 # `herdr agent wait --until idle --until done` gates every restart, and a
 # timeout reports SKIPPED-BUSY. Any doubt about losing context -> NEEDS-MANUAL.
+# After an omp restart, a 60s watch of omp-watch's daemon log flags a herdr
+# registry wedge as ROLLOUT-WEDGED (state display frozen; restart succeeded).
 #
 # claude has no per-process marker; its version is inferred from process start
 # time vs VERSION's mtime ("~N" = started after the bump, "<N" = before).
@@ -93,6 +95,9 @@ OMP_SESSIONS="$HOME/.omp/agent/sessions"
 MARKERS=/tmp/omp-config-versions
 SELF_PANE="${HERDR_PANE_ID:-}"
 VERIFY_SECS=30
+# Wedge watch (omp panes): omp-watch's daemon log, same override it honours.
+WATCH_LOG="${OMP_WATCH_LOG:-/tmp/omp-watch-daemon.log}"
+WEDGE_SECS="${ROLLOUT_WEDGE_SECS:-60}"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/workspace-rollout.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
@@ -201,26 +206,73 @@ omp_marker() {
 
 claude_marker() {
     local start
-    start="$(ps -o lstart= -p "$1" 2>/dev/null | python3 -c '
-import sys, time
-try: print(int(time.mktime(time.strptime(sys.stdin.read().strip(), "%a %b %d %H:%M:%S %Y"))))
-except Exception: print("")')"
+    start="$(proc_start "$1")"
     if [ -z "$start" ]; then echo "?"
     elif [ "$start" -ge "$VERSION_MTIME" ]; then echo "~$CUR"
     else echo "<$CUR"; fi
 }
 
-# The omp session file (.jsonl) a pid is on; empty if none/ambiguous. omp
-# opens the file lazily (first append), so a just-resumed idle agent holds
-# nothing open yet -- fall back to its --resume=<path> argv.
+proc_start() {
+    ps -o lstart= -p "$1" 2>/dev/null | python3 -c '
+import sys, time
+try: print(int(time.mktime(time.strptime(sys.stdin.read().strip(), "%a %b %d %H:%M:%S %Y"))))
+except Exception: print("")'
+}
+
+proc_cwd() { lsof -a -d cwd -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1; }
+
+# Session files in <cwd>'s omp session dir created at/after <epoch>.
+sessions_created_after() {
+    python3 - "$OMP_SESSIONS" "$HOME" "$1" "$2" <<'PY'
+import calendar, os, re, sys, time
+root, home, cwd, start = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+# omp's dir naming (mirrors omp-watch session_key): HOME-relative cwds keep
+# their leading dash, absolute ones outside HOME are dash-wrapped.
+if cwd.startswith(home):
+    keys = [cwd[len(home):].replace("/", "-")]
+else:
+    keys = ["--" + cwd.strip("/").replace("/", "-") + "--"]
+for k in keys:
+    d = os.path.join(root, k)
+    if not os.path.isdir(d):
+        continue
+    for f in sorted(os.listdir(d)):
+        m = re.match(r"(\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d)-\d+Z_.*\.jsonl$", f)
+        if m and calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H-%M-%S")) >= start - 2:
+            print(os.path.join(d, f))
+PY
+}
+
+# The omp session file (.jsonl) a pid is on. Prints the path, nothing (no
+# session: a fresh agent with no conversation yet), or AMBIGUOUS. Sources, in
+# order:
+#   1. the file it holds open -- but omp does NOT keep it open reliably (seen
+#      live: an agent mid-conversation with no .jsonl fd), so also
+#   2. its --resume=<path> argv (herdr agent start / omp-last launches), and
+#   3. a file in its cwd's session dir created after the process started
+#      (the name carries the creation time). Only trusted when no other live
+#      omp shares that cwd and exactly one such file exists.
 omp_session_file() {
-    local files
+    local files cwd start others
     files="$(lsof -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p' | grep "^$OMP_SESSIONS/.*\.jsonl$" | sort -u)"
     if [ -z "$files" ]; then
         files="$(ps -o command= -p "$1" 2>/dev/null | tr ' ' '\n' | sed -n 's/^--resume=//p' | grep '\.jsonl$')"
         [ -f "$files" ] || files=""
     fi
-    [ "$(printf '%s\n' "$files" | grep -c .)" = 1 ] && printf '%s\n' "$files"
+    if [ -z "$files" ]; then
+        cwd="$(proc_cwd "$1")"; start="$(proc_start "$1")"
+        [ -n "$cwd" ] && [ -n "$start" ] || { echo AMBIGUOUS; return; }
+        ps -A -o pid=,command= > "$TMP/ps-omp"
+        others="$(awk -v me="$1" '$1 != me { for (i = 2; i <= NF; i++) { n = split($i, a, "/"); if (a[n] == "omp") { print $1; break } } }' "$TMP/ps-omp" \
+            | while read -r o; do [ "$(proc_cwd "$o")" = "$cwd" ] && echo "$o"; done)"
+        files="$(sessions_created_after "$cwd" "$start")"
+        if [ -n "$files" ] && { [ -n "$others" ] || [ "$(printf '%s\n' "$files" | grep -c .)" != 1 ]; }; then
+            echo AMBIGUOUS; return
+        fi
+    fi
+    if [ "$(printf '%s\n' "$files" | grep -c .)" -gt 1 ]; then echo AMBIGUOUS; return; fi
+    [ -n "$files" ] && printf '%s\n' "$files"
+    return 0
 }
 
 # claude's own per-process record, ~/.claude/sessions/<pid>.json: the session
@@ -389,6 +441,9 @@ plan_pane() {
     omp)
         local f
         f="$(omp_session_file "$pid")"
+        if [ "$f" = AMBIGUOUS ]; then
+            PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="session file not identifiable (another omp shares this cwd)"; return
+        fi
         PLAN_SID="$f"
         if [ "$nvpid" = "-" ] && [ -z "$f" ]; then
             # Nothing open and not resumed from a file: either no conversation
@@ -506,6 +561,45 @@ type_exit() {
     else nv "$PLAN_NVSOCK" send "$job" $'\r' > /dev/null; fi
 }
 
+file_size() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo 0; }
+
+# Registry-wedge watch after an omp restart. Seen live: herdr kept answering
+# omp-watch's reports "ok" while applying none, so the sidebar froze at idle
+# through real turns. omp-watch names that in its daemon log
+# ("<pane>: reports not converging registry", "<pane>: registry stuck at").
+# Only bytes appended since $1 (log size taken before the restart) are read --
+# the log runs to gigabytes. Within WEDGE_SECS, sets W_STATE to:
+#   wedged        a failure line for this pane appeared
+#   healthy       a turn was seen landing: transcript grew AND herdr says working
+#   inconclusive  neither (no turn ran; a wedge only shows during a turn)
+# A registry that flips to working is applying reports, so healthy ends the
+# watch early; otherwise it runs the full window.
+wedge_watch() {
+    local pane="$1" off="$2" newpid="$3" sid size0 deadline sz
+    W_STATE="inconclusive"
+    sid="$(omp_session_file "$newpid")"
+    [ "$sid" = AMBIGUOUS ] && sid=""
+    size0=0
+    [ -n "$sid" ] && size0="$(file_size "$sid")"
+    deadline=$(( $(date +%s) + WEDGE_SECS ))
+    while :; do
+        sz="$(file_size "$WATCH_LOG")"
+        [ "$sz" -lt "$off" ] && off=0   # log rotated/truncated
+        if [ "$sz" -gt "$off" ] && tail -c +"$(( off + 1 ))" "$WATCH_LOG" 2>/dev/null \
+                | grep -F "] $pane: " | grep -Eq 'reports not converging|registry stuck at'; then
+            W_STATE="wedged"; return
+        fi
+        # a fresh agent's file only appears with its first turn
+        [ -n "$sid" ] || { sid="$(omp_session_file "$newpid")"; [ "$sid" = AMBIGUOUS ] && sid=""; }
+        if [ -n "$sid" ] && [ "$(file_size "$sid")" -gt "$size0" ] \
+                && [ "$(agent_status "$pane")" = working ]; then
+            W_STATE="healthy"; return
+        fi
+        [ "$(date +%s)" -ge "$deadline" ] && return
+        sleep_s 2
+    done
+}
+
 # Sets R_NEW R_RESUMED R_RESULT R_NOTE.
 restart_pane() {
     local pane="$1" sp
@@ -517,6 +611,8 @@ restart_pane() {
     if ! wait_idle "$pane"; then
         R_RESULT="SKIPPED-BUSY"; R_NOTE="not idle within ${WAIT_MS}ms"; return
     fi
+    local log_off
+    log_off="$(file_size "$WATCH_LOG")"
     kill -0 "$PLAN_PID" 2>/dev/null || { R_RESULT="NEEDS-MANUAL"; R_NOTE="agent pid $PLAN_PID vanished"; return; }
 
     local b="" job="" vis=""
@@ -587,6 +683,17 @@ restart_pane() {
     done
     if [ "$R_NEW" = "$CUR" ] || [ "$R_NEW" = "~$CUR" ]; then
         if [ "$R_RESUMED" != n ]; then R_RESULT="RESTARTED"; else R_RESULT="RESTARTED-NO-RESUME"; R_NOTE="new session; old one: $PLAN_SID"; fi
+        # The restart itself succeeded; what can still wedge is herdr's state
+        # display. omp-watch only drives omp panes, so claude is not watched.
+        case "$PLAN_KIND" in omp*)
+            wedge_watch "$pane" "$log_off" "$pid"
+            case "$W_STATE" in
+                wedged) R_RESULT="ROLLOUT-WEDGED"
+                        R_NOTE="registry wedge: close the pane, re-split it in the tab, owner re-attaches omp (ctrl+a)" ;;
+                healthy) R_NOTE="${R_NOTE:+$R_NOTE; }turn seen landing in herdr" ;;
+                *) R_NOTE="${R_NOTE:+$R_NOTE; }wedge check inconclusive: no turn in ${WEDGE_SECS}s" ;;
+            esac ;;
+        esac
     else
         R_RESULT="FAILED"; R_NOTE="new process marker '$R_NEW' != $CUR"
     fi
