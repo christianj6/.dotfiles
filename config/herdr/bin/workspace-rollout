@@ -104,6 +104,14 @@ trap 'rm -rf "$TMP"' EXIT
 
 sleep_s() { perl -e "select(undef,undef,undef,$1)"; }
 
+# Run a command with a deadline (seconds); SIGALRM kills it -> status 142.
+# perl, not timeout(1): coreutils is not on a stock macOS.
+with_timeout() {
+    local secs="$1"; shift
+    perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"
+}
+NV_TIMEOUT=5
+
 # --- JSON / process helpers (python3 is already a harness requirement) -------
 
 # Rows of "pane_id name agent status tab_id cwd" for every pane in $WID (and
@@ -375,7 +383,11 @@ nv() {
         a="${a//\\/\\\\}"; a="${a//\"/\\\"}"; a="${a//$'\r'/\\r}"
         args="$args, \"$a\""
     done
-    nvim --server "$sock" --remote-expr "luaeval('dofile(\"$NV_LUA\")(_A)', [${args#, }])" 2>/dev/null < /dev/null
+    # A modal/blocked nvim (hit-enter or swap prompt, ...) never answers RPC;
+    # seen live hanging a dry-run indefinitely. Callers treat failure as
+    # "nvim unavailable" -- never as a reason to type into the pane blind.
+    with_timeout "$NV_TIMEOUT" nvim --server "$sock" \
+        --remote-expr "luaeval('dofile(\"$NV_LUA\")(_A)', [${args#, }])" 2>/dev/null < /dev/null
 }
 
 # --- plan ---------------------------------------------------------------------
@@ -431,7 +443,9 @@ plan_pane() {
         PLAN_NVSOCK="$(nvim_socket "$nvpid")"
         [ -n "$PLAN_NVSOCK" ] || { PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="nvim RPC socket not found"; return; }
         local probe b job bname vis ncwd
-        probe="$(nv "$PLAN_NVSOCK" probe "$chain")"
+        if ! probe="$(nv "$PLAN_NVSOCK" probe "$chain")"; then
+            PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="nvim not answering RPC within ${NV_TIMEOUT}s (modal prompt?); not typing into it blind"; return
+        fi
         [ -n "$probe" ] || { PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="no nvim terminal buffer owns pid $pid"; return; }
         IFS=$'\t' read -r b job bname vis ncwd <<< "$probe"
         PLAN_EXTRA="$b $job $vis"
@@ -548,7 +562,9 @@ type_exit() {
         R_NOTE="input box not empty/visible ($st): dialog or user draft; left as found"; return 1
     fi
     if [ -z "$PLAN_NVSOCK" ]; then herdr pane send-text "$pane" "/exit" > /dev/null
-    else nv "$PLAN_NVSOCK" send "$job" "/exit" > /dev/null; fi
+    elif ! nv "$PLAN_NVSOCK" send "$job" "/exit" > /dev/null; then
+        R_NOTE="nvim stopped answering RPC before /exit; nothing sent"; return 1
+    fi
     sleep_s 0.6
     st="$(screen_text "$pane" "$job" | input_state "$kind")"
     if [ "$st" != exit ]; then
@@ -558,7 +574,9 @@ type_exit() {
         R_NOTE="typed /exit did not land cleanly ($st); removed it again"; return 1
     fi
     if [ -z "$PLAN_NVSOCK" ]; then herdr pane send-keys "$pane" enter > /dev/null
-    else nv "$PLAN_NVSOCK" send "$job" $'\r' > /dev/null; fi
+    elif ! nv "$PLAN_NVSOCK" send "$job" $'\r' > /dev/null; then
+        R_NOTE="nvim stopped answering RPC: /exit typed but not submitted; clear it from the REPL input"; return 1
+    fi
 }
 
 file_size() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo 0; }
