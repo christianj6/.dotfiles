@@ -1,0 +1,579 @@
+#!/usr/bin/env bash
+# workspace-rollout -- bring every agent pane in ONE herdr workspace to the
+# current harness config version (config/omp/VERSION), each at its own next
+# stopping point, keeping its conversation.
+#
+# omp-config-version.ts writes /tmp/omp-config-versions/<pid> once at process
+# load, so a running agent keeps its version until its process restarts. This
+# script restarts only stale, idle agents and resumes the EXACT session each
+# one had open (never `-c`/"latest in cwd", which picks the wrong conversation
+# when two agents share a cwd):
+#   omp standalone  /exit -> shell prompt -> herdr agent start ... -- --resume=<file>
+#   omp in nvim     yarepl REPL (ctrl-a): /exit via nvim RPC chansend; yarepl
+#                   closes the buffer; REPL restarted through yarepl so ctrl-a
+#                   keeps working. omp-last (the REPL command) resumes the
+#                   newest session for nvim's cwd, so this only runs when that
+#                   newest session IS this agent's -- else NEEDS-MANUAL.
+#   claude          /exit -> claude --resume <id> (id from claude's own
+#                   ~/.claude/sessions/<pid>.json). In an nvim
+#                   :terminal the new terminal replaces the old buffer in place.
+# The nvim pane itself is never restarted. Busy agents are never sent keys:
+# `herdr agent wait --until idle --until done` gates every restart, and a
+# timeout reports SKIPPED-BUSY. Any doubt about losing context -> NEEDS-MANUAL.
+#
+# claude has no per-process marker; its version is inferred from process start
+# time vs VERSION's mtime ("~N" = started after the bump, "<N" = before).
+set -uo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: workspace-rollout <workspace-id> [--dry-run] [--wait-timeout MS] [--skip PANE_ID]...
+
+Restarts stale agent panes in <workspace-id> onto config/omp/VERSION at their
+next idle point, resuming each session. --dry-run prints the plan only.
+--wait-timeout: how long to wait for a busy agent (default 120000 ms).
+EOF
+}
+
+WID=""
+DRY=0
+WAIT_MS=120000
+SKIPS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) DRY=1 ;;
+        --wait-timeout) shift; WAIT_MS="${1:-}" ;;
+        --wait-timeout=*) WAIT_MS="${1#*=}" ;;
+        --skip) shift; SKIPS+=("${1:-}") ;;
+        --skip=*) SKIPS+=("${1#*=}") ;;
+        -h|--help) usage; exit 0 ;;
+        -*) echo "workspace-rollout: unknown option $1" >&2; usage >&2; exit 2 ;;
+        *) [ -z "$WID" ] || { usage >&2; exit 2; }; WID="$1" ;;
+    esac
+    shift
+done
+[ -n "$WID" ] || { usage >&2; exit 2; }
+case "$WAIT_MS" in ''|*[!0-9]*) echo "workspace-rollout: --wait-timeout needs milliseconds" >&2; exit 2 ;; esac
+
+DOTFILES="${DOTFILES:-$HOME/.dotfiles}"
+VERSION_FILE="$DOTFILES/config/omp/VERSION"
+CUR="$(tr -dc '0-9' < "$VERSION_FILE" 2>/dev/null)"
+[ -n "$CUR" ] || { echo "workspace-rollout: cannot read $VERSION_FILE" >&2; exit 1; }
+VERSION_MTIME="$(stat -f %m "$VERSION_FILE" 2>/dev/null || stat -c %Y "$VERSION_FILE")"
+OMP_SESSIONS="$HOME/.omp/agent/sessions"
+MARKERS=/tmp/omp-config-versions
+SELF_PANE="${HERDR_PANE_ID:-}"
+VERIFY_SECS=30
+
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/workspace-rollout.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+
+sleep_s() { perl -e "select(undef,undef,undef,$1)"; }
+
+# --- JSON / process helpers (python3 is already a harness requirement) -------
+
+# Rows of "pane_id name agent status", separated by
+# US (0x1f): fields can be empty, and tab is IFS-whitespace that read collapses.
+# for every pane in $WID. workspace_id is re-checked per row: never trust the
+# filter alone with another workspace's panes.
+workspace_rows() {
+    local panes agents
+    panes="$(herdr pane list --workspace "$WID")" || return 1
+    agents="$(herdr agent list)" || return 1
+    python3 - "$WID" "$panes" "$agents" <<'PY'
+import json, sys
+wid, panes, agents = sys.argv[1], json.loads(sys.argv[2]), json.loads(sys.argv[3])
+names = {a["pane_id"]: a.get("name") or "" for a in agents["result"]["agents"]}
+for p in panes["result"]["panes"]:
+    if p.get("workspace_id") != wid:
+        continue
+    print("\x1f".join([p["pane_id"], names.get(p["pane_id"], ""), p.get("agent") or "",
+                     p.get("agent_status") or "unknown"]))
+PY
+}
+
+agent_status() {
+    herdr agent get "$1" 2>/dev/null | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin)["result"]["agent"].get("agent_status") or "unknown")
+except Exception: print("unknown")'
+}
+
+shell_pid() {
+    herdr pane process-info --pane "$1" 2>/dev/null | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin)["result"]["process_info"].get("shell_pid") or "")
+except Exception: print("")'
+}
+
+# The pane's top-level agent process(es) under its shell, from one ps snapshot:
+# "kind<TAB>pid<TAB>nvim_pid<TAB>chain" per agent (nvim_pid "-" when not nested
+# in nvim; chain = comma list agent..shell). Agents spawned BY another agent
+# (subagents, probes) are dropped -- only the topmost one is the pane's agent.
+pane_agents() {
+    ps -A -o pid=,ppid=,command= > "$TMP/ps"
+    python3 - "$1" "$TMP/ps" <<'PY'
+import os, sys
+shell = int(sys.argv[1])
+ppid, cmd = {}, {}
+for line in open(sys.argv[2]):
+    parts = line.split(None, 2)
+    if len(parts) < 2:
+        continue
+    try:
+        pid, pp = int(parts[0]), int(parts[1])
+    except ValueError:
+        continue
+    ppid[pid], cmd[pid] = pp, (parts[2].strip() if len(parts) > 2 else "")
+def kind(pid):
+    toks = [t for t in cmd[pid].split() if not t.startswith("-")]
+    bases = [os.path.basename(t) for t in toks]
+    if "omp" in bases:
+        return "omp"
+    if bases and (bases[0] == "claude" or (bases[0] == "node" and "claude" in bases[1:2])):
+        return "claude"
+    return None
+def chain(pid):
+    out, p = [pid], ppid.get(pid)
+    while p and p > 1 and len(out) < 40:
+        out.append(p)
+        if p == shell:
+            return out
+        p = ppid.get(p)
+    return None
+found = {}
+for pid in cmd:
+    k = kind(pid)
+    if k and pid != shell:
+        c = chain(pid)
+        if c:
+            found[pid] = (k, c)
+for pid, (k, c) in found.items():
+    if any(a in found for a in c[1:]):
+        continue
+    nv = next((a for a in c[1:] if os.path.basename((cmd.get(a, "").split() or [""])[0]) == "nvim"), None)
+    print(f"{k}\t{pid}\t{nv or '-'}\t{','.join(map(str, c))}")
+PY
+}
+
+omp_marker() {
+    local pid="$1" name="$2" v
+    v="$({ tr -dc '0-9' < "$MARKERS/$pid"; } 2>/dev/null)"
+    if [ -z "$v" ] && [[ "$name" =~ ^omp-v([0-9]+)- ]]; then v="${BASH_REMATCH[1]}"; fi
+    echo "${v:-?}"
+}
+
+claude_marker() {
+    local start
+    start="$(ps -o lstart= -p "$1" 2>/dev/null | python3 -c '
+import sys, time
+try: print(int(time.mktime(time.strptime(sys.stdin.read().strip(), "%a %b %d %H:%M:%S %Y"))))
+except Exception: print("")')"
+    if [ -z "$start" ]; then echo "?"
+    elif [ "$start" -ge "$VERSION_MTIME" ]; then echo "~$CUR"
+    else echo "<$CUR"; fi
+}
+
+# The omp session file (.jsonl) a pid is on; empty if none/ambiguous. omp
+# opens the file lazily (first append), so a just-resumed idle agent holds
+# nothing open yet -- fall back to its --resume=<path> argv.
+omp_session_file() {
+    local files
+    files="$(lsof -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p' | grep "^$OMP_SESSIONS/.*\.jsonl$" | sort -u)"
+    if [ -z "$files" ]; then
+        files="$(ps -o command= -p "$1" 2>/dev/null | tr ' ' '\n' | sed -n 's/^--resume=//p' | grep '\.jsonl$')"
+        [ -f "$files" ] || files=""
+    fi
+    [ "$(printf '%s\n' "$files" | grep -c .)" = 1 ] && printf '%s\n' "$files"
+}
+
+# claude's own per-process record, ~/.claude/sessions/<pid>.json: the session
+# id and idle state of THIS process. herdr's agent_session claim is not used:
+# it sticks to whichever claude claimed the pane first (seen live: a claim
+# left by a wiped nvim terminal while another claude ran in the same pane).
+claude_field() {
+    python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+if str(d.get("pid")) == sys.argv[2]:
+    print(d.get(sys.argv[3]) or "")' "$HOME/.claude/sessions/$1.json" "$1" "$2" 2>/dev/null
+}
+
+claude_transcript_exists() {
+    [ -n "$1" ] && compgen -G "$HOME/.claude/projects/*/$1.jsonl" > /dev/null
+}
+
+# Idle gate. herdr-registered agents: herdr agent wait, then a status re-check.
+# A claude herdr cannot see (nvim :terminal, see herdr-workstreams SKILL.md)
+# is gated on its own status field instead. Returns 0 only once idle.
+wait_idle() {
+    local pane="$1" deadline st
+    if [ -n "$PLAN_HAGENT" ]; then
+        herdr agent wait "$pane" --until idle --until done --timeout "$WAIT_MS" > /dev/null 2>&1 || return 1
+        st="$(agent_status "$pane")"
+        case "$st" in idle|done) return 0 ;; *) return 1 ;; esac
+    fi
+    deadline=$(( $(date +%s) + WAIT_MS / 1000 ))
+    while :; do
+        [ "$(claude_field "$PLAN_PID" status)" = idle ] && return 0
+        [ "$(date +%s)" -ge "$deadline" ] && return 1
+        sleep_s 1
+    done
+}
+
+nvim_socket() {
+    lsof -a -U -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p' | grep "nvim\.$1\." | head -1
+}
+
+# nvim RPC: run one op of the lua helper below inside the agent's nvim.
+NV_LUA="$TMP/rollout.lua"
+cat > "$NV_LUA" <<'LUA'
+return function(_A)
+local op = _A[1]
+local api, fn = vim.api, vim.fn
+local function term_for(chain)
+  local want = {}
+  for p in string.gmatch(chain, "%d+") do want[tonumber(p)] = true end
+  for _, b in ipairs(api.nvim_list_bufs()) do
+    local job = vim.b[b].terminal_job_id
+    if vim.bo[b].buftype == "terminal" and type(job) == "number" then
+      local ok, pid = pcall(fn.jobpid, job)
+      if ok and want[pid] then return b, job end
+    end
+  end
+end
+if op == "probe" then
+  local b, job = term_for(_A[2])
+  if not b then return "" end
+  local name = fn.fnamemodify(api.nvim_buf_get_name(b), ":t")
+  return table.concat({ b, job, name, fn.bufwinid(b) ~= -1 and 1 or 0, fn.getcwd() }, "\t")
+elseif op == "lines" then
+  for _, b in ipairs(api.nvim_list_bufs()) do
+    if vim.b[b].terminal_job_id == tonumber(_A[2]) then
+      return table.concat(api.nvim_buf_get_lines(b, 0, -1, false), "\n")
+    end
+  end
+  return ""
+elseif op == "send" then
+  fn.chansend(tonumber(_A[2]), _A[3])
+  return "ok"
+elseif op == "yarepl_start" then
+  local prev = api.nvim_get_current_win()
+  local yarepl = require("yarepl")
+  yarepl.commands.start({ args = "pi", count = 0, bang = false })
+  if _A[2] ~= "1" then yarepl.commands.hide({ args = "pi", count = 0 }) end
+  if api.nvim_win_is_valid(prev) and _A[2] ~= "1" then api.nvim_set_current_win(prev) end
+  return "ok"
+elseif op == "claude_reopen" then
+  local old = tonumber(_A[2])
+  local nb = api.nvim_create_buf(true, false)
+  local job
+  api.nvim_buf_call(nb, function() job = fn.jobstart({ "claude", "--resume", _A[3] }, { term = true }) end)
+  if not job or job <= 0 then return "fail" end
+  if api.nvim_buf_is_valid(old) then
+    for _, w in ipairs(fn.win_findbuf(old)) do api.nvim_win_set_buf(w, nb) end
+    pcall(api.nvim_buf_delete, old, { force = true })
+  end
+  return "ok"
+end
+return ""
+end
+LUA
+
+nv() {
+    local sock="$1"; shift
+    local args="" a
+    for a in "$@"; do
+        a="${a//\\/\\\\}"; a="${a//\"/\\\"}"; a="${a//$'\r'/\\r}"
+        args="$args, \"$a\""
+    done
+    nvim --server "$sock" --remote-expr "luaeval('dofile(\"$NV_LUA\")(_A)', [${args#, }])" 2>/dev/null < /dev/null
+}
+
+# --- plan ---------------------------------------------------------------------
+
+is_skipped() {
+    local s
+    for s in ${SKIPS[@]+"${SKIPS[@]}"}; do [ "$s" = "$1" ] && return 0; done
+    return 1
+}
+
+# Fills PLAN_* globals for one pane row. ACTION is one of: up-to-date, skip,
+# restart, NEEDS-MANUAL, no-agent.
+plan_pane() {
+    local pane="$1" name="$2" hagent="$3" status="$4"
+    PLAN_KIND="-" PLAN_PID="" PLAN_OLD="-" PLAN_ACTION="no-agent" PLAN_WHY="" PLAN_EXTRA=""
+    PLAN_NVSOCK="" PLAN_CHAIN="" PLAN_NAME="$name" PLAN_STATUS="$status" PLAN_SID="" PLAN_HAGENT=""
+    local sp agents n k pid nvpid chain
+    sp="$(shell_pid "$pane")"
+    [ -n "$sp" ] || { PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="no shell pid from herdr"; return; }
+    agents="$(pane_agents "$sp")"
+    n="$(printf '%s\n' "$agents" | grep -c .)"
+    if [ "$n" = 0 ]; then
+        [ -n "$hagent" ] && { PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="herdr says $hagent but no agent process found"; }
+        return
+    fi
+    if [ "$n" -gt 1 ]; then
+        PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="$n agent processes in one pane"; return
+    fi
+    IFS=$'\t' read -r k pid nvpid chain <<< "$agents"
+    PLAN_PID="$pid" PLAN_CHAIN="$chain"
+    if [ "$nvpid" = "-" ]; then PLAN_KIND="$k"; else PLAN_KIND="$k-in-nvim"; fi
+    if [ "$k" = omp ]; then PLAN_OLD="$(omp_marker "$pid" "$name")"; else PLAN_OLD="$(claude_marker "$pid")"; fi
+
+    if [ "$pane" = "$SELF_PANE" ]; then PLAN_ACTION="skip"; PLAN_WHY="this pane runs the rollout"; return; fi
+    if is_skipped "$pane"; then PLAN_ACTION="skip"; PLAN_WHY="--skip"; return; fi
+    if [ "$PLAN_OLD" = "$CUR" ] || [ "$PLAN_OLD" = "~$CUR" ]; then PLAN_ACTION="up-to-date"; return; fi
+    [ "$hagent" = "$k" ] && PLAN_HAGENT="$hagent"
+    if [ -z "$PLAN_HAGENT" ] && [ "$k" = omp ]; then
+        PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="not registered in herdr as omp (idle state unknowable)"; return
+    fi
+
+    if [ "$nvpid" != "-" ]; then
+        PLAN_NVSOCK="$(nvim_socket "$nvpid")"
+        [ -n "$PLAN_NVSOCK" ] || { PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="nvim RPC socket not found"; return; }
+        local probe b job bname vis ncwd
+        probe="$(nv "$PLAN_NVSOCK" probe "$chain")"
+        [ -n "$probe" ] || { PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="no nvim terminal buffer owns pid $pid"; return; }
+        IFS=$'\t' read -r b job bname vis ncwd <<< "$probe"
+        PLAN_EXTRA="$b $job $vis"
+    fi
+
+    case "$k" in
+    omp)
+        local f
+        f="$(omp_session_file "$pid")"
+        PLAN_SID="$f"
+        if [ "$nvpid" = "-" ] && [ -z "$f" ]; then
+            # Nothing open and not resumed from a file: either no conversation
+            # yet (restart fresh, nothing to lose) or a -c/-r <id> resume we
+            # cannot pin down -- the latter must not be guessed at.
+            if ps -o command= -p "$pid" | grep -Eq -- '(^| )(-c|--continue|-r|--resume)( |=|$)'; then
+                PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="resumed via -c/-r but session file not identifiable"; return
+            fi
+            PLAN_WHY="no conversation yet (fresh start)"
+        fi
+        if [ "$nvpid" != "-" ]; then
+            [ -n "$f" ] || { PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="session file not identifiable"; return; }
+            if ! [[ "$bname" =~ ^#pi#[0-9]+$ ]]; then
+                PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="omp in nvim terminal '$bname', not the yarepl pi REPL"; return
+            fi
+            # Mirror scripts/projects/omp-last: the REPL restart resumes the
+            # newest session under this key -- it must be THIS session.
+            local key newest
+            key="$(printf '%s' "${ncwd#"$HOME"}" | tr / -)"
+            newest="$(ls -1t "$OMP_SESSIONS/$key"/*.jsonl 2>/dev/null | head -1)"
+            if [ "$newest" != "$f" ]; then
+                PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="yarepl/omp-last would not resume this session (resume manually: omp --resume=$f)"; return
+            fi
+        fi
+        ;;
+    claude)
+        PLAN_SID="$(claude_field "$pid" sessionId)"
+        if ! claude_transcript_exists "$PLAN_SID"; then
+            PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="claude session id unknown for pid $pid"; return
+        fi
+        ;;
+    esac
+    PLAN_ACTION="restart"
+}
+
+# --- restart ------------------------------------------------------------------
+
+wait_pid_exit() {
+    local i
+    for i in $(seq 1 $(( $2 * 4 ))); do kill -0 "$1" 2>/dev/null || return 0; sleep_s 0.25; done
+    return 1
+}
+
+wait_shell_prompt() {
+    local i
+    for i in $(seq 1 40); do
+        [ -z "$(pane_agents "$1")" ] && return 0
+        sleep_s 0.25
+    done
+    return 1
+}
+
+# The agent's screen: the pane for standalone agents, the terminal buffer for
+# agents inside nvim (whose pane screen is nvim's, possibly another window).
+screen_text() {
+    if [ -z "$PLAN_NVSOCK" ]; then
+        herdr pane read "$1" --source visible 2>/dev/null
+    else
+        nv "$PLAN_NVSOCK" lines "$2"
+    fi
+}
+
+# Classify the agent's input line from its screen (stdin): "empty" (an empty
+# input box -- omp's bottom border "╰─", claude's "❯" prompt, optionally with
+# claude's placeholder hint), "exit" (holds exactly /exit), "appended" (/exit
+# typed after other text: a user draft), or "other" (no input box: a dialog,
+# picker, or approval prompt has the keyboard).
+input_state() {
+    python3 -c '
+import sys
+kind = sys.argv[1]
+lines = [l.replace("\xa0", " ").strip() for l in sys.stdin.read().splitlines()]
+glyph = "╰─" if kind == "omp" else "❯"   # omp: bottom border; claude: prompt
+# The live input line is the BOTTOM-most one starting with the glyph and a
+# space (or nothing): plain box borders ("╰───") and
+# earlier prompts in the scrollback are not it.
+live = None
+for t in lines:
+    if t.startswith(glyph) and (len(t) == len(glyph) or t[len(glyph)] == " "):
+        live = t
+if live is None:
+    print("other")
+    sys.exit()
+body = live[len(glyph):].strip(" ─╯│")
+if body == "/exit":
+    print("exit")
+elif body.endswith("/exit"):
+    print("appended")
+elif body == "" or (kind == "claude" and body.startswith("Try \"")):
+    print("empty")
+else:
+    print("draft")' "$1"
+}
+
+# Type /exit and press Enter -- only into a provably empty input box, and only
+# after the box shows exactly "/exit". Anything else (user draft, open dialog)
+# backs out and returns 1 with R_NOTE set; the agent is left as found.
+type_exit() {
+    local pane="$1" job="$2" kind="${PLAN_KIND%%-*}" st
+    st="$(screen_text "$pane" "$job" | input_state "$kind")"
+    if [ "$st" != empty ]; then
+        R_NOTE="input box not empty/visible ($st): dialog or user draft; left as found"; return 1
+    fi
+    if [ -z "$PLAN_NVSOCK" ]; then herdr pane send-text "$pane" "/exit" > /dev/null
+    else nv "$PLAN_NVSOCK" send "$job" "/exit" > /dev/null; fi
+    sleep_s 0.6
+    st="$(screen_text "$pane" "$job" | input_state "$kind")"
+    if [ "$st" != exit ]; then
+        # Take back exactly what we typed so a draft survives intact.
+        if [ -z "$PLAN_NVSOCK" ]; then herdr pane send-keys "$pane" backspace backspace backspace backspace backspace > /dev/null
+        else nv "$PLAN_NVSOCK" send "$job" $'\x7f\x7f\x7f\x7f\x7f' > /dev/null; fi
+        R_NOTE="typed /exit did not land cleanly ($st); removed it again"; return 1
+    fi
+    if [ -z "$PLAN_NVSOCK" ]; then herdr pane send-keys "$pane" enter > /dev/null
+    else nv "$PLAN_NVSOCK" send "$job" $'\r' > /dev/null; fi
+}
+
+# Sets R_NEW R_RESUMED R_RESULT R_NOTE.
+restart_pane() {
+    local pane="$1" sp
+    R_NEW="$PLAN_OLD" R_RESUMED="-" R_RESULT="" R_NOTE=""
+    sp="$(shell_pid "$pane")"
+
+    # wait_idle re-checks the state right before returning: never send keys
+    # to a working agent, and the process must still be the one planned for.
+    if ! wait_idle "$pane"; then
+        R_RESULT="SKIPPED-BUSY"; R_NOTE="not idle within ${WAIT_MS}ms"; return
+    fi
+    kill -0 "$PLAN_PID" 2>/dev/null || { R_RESULT="NEEDS-MANUAL"; R_NOTE="agent pid $PLAN_PID vanished"; return; }
+
+    local b="" job="" vis=""
+    [ -n "$PLAN_EXTRA" ] && read -r b job vis <<< "$PLAN_EXTRA"
+    if ! type_exit "$pane" "$job"; then
+        R_RESULT="NEEDS-MANUAL"; return
+    fi
+    if ! wait_pid_exit "$PLAN_PID" 20; then
+        R_RESULT="FAILED"; R_NOTE="agent did not exit after /exit (left running, nothing lost)"; return
+    fi
+
+    local newname="$PLAN_NAME"
+    case "$PLAN_KIND" in
+    omp)
+        if [ -z "$newname" ] || [ "$newname" = omp ] || [[ "$newname" =~ ^omp-v[0-9]+ ]]; then
+            newname="omp-v$CUR-$(printf '%s' "$pane" | tr -d : | tr '[:upper:]' '[:lower:]')"
+        fi
+        wait_shell_prompt "$sp" || { R_RESULT="NEEDS-MANUAL"; R_NOTE="no shell prompt; resume: omp --resume=$PLAN_SID"; return; }
+        local resume=()
+        [ -n "$PLAN_SID" ] && resume=(-- "--resume=$PLAN_SID")
+        herdr agent start "$newname" --kind omp --pane "$pane" --timeout 60000 ${resume[@]+"${resume[@]}"} > /dev/null 2>&1 \
+            || { R_RESULT="FAILED"; R_NOTE="agent start failed; resume: omp --resume=$PLAN_SID"; return; }
+        ;;
+    claude)
+        [ -n "$newname" ] || newname="claude-$(printf '%s' "$pane" | tr -d : | tr '[:upper:]' '[:lower:]')"
+        wait_shell_prompt "$sp" || { R_RESULT="NEEDS-MANUAL"; R_NOTE="no shell prompt; resume: claude --resume $PLAN_SID"; return; }
+        herdr agent start "$newname" --kind claude --pane "$pane" --timeout 60000 -- --resume "$PLAN_SID" > /dev/null 2>&1 \
+            || { R_RESULT="FAILED"; R_NOTE="agent start failed; resume: claude --resume $PLAN_SID"; return; }
+        ;;
+    omp-in-nvim)
+        # omp-last resumes the newest session for nvim's cwd; /exit just
+        # rewrote ours, so re-check nothing else overtook it.
+        local newest
+        newest="$(ls -1t "$(dirname "$PLAN_SID")"/*.jsonl 2>/dev/null | head -1)"
+        if [ "$newest" != "$PLAN_SID" ]; then
+            R_RESULT="NEEDS-MANUAL"; R_NOTE="session overtaken after exit; resume: omp --resume=$PLAN_SID"; return
+        fi
+        sleep_s 0.5   # let yarepl's on_exit drop the dead buffer
+        [ "$(nv "$PLAN_NVSOCK" yarepl_start "$vis")" = ok ] \
+            || { R_RESULT="FAILED"; R_NOTE="yarepl restart failed; press ctrl-a in the pane"; return; }
+        ;;
+    claude-in-nvim)
+        [ "$(nv "$PLAN_NVSOCK" claude_reopen "$b" "$PLAN_SID")" = ok ] \
+            || { R_RESULT="FAILED"; R_NOTE="reopen failed; in nvim: :terminal claude --resume $PLAN_SID"; return; }
+        ;;
+    esac
+
+    # Verify: a NEW agent process in the pane, on the current version, holding
+    # the same session.
+    local i agents k pid nvpid chain
+    R_RESUMED="n"
+    for i in $(seq 1 $(( VERIFY_SECS * 2 ))); do
+        agents="$(pane_agents "$sp")"
+        IFS=$'\t' read -r k pid nvpid chain <<< "$agents"
+        if [ -n "${pid:-}" ] && [ "$pid" != "$PLAN_PID" ]; then
+            if [ "$k" = omp ]; then
+                R_NEW="$(omp_marker "$pid" "")"
+                if [ -z "$PLAN_SID" ]; then R_RESUMED="-"
+                elif [ "$(omp_session_file "$pid")" = "$PLAN_SID" ]; then R_RESUMED="y"; fi
+                [ "$R_NEW" = "$CUR" ] && [ "$R_RESUMED" != n ] && break
+            else
+                R_NEW="$(claude_marker "$pid")"
+                if ps -o command= -p "$pid" | grep -q -- "--resume $PLAN_SID"; then R_RESUMED="y"; fi
+                [ "$R_RESUMED" = y ] && break
+            fi
+        fi
+        sleep_s 0.5
+    done
+    if [ "$R_NEW" = "$CUR" ] || [ "$R_NEW" = "~$CUR" ]; then
+        if [ "$R_RESUMED" != n ]; then R_RESULT="RESTARTED"; else R_RESULT="RESTARTED-NO-RESUME"; R_NOTE="new session; old one: $PLAN_SID"; fi
+    else
+        R_RESULT="FAILED"; R_NOTE="new process marker '$R_NEW' != $CUR"
+    fi
+}
+
+# --- main ---------------------------------------------------------------------
+
+ROWS="$(workspace_rows)" || { echo "workspace-rollout: herdr query failed for $WID" >&2; exit 1; }
+[ -n "$ROWS" ] || { echo "workspace-rollout: no panes in workspace $WID" >&2; exit 1; }
+
+echo "workspace-rollout: workspace $WID -> config v$CUR$([ $DRY = 1 ] && echo ' (dry run)')"
+RESULTS=()
+FAILED=0
+while IFS=$'\x1f' read -r pane name hagent status; do
+    plan_pane "$pane" "$name" "$hagent" "$status" < /dev/null
+    [ "$PLAN_ACTION" = no-agent ] && continue
+    if [ $DRY = 1 ]; then
+        printf '  %-8s %-15s %-6s %-8s %-13s %s\n' "$pane" "$PLAN_KIND" "v$PLAN_OLD" "$PLAN_STATUS" "$PLAN_ACTION" "$PLAN_WHY"
+        continue
+    fi
+    case "$PLAN_ACTION" in
+        restart)
+            echo "  $pane: $PLAN_KIND v$PLAN_OLD -> waiting for idle, then restart"
+            restart_pane "$pane" < /dev/null ;;
+        up-to-date) R_NEW="$PLAN_OLD" R_RESUMED="-" R_RESULT="up to date" R_NOTE="" ;;
+        skip) R_NEW="$PLAN_OLD" R_RESUMED="-" R_RESULT="SKIPPED" R_NOTE="$PLAN_WHY" ;;
+        *) R_NEW="$PLAN_OLD" R_RESUMED="-" R_RESULT="NEEDS-MANUAL" R_NOTE="$PLAN_WHY" ;;
+    esac
+    [ "$R_RESULT" = FAILED ] && FAILED=1
+    RESULTS+=("$(printf '%-8s %-15s %-6s %-6s %-8s %-20s %s' "$pane" "$PLAN_KIND" "v$PLAN_OLD" "v$R_NEW" "$R_RESUMED" "$R_RESULT" "$R_NOTE")")
+done <<< "$ROWS"
+
+if [ $DRY = 1 ]; then echo "(dry run: nothing touched)"; exit 0; fi
+printf '\n%-8s %-15s %-6s %-6s %-8s %-20s %s\n' PANE KIND OLD NEW RESUMED RESULT NOTE
+for r in ${RESULTS[@]+"${RESULTS[@]}"}; do echo "$r"; done
+exit $FAILED

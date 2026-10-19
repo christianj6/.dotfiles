@@ -192,6 +192,28 @@ transcript instead:
 - The user has right of way: their keystrokes land in the same input box.
   Never prompt a peer the user is actively typing into.
 
+## Config rollout
+
+Running agents keep the config version they started with (the
+`omp-v<N>-<pane>` roster name). To move a whole workspace onto a new one:
+
+1. Make the config change in ~/.dotfiles and bump `config/omp/VERSION`.
+2. Preview: `workspace-rollout <workspace_id> --dry-run` (panes, kinds,
+   current versions, intended action; touches nothing).
+3. Run: `workspace-rollout <workspace_id> [--wait-timeout MS] [--skip PANE]...`
+
+Each stale agent restarts at its next idle point (default wait 120s, else
+`SKIPPED-BUSY`; re-run later), resuming the exact session it had open:
+standalone omp/claude via `/exit` + `herdr agent start ... --resume`, omp in
+the nvim ctrl-a REPL via yarepl (nvim itself is never restarted), claude in
+an nvim `:terminal` via a replacement terminal buffer. `/exit` is typed only
+into a provably empty input box, so a user draft or open dialog yields
+`NEEDS-MANUAL` and the agent is left as found. `NEEDS-MANUAL` also covers
+anything where resuming the right conversation is not certain (e.g. a
+REPL whose omp-last lookup would pick another session); the note says how
+to resume by hand. The pane running the rollout is always skipped. Binary
+upgrades (`omp update`) are out of scope.
+
 ## Find and verify
 
     herdr workspace list

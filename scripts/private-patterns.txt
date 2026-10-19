@@ -32,3 +32,6 @@ sessions/[0-9A-Za-z_]+/[0-9T_.\-]+\.jsonl
 
 # Allowlist: the scanner's own pattern file quotes these regexes
 !private-patterns\.txt
+# Allowlist: path-convention mentions with placeholders (<pid>, $1, *) --
+# config/herdr/bin/workspace-rollout reads claude's per-pid session record
+!\.claude/(sessions|projects)/(<pid>|\$1|\*)

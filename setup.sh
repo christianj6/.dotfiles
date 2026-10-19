@@ -312,6 +312,11 @@ chmod +x ~/.local/bin/omp-session-report 2>/dev/null || true
 # re-running setup (same drift rationale as the omp extensions above).
 ln -sf ~/.dotfiles/config/herdr/bin/herdr-img ~/.local/bin/herdr-img
 
+# Config-version rollout: after bumping config/omp/VERSION, restarts each
+# stale agent pane in one herdr workspace at its next idle point, resuming
+# its session (see the herdr-workstreams skill, "Config rollout").
+ln -sf ~/.dotfiles/config/herdr/bin/workspace-rollout ~/.local/bin/workspace-rollout
+
 # terminal-browser (https://terminal-browser.com): a real browser that
 # renders inside the terminal via kitty graphics. DISABLED 2026-10-05 by
 # owner decision: painfully slow in practice. Root-cause analysis:
