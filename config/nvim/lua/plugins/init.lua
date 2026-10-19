@@ -110,11 +110,14 @@ return {
       -- yarepl's own default float window (utility.lua's default_float_wincmd)
       -- anchors `relative = "laststatus"` with row/col offset by half the
       -- window's own size, which lands the float in the bottom-right corner
-      -- instead of the middle of the screen. This is the same look (50%
-      -- width, 70% height, rounded border) with real editor-relative centering.
-      local function centered_float_wincmd(config_getter)
+      -- instead of the middle of the screen. This is the same look (70%
+      -- height, rounded border) with real editor-relative centering, and a
+      -- wider float: 70% of the columns, at least 90 so a narrow editor
+      -- (vertical herdr splits) does not squeeze the agent TUI, capped at
+      -- columns-2 so the border stays on screen.
+      local function centered_float_wincmd()
         return function(bufnr, name)
-          local width = math.floor(vim.o.columns * 0.5)
+          local width = math.min(math.max(math.floor(vim.o.columns * 0.7), 90), vim.o.columns - 2)
           local height = math.floor(vim.o.lines * 0.7)
           local winid = vim.api.nvim_open_win(bufnr, true, {
             relative = "editor",
@@ -127,9 +130,10 @@ return {
             border = "rounded",
             title_pos = "center",
           })
-          if config_getter().show_winbar_in_float_window then
-            vim.wo[winid].winbar = "%t"
-          end
+          -- No winbar: yarepl's show_winbar_in_float_window would set it to
+          -- "%t", printing the buffer name ("#pi#1") at the float's top-left.
+          -- The centered border title already names the REPL ("pi").
+          vim.wo[winid].winbar = ""
         end
       end
 
@@ -139,8 +143,8 @@ return {
       -- most recent omp session instead of starting a fresh conversation.
       local pi_ext = require('yarepl.extensions.pi')
       local aider_ext = require('yarepl.extensions.aider')
-      pi_ext.setup({ pi_cmd = 'omp-last', wincmd = centered_float_wincmd(function() return pi_ext.config end) })
-      aider_ext.setup({ wincmd = centered_float_wincmd(function() return aider_ext.config end) })
+      pi_ext.setup({ pi_cmd = 'omp-last', wincmd = centered_float_wincmd() })
+      aider_ext.setup({ wincmd = centered_float_wincmd() })
 
       require("yarepl").setup({
         scratch_repl = true,
