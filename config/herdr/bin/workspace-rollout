@@ -618,6 +618,16 @@ wedge_watch() {
     done
 }
 
+# herdr agent start, retried once: seen live failing right after the old
+# agent exited (its roster entry not yet released) and succeeding with the
+# same arguments seconds later.
+start_agent() {
+    local name="$1" kind="$2" pane="$3"; shift 3
+    herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 60000 "$@" > /dev/null 2>&1 && return 0
+    sleep_s 3
+    herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 60000 "$@" > /dev/null 2>&1
+}
+
 # Sets R_NEW R_RESUMED R_RESULT R_NOTE.
 restart_pane() {
     local pane="$1" sp
@@ -651,13 +661,13 @@ restart_pane() {
         wait_shell_prompt "$sp" || { R_RESULT="NEEDS-MANUAL"; R_NOTE="no shell prompt; resume: omp --resume=$PLAN_SID"; return; }
         local resume=()
         [ -n "$PLAN_SID" ] && resume=(-- "--resume=$PLAN_SID")
-        herdr agent start "$newname" --kind omp --pane "$pane" --timeout 60000 ${resume[@]+"${resume[@]}"} > /dev/null 2>&1 \
+        start_agent "$newname" omp "$pane" ${resume[@]+"${resume[@]}"} \
             || { R_RESULT="FAILED"; R_NOTE="agent start failed; resume: omp --resume=$PLAN_SID"; return; }
         ;;
     claude)
         [ -n "$newname" ] || newname="claude-$(printf '%s' "$pane" | tr -d : | tr '[:upper:]' '[:lower:]')"
         wait_shell_prompt "$sp" || { R_RESULT="NEEDS-MANUAL"; R_NOTE="no shell prompt; resume: claude --resume $PLAN_SID"; return; }
-        herdr agent start "$newname" --kind claude --pane "$pane" --timeout 60000 -- --resume "$PLAN_SID" > /dev/null 2>&1 \
+        start_agent "$newname" claude "$pane" -- --resume "$PLAN_SID" \
             || { R_RESULT="FAILED"; R_NOTE="agent start failed; resume: claude --resume $PLAN_SID"; return; }
         ;;
     omp-in-nvim)
