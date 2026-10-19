@@ -39,3 +39,16 @@ If a line is flagged but genuinely belongs in the repo, propose a pattern
 change to the owner — never bypass the hook or the guard. If you find
 private content already tracked, STOP and surface it to the owner instead
 of committing around it.
+
+## On-demand MCP servers
+
+MCP servers are NOT registered globally (a global entry leaks into every
+pane, including omp panes that import claude's config). Owner decision
+2026-10-06: register per-project, on request only. Current on-demand
+server: `rea` (decomp tasks) — when the owner asks for decomp work in a
+project, register it there for the claude pane with:
+
+    claude mcp add rea -s project -- npx -y rea-agents@6.7.0 mcp
+
+Remove it the same way (`claude mcp remove rea -s project`) when the work
+is done. Never re-add user-scope MCP servers.
