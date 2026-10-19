@@ -252,36 +252,36 @@ PY
 }
 
 # The omp session file (.jsonl) a pid is on. Prints the path, nothing (no
-# session: a fresh agent with no conversation yet), or AMBIGUOUS. Sources, in
-# order:
-#   1. the file it holds open -- but omp does NOT keep it open reliably (seen
-#      live: an agent mid-conversation with no .jsonl fd), so also
-#   2. its --resume=<path> argv (herdr agent start / omp-last launches), and
-#   3. a file in its cwd's session dir created after the process started
-#      (the name carries the creation time). Only trusted when no other live
-#      omp shares that cwd and exactly one such file exists.
+# session: a fresh agent with no conversation yet), or AMBIGUOUS.
+#   1. The file it holds open, if any -- omp does NOT keep it open reliably
+#      (seen live: an agent mid-conversation with no .jsonl fd).
+#   2. Otherwise the candidates are its --resume=<path> argv PLUS every file
+#      in its cwd's session dir created after the process started. The argv
+#      alone goes stale: seen live, an omp launched with --resume=<A> writing
+#      a file <B> it created 3s after start (and /new switches files too).
+#      One candidate -> it. Several -> the most recently written, which is
+#      also how omp-watch picks a cwd's live session -- but only when no
+#      other live omp shares the cwd; then the files cannot be told apart.
 omp_session_file() {
-    local files cwd start others
+    local files argv cwd start others
     files="$(lsof -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p' | grep "^$OMP_SESSIONS/.*\.jsonl$" | sort -u)"
-    if [ -z "$files" ]; then
-        files="$(ps -o command= -p "$1" 2>/dev/null | tr ' ' '\n' | sed -n 's/^--resume=//p' | grep '\.jsonl$')"
-        [ -f "$files" ] || files=""
-    fi
-    if [ -z "$files" ]; then
-        cwd="$(proc_cwd "$1")"; start="$(proc_start "$1")"
-        [ -n "$cwd" ] && [ -n "$start" ] || { echo AMBIGUOUS; return; }
-        ps -A -o pid=,command= > "$TMP/ps-omp"
-        others="$(awk -v me="$1" '$1 != me { for (i = 2; i <= NF; i++) { n = split($i, a, "/"); if (a[n] == "omp") { print $1; break } } }' "$TMP/ps-omp" \
-            | while read -r o; do [ "$(proc_cwd "$o")" = "$cwd" ] && echo "$o"; done)"
-        files="$(sessions_created_after "$cwd" "$start")"
-        if [ -n "$files" ] && { [ -n "$others" ] || [ "$(printf '%s\n' "$files" | grep -c .)" != 1 ]; }; then
-            echo AMBIGUOUS; return
-        fi
-    fi
-    if [ "$(printf '%s\n' "$files" | grep -c .)" -gt 1 ]; then echo AMBIGUOUS; return; fi
-    [ -n "$files" ] && printf '%s\n' "$files"
-    return 0
+    if [ "$(printf '%s\n' "$files" | grep -c .)" = 1 ]; then printf '%s\n' "$files"; return 0; fi
+    [ -n "$files" ] && { echo AMBIGUOUS; return 0; }
+    argv="$(ps -o command= -p "$1" 2>/dev/null | tr ' ' '\n' | sed -n 's/^--resume=//p' | grep '\.jsonl$')"
+    [ -f "$argv" ] || argv=""
+    cwd="$(proc_cwd "$1")"; start="$(proc_start "$1")"
+    [ -n "$cwd" ] && [ -n "$start" ] || { echo AMBIGUOUS; return 0; }
+    files="$( { [ -n "$argv" ] && echo "$argv"; sessions_created_after "$cwd" "$start"; } | grep . | sort -u)"
+    [ -n "$files" ] || return 0
+    if [ "$(printf '%s\n' "$files" | grep -c .)" = 1 ]; then printf '%s\n' "$files"; return 0; fi
+    ps -A -o pid=,command= > "$TMP/ps-omp"
+    others="$(awk -v me="$1" '$1 != me { for (i = 2; i <= NF; i++) { n = split($i, a, "/"); if (a[n] == "omp") { print $1; break } } }' "$TMP/ps-omp" \
+        | while read -r o; do [ "$(proc_cwd "$o")" = "$cwd" ] && echo "$o"; done)"
+    [ -z "$others" ] || { echo AMBIGUOUS; return 0; }
+    printf '%s\n' "$files" | while read -r f; do echo "$(file_mtime "$f") $f"; done | sort -rn | head -1 | cut -d' ' -f2-
 }
+
+file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
 
 # claude's own per-process record, ~/.claude/sessions/<pid>.json: the session
 # id and idle state of THIS process. herdr's agent_session claim is not used:
