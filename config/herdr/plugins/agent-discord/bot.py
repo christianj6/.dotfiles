@@ -27,6 +27,8 @@ import fcntl
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -71,6 +73,238 @@ async def am_i_orphaned(parent_pid_at_start: int) -> bool:
         log(f"orphaned (parent {parent_pid_at_start} -> {os.getppid()}); exiting")
         return True
     return False
+
+
+# Every nvim RPC call gets this deadline: a modal nvim (hit-enter or swap
+# prompt) never answers --remote-expr and would hang the relay forever
+# (seen live 2026-10-06).
+NVIM_RPC_TIMEOUT = 5
+NVIM = shutil.which("nvim") or "/opt/homebrew/bin/nvim"
+
+# Show + focus the live "pi" REPL and enter terminal mode -- the same
+# yarepl machinery the user's ctrl-a (mappings.lua toggle_repl) drives,
+# minus the toggle: idempotent, never hides, never starts a new REPL.
+# Prints "ok:<bufnr>" or a reason.
+_FOCUS_LUA = (
+    "(function()"
+    " local ok, y = pcall(require, 'yarepl')"
+    " if not ok then return 'yarepl not loaded' end"
+    " local repl = y._get_repl(0, 'pi', vim.api.nvim_get_current_buf())"
+    " if not repl then return 'no pi REPL in this nvim' end"
+    " local job = vim.b[repl.bufnr].terminal_job_id"
+    " if type(job) ~= 'number' or vim.fn.jobwait({job}, 0)[1] ~= -1 then return 'the pi REPL has exited' end"
+    " local win = vim.fn.bufwinid(repl.bufnr)"
+    " if win ~= -1 then vim.api.nvim_set_current_win(win)"
+    " else y.commands.focus({args = 'pi', count = 0}) end"
+    " if vim.api.nvim_get_current_buf() ~= repl.bufnr then return 'could not focus the pi REPL' end"
+    " vim.cmd('startinsert')"
+    " return 'ok:' .. repl.bufnr"
+    " end)()"
+)
+
+
+def nvim_rpc(sock: str, lua: str) -> str | None:
+    """luaeval(lua) in the nvim behind `sock`; None when it does not answer
+    within NVIM_RPC_TIMEOUT (dead socket, modal prompt, no nvim binary)."""
+    expr = "luaeval('" + lua.replace("'", "''") + "')"
+    try:
+        r = subprocess.run(
+            [NVIM, "--server", sock, "--remote-expr", expr],
+            capture_output=True, text=True, timeout=NVIM_RPC_TIMEOUT,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.strip() if r.returncode == 0 and not r.stderr.strip() else None
+
+
+def _nvim_run_dirs() -> list[Path]:
+    """nvim's stdpath('run') candidates: $XDG_RUNTIME_DIR, else
+    $TMPDIR/nvim.$USER. The bot may be started without TMPDIR, so also ask
+    macOS for the per-user temp dir."""
+    user = os.environ.get("USER") or Path.home().name
+    roots = [os.environ.get("XDG_RUNTIME_DIR"), os.environ.get("TMPDIR")]
+    try:
+        roots.append(subprocess.run(
+            ["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True, timeout=5
+        ).stdout.strip())
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    dirs = []
+    for r in roots:
+        if r:
+            d = Path(r) / f"nvim.{user}"
+            if d.is_dir() and d not in dirs:
+                dirs.append(d)
+    return dirs
+
+
+def pane_nvim_sockets(pane_id: str) -> list[str]:
+    """Sockets of the nvim processes running under a pane's shell (the TUI
+    nvim and its --embed server; only the server owns a socket)."""
+    ok, data, _ = herdr_json("pane", "process-info", "--pane", pane_id)
+    info = ((data or {}).get("result") or {}).get("process_info") or {}
+    shell = info.get("shell_pid")
+    if not ok or not shell:
+        return []
+    try:
+        ps = subprocess.run(
+            ["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True, text=True, timeout=5
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    children: dict[int, list[tuple[int, str]]] = {}
+    for line in ps.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append((int(parts[0]), parts[2]))
+    nvims, todo = [], [int(shell)]
+    while todo:
+        for pid, comm in children.get(todo.pop(), []):
+            if os.path.basename(comm.strip()) == "nvim":
+                nvims.append(pid)
+            todo.append(pid)
+    socks = []
+    for d in _nvim_run_dirs():
+        for pid in nvims:
+            socks += sorted(str(p) for p in d.glob(f"*/nvim.{pid}.*") if p.is_socket())
+    return socks
+
+
+def focus_repl_via_rpc(pane_id: str) -> str:
+    """Bring the pane's nested omp REPL into view and focus via nvim RPC.
+    "ok" once nvim reports the REPL buffer current in terminal mode;
+    "unavailable" when no nvim socket answers (caller falls back to the
+    ctrl-a keys); anything else is nvim's refusal reason."""
+    for sock in pane_nvim_sockets(pane_id):
+        if nvim_rpc(sock, "1") != "1":
+            continue  # stale socket or modal nvim: try the next, then fall back
+        res = nvim_rpc(sock, _FOCUS_LUA)
+        if res is None:
+            return "unavailable"
+        if not res.startswith("ok:"):
+            return res
+        # startinsert lands after the RPC returns: confirm the end state
+        # before anyone types -- in a terminal buffer's NORMAL mode the
+        # relayed text would run as commands.
+        want = "t:" + res[3:]
+        for _ in range(10):
+            time.sleep(0.1)
+            state = nvim_rpc(
+                sock, "vim.api.nvim_get_mode().mode .. ':' .. vim.api.nvim_get_current_buf()"
+            )
+            if state == want:
+                return "ok"
+            if state is None:
+                return "unavailable"
+        return f"the REPL did not reach terminal mode (nvim at {state})"
+    return "unavailable"
+
+
+def transcript_contains(cwd: str, needle: str, since_byte: int) -> bool:
+    """True if `needle` appeared in the transcript after `since_byte`
+    -- unambiguous proof the submitted message landed in the session
+    (status flips can't confirm a queued steer into a working agent)."""
+    f = find_session_file(cwd)
+    if f is None:
+        return False
+    try:
+        size = f.stat().st_size
+        if size <= since_byte:
+            return False
+        with f.open("rb") as fh:
+            fh.seek(since_byte)
+            return needle.encode() in fh.read()
+    except OSError:
+        return False
+
+
+async def repl_visible(pane_id: str) -> bool:
+    """omp's input-box header row (model / Prewalk) on screen. Samples the
+    whole visible read, not just its tail: the float sits mid-screen, so
+    its header can land above a fixed tail window. `glm-` covers the
+    lowercase model id the header shows once prewalk has switched the
+    loop to the smol role (glm-5.3-flash) -- `GLM` alone missed it."""
+    ok, out, _ = herdr_raw("agent", "read", pane_id, "--source", "visible")
+    return bool(re.search(r"Prewalk|Opus|GLM|glm-|π", out or ""))
+
+
+async def relay_via_pane(pane_id: str, cwd: str, text: str) -> str:
+    """Raw-deliver a message into a nested agent's REPL via pane
+    send-text. Guarded: the pane's visible tail must show omp's input
+    box (the model/Prewalk header row) -- otherwise the text would be
+    typed into whatever nvim window has focus (the user's editor).
+    The REPL is brought into view RPC-first: the pane's nvim socket
+    runs yarepl's own focus (focus_repl_via_rpc), which works in any
+    nvim mode. The user's ctrl-a toggle cannot: it is mapped in normal
+    and terminal mode only, so with the editor in INSERT mode (the
+    owner's usual mid-work state) it is i_CTRL-A and does nothing --
+    "float open + focused" then got hidden by toggle 1 and never
+    reopened by toggle 2 (root-caused 2026-10-06). The ctrl-a path
+    stays as the fallback only when no nvim socket answers:
+    closed -> one toggle opens and focuses it; open-but-unfocused/
+    covered -> the first toggle hides it and the second reopens it
+    (verified live 2026-09-05).
+    Bounded at two toggles, then refuse. Paste and Enter are sent as
+    SEPARATE writes with a gap: the trailing \\r of a combined burst
+    is swallowed (verified live 2026-09-05 -- text landed in the
+    input box, submit never fired).
+    Returns "ok", "guard", or "unconfirmed"."""
+    focus = await asyncio.to_thread(focus_repl_via_rpc, pane_id)
+    if focus == "ok":
+        if not await repl_visible(pane_id):
+            log(f"relay_via_pane({pane_id}): REPL focused via RPC but its input box is not on screen")
+            return "guard"
+    elif focus != "unavailable":
+        log(f"relay_via_pane({pane_id}): nvim answered RPC but {focus} -- refusing")
+        return "guard"
+    elif not await repl_visible(pane_id):
+        # Fallback (no nvim socket / RPC): the user's ctrl-a toggle. Only
+        # works when nvim is in normal or terminal mode (the yarepl
+        # mapping is n+t only; in insert mode ctrl-a is i_CTRL-A).
+        log(f"relay_via_pane({pane_id}): REPL not visible -- toggling open")
+        herdr_raw("pane", "send-keys", pane_id, "ctrl+a")
+        await asyncio.sleep(0.8)
+        if not await repl_visible(pane_id):
+            herdr_raw("pane", "send-keys", pane_id, "ctrl+a")
+            await asyncio.sleep(0.8)
+            if not await repl_visible(pane_id):
+                log(f"relay_via_pane({pane_id}): visibility guard failed after 2 toggles")
+                return "guard"
+    sfile = find_session_file(cwd)
+    since_byte = sfile.stat().st_size if sfile else 0
+    needle = re.sub(r"\s+", " ", text.strip())[:24]
+    payload = "\x1b[200~" + text + "\x1b[201~"
+    ok, _, err = herdr_raw("pane", "send-text", pane_id, payload)
+    if not ok:
+        log(f"relay_via_pane({pane_id}): send-text failed: {err[:200]}")
+        return "unconfirmed"
+    await asyncio.sleep(0.3)
+    herdr_raw("pane", "send-keys", pane_id, "enter")
+
+    def delivered() -> bool:
+        got, data, _ = herdr_json("agent", "get", pane_id)
+        if got and ((data or {}).get("result", {}).get("agent", {}) or {}).get(
+            "agent_status"
+        ) == "working":
+            return True
+        return transcript_contains(cwd, needle, since_byte)
+
+    for _ in range(4):
+        await asyncio.sleep(2)
+        if delivered():
+            log(f"relay_via_pane({pane_id}): delivered")
+            return "ok"
+    # the first Enter can be dropped right after a paste block -- send
+    # one more, then judge
+    herdr_raw("pane", "send-keys", pane_id, "enter")
+    for _ in range(3):
+        await asyncio.sleep(2)
+        if delivered():
+            log(f"relay_via_pane({pane_id}): delivered on enter retry")
+            return "ok"
+    log(f"relay_via_pane({pane_id}): sent, no working transition observed")
+    return "unconfirmed"
 
 
 def run() -> None:
@@ -184,90 +418,6 @@ def run() -> None:
                 return pane_id, cwd
         return None, None
 
-    # find_session_file comes from common (shared with the notify hook)
-
-    def transcript_contains(cwd: str, needle: str, since_byte: int) -> bool:
-        """True if `needle` appeared in the transcript after `since_byte`
-        -- unambiguous proof the submitted message landed in the session
-        (status flips can't confirm a queued steer into a working agent)."""
-        f = find_session_file(cwd)
-        if f is None:
-            return False
-        try:
-            size = f.stat().st_size
-            if size <= since_byte:
-                return False
-            with f.open("rb") as fh:
-                fh.seek(since_byte)
-                return needle.encode() in fh.read()
-        except OSError:
-            return False
-
-    async def repl_visible(pane_id: str) -> bool:
-        ok, out, _ = herdr_raw(
-            "agent", "read", pane_id, "--source", "visible", "--lines", "10"
-        )
-        return bool(re.search(r"Prewalk|Opus|GLM|π", (out or "")[-1200:]))
-
-    async def relay_via_pane(pane_id: str, cwd: str, text: str) -> str:
-        """Raw-deliver a message into a nested agent's REPL via pane
-        send-text. Guarded: the pane's visible tail must show omp's input
-        box (the model/Prewalk header row) -- otherwise the text would be
-        typed into whatever nvim window has focus (the user's editor).
-        When the guard fails, the relay TOGGLES the REPL open itself
-        (ctrl-a = the user's yarepl toggle): closed -> one toggle opens
-        and focuses it; open-but-unfocused/covered -> the first toggle
-        hides it and the second reopens it (verified live 2026-09-05).
-        Bounded at two toggles, then refuse. Paste and Enter are sent as
-        SEPARATE writes with a gap: the trailing \\r of a combined burst
-        is swallowed (verified live 2026-09-05 -- text landed in the
-        input box, submit never fired).
-        Returns "ok", "guard", or "unconfirmed"."""
-        if not await repl_visible(pane_id):
-            log(f"relay_via_pane({pane_id}): REPL not visible -- toggling open")
-            herdr_raw("pane", "send-keys", pane_id, "ctrl+a")
-            await asyncio.sleep(0.8)
-            if not await repl_visible(pane_id):
-                herdr_raw("pane", "send-keys", pane_id, "ctrl+a")
-                await asyncio.sleep(0.8)
-                if not await repl_visible(pane_id):
-                    log(f"relay_via_pane({pane_id}): visibility guard failed after 2 toggles")
-                    return "guard"
-        sfile = find_session_file(cwd)
-        since_byte = sfile.stat().st_size if sfile else 0
-        needle = re.sub(r"\s+", " ", text.strip())[:24]
-        payload = "\x1b[200~" + text + "\x1b[201~"
-        ok, _, err = herdr_raw("pane", "send-text", pane_id, payload)
-        if not ok:
-            log(f"relay_via_pane({pane_id}): send-text failed: {err[:200]}")
-            return "unconfirmed"
-        await asyncio.sleep(0.3)
-        herdr_raw("pane", "send-keys", pane_id, "enter")
-
-        def delivered() -> bool:
-            got, data, _ = herdr_json("agent", "get", pane_id)
-            if got and ((data or {}).get("result", {}).get("agent", {}) or {}).get(
-                "agent_status"
-            ) == "working":
-                return True
-            return transcript_contains(cwd, needle, since_byte)
-
-        for _ in range(4):
-            await asyncio.sleep(2)
-            if delivered():
-                log(f"relay_via_pane({pane_id}): delivered")
-                return "ok"
-        # the first Enter can be dropped right after a paste block -- send
-        # one more, then judge
-        herdr_raw("pane", "send-keys", pane_id, "enter")
-        for _ in range(3):
-            await asyncio.sleep(2)
-            if delivered():
-                log(f"relay_via_pane({pane_id}): delivered on enter retry")
-                return "ok"
-        log(f"relay_via_pane({pane_id}): sent, no working transition observed")
-        return "unconfirmed"
-
     @client.event
     async def on_message(message):
         if message.author.bot or message.guild is None:
@@ -351,9 +501,9 @@ def run() -> None:
                 await message.add_reaction("✅")
             elif outcome == "guard":
                 await message.reply(
-                    "⚠️ couldn't bring the agent's REPL into view even after toggling "
-                    "(ctrl-a twice) — is nvim actually running in that pane? "
-                    "Refusing to type blind."
+                    "⚠️ couldn't bring the agent's REPL into view (nvim RPC focus, "
+                    "or ctrl-a twice when nvim has no socket) — is its omp REPL "
+                    "running in that pane? Refusing to type blind."
                 )
             else:
                 await message.add_reaction("👀")
