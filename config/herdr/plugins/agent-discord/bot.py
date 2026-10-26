@@ -220,13 +220,15 @@ def transcript_contains(cwd: str, needle: str, since_byte: int) -> bool:
 
 
 async def repl_visible(pane_id: str) -> bool:
-    """omp's input-box header row (model / Prewalk) on screen. Samples the
-    whole visible read, not just its tail: the float sits mid-screen, so
-    its header can land above a fixed tail window. `glm-` covers the
-    lowercase model id the header shows once prewalk has switched the
-    loop to the smol role (glm-5.3-flash) -- `GLM` alone missed it."""
+    """omp's input-frame header line (its top border carrying the model /
+    Prewalk) on screen. Samples the whole visible read, not just its tail:
+    the float sits mid-screen, so its header can land above a fixed tail
+    window. Anchored to the border because a bare model name also shows in
+    the welcome banner of a scrolled-back float. Case-insensitive: the
+    header writes model ids in lowercase too (glm-5.3-flash once prewalk
+    has switched the loop to the smol role) -- `GLM` alone missed it."""
     ok, out, _ = herdr_raw("agent", "read", pane_id, "--source", "visible")
-    return bool(re.search(r"Prewalk|Opus|GLM|glm-|π", out or ""))
+    return bool(re.search(r"╭──[^\n╮]*(Prewalk|Opus|Sonnet|GLM|π)", out or "", re.I))
 
 
 async def relay_via_pane(pane_id: str, cwd: str, text: str) -> str:

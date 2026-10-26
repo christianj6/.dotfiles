@@ -116,6 +116,19 @@ local DEFAULT_REPL = "pi"
 map("n", "<C-a>", function() toggle_repl(DEFAULT_REPL) end, { desc = "Toggle default REPL (" .. DEFAULT_REPL .. ")" })
 map("t", "<C-a>", function() toggle_repl(DEFAULT_REPL) end, { desc = "Toggle default REPL (" .. DEFAULT_REPL .. ")" })
 
+-- Whenever a yarepl REPL window opens (ctrl-a, :REPLFocus, a peer's nvim RPC
+-- focus, ...), go to terminal mode: that jumps the terminal to its live end,
+-- so the agent's input box is in view instead of old scrolled-back output.
+vim.api.nvim_create_autocmd("BufWinEnter", {
+  callback = function(args)
+    if vim.bo[args.buf].buftype == "terminal"
+      and vim.api.nvim_buf_get_name(args.buf):match("#[%w_-]+#%d+$")
+      and vim.api.nvim_get_current_buf() == args.buf then
+      vim.cmd("startinsert")
+    end
+  end,
+})
+
 -- Explicit aider access, independent of DEFAULT_REPL
 map("n", "<leader>a", function() toggle_repl("aider") end, { desc = "Toggle aider REPL" })
 

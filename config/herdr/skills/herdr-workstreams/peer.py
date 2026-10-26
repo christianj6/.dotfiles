@@ -25,8 +25,8 @@ Usage:
   error; 2 delivery not confirmed in --confirm-timeout; 3 no reply within
   --reply-timeout (usually the peer is stuck on an approval dialog -- omp
   approvals are UI-only and invisible to herdr; escalate to the human);
-  4 peer's REPL not visible after toggling (nvim-nested peer) -- never
-  typed anything.
+  4 peer's REPL could not be brought into view (nvim-nested peer) --
+  never typed anything.
 stdout: "delivered <session-file>" (send) or the reply text (--wait-reply).
 Progress goes to stderr.
 
@@ -71,21 +71,137 @@ def agent_info(target: str) -> tuple[str, str]:
         sys.exit(1)
 
 
-REPL_MARKERS = re.compile(r"Prewalk|Opus|GLM|π")
+# omp's input-frame header line: the frame's top border carrying the model /
+# Prewalk ("╭──  Opus 5  main …──╮"). Anchored to the border because a bare
+# model name also shows in the welcome banner of a scrolled-back float.
+# Case-insensitive: the header writes model ids in lowercase too
+# (glm-5.3-flash once prewalk switches to the smol role).
+REPL_MARKERS = re.compile(r"╭──[^\n╮]*(Prewalk|Opus|Sonnet|GLM|π)", re.I)
 
 
 def repl_visible(pane_id: str) -> bool:
-    rc, out, _ = herdr("agent", "read", pane_id, "--source", "visible", "--lines", "10")
-    return rc == 0 and bool(REPL_MARKERS.search((out or "")[-1200:]))
+    # The whole visible screen: yarepl's float sits mid-pane, so its input
+    # frame can land above any fixed bottom window (missed by one line
+    # with --lines 10, seen live 2026-10-26).
+    rc, out, _ = herdr("agent", "read", pane_id, "--source", "visible")
+    return rc == 0 and bool(REPL_MARKERS.search(out or ""))
+
+
+# nvim RPC focus -- same machinery as agent-discord's relay
+# (config/herdr/plugins/agent-discord/bot.py), kept inline because omp-peer
+# is installed as a standalone copy. Every call has a deadline: a modal nvim
+# (hit-enter prompt) never answers --remote-expr.
+NVIM_RPC_TIMEOUT = 5
+
+# Show + focus the live "pi" REPL and enter terminal mode (which also jumps
+# a scrolled-back terminal to its live end) -- what the user's ctrl+a
+# (mappings.lua toggle_repl) drives, minus the toggle: idempotent, never
+# hides, never starts a REPL. Returns "ok:<bufnr>" or a reason.
+_FOCUS_LUA = (
+    "(function()"
+    " local ok, y = pcall(require, 'yarepl')"
+    " if not ok then return 'yarepl not loaded' end"
+    " local repl = y._get_repl(0, 'pi', vim.api.nvim_get_current_buf())"
+    " if not repl then return 'no pi REPL in this nvim' end"
+    " local job = vim.b[repl.bufnr].terminal_job_id"
+    " if type(job) ~= 'number' or vim.fn.jobwait({job}, 0)[1] ~= -1 then return 'the pi REPL has exited' end"
+    " local win = vim.fn.bufwinid(repl.bufnr)"
+    " if win ~= -1 then vim.api.nvim_set_current_win(win)"
+    " else y.commands.focus({args = 'pi', count = 0}) end"
+    " if vim.api.nvim_get_current_buf() ~= repl.bufnr then return 'could not focus the pi REPL' end"
+    " vim.cmd('startinsert')"
+    " return 'ok:' .. repl.bufnr"
+    " end)()"
+)
+
+
+def nvim_rpc(sock: str, lua: str) -> str | None:
+    expr = "luaeval('" + lua.replace("'", "''") + "')"
+    try:
+        p = subprocess.run(["nvim", "--server", sock, "--remote-expr", expr],
+                           capture_output=True, text=True, timeout=NVIM_RPC_TIMEOUT,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return p.stdout.strip() if p.returncode == 0 and not p.stderr.strip() else None
+
+
+def pane_nvim_sockets(pane_id: str) -> list[str]:
+    """Sockets of the nvim processes under the pane's shell, looked up in
+    nvim's stdpath('run') ($XDG_RUNTIME_DIR or $TMPDIR, /nvim.$USER/)."""
+    rc, out, _ = herdr("pane", "process-info", "--pane", pane_id)
+    try:
+        shell = json.loads(out)["result"]["process_info"]["shell_pid"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return []
+    if rc != 0 or not shell:
+        return []
+    ps = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True, text=True).stdout
+    children: dict[int, list[tuple[int, str]]] = {}
+    for line in ps.splitlines():
+        f = line.split(None, 2)
+        if len(f) == 3 and f[0].isdigit() and f[1].isdigit():
+            children.setdefault(int(f[1]), []).append((int(f[0]), f[2]))
+    nvims, todo = [], [int(shell)]
+    while todo:
+        for pid, comm in children.get(todo.pop(), []):
+            if os.path.basename(comm.strip()) == "nvim":
+                nvims.append(pid)
+            todo.append(pid)
+    user = os.environ.get("USER") or HOME.name
+    roots = {os.environ.get("XDG_RUNTIME_DIR"), os.environ.get("TMPDIR")}
+    socks = []
+    for r in filter(None, roots):
+        for pid in nvims:
+            socks += sorted(str(x) for x in (Path(r) / f"nvim.{user}").glob(f"*/nvim.{pid}.*") if x.is_socket())
+    return socks
+
+
+def focus_repl_via_rpc(pane_id: str) -> str:
+    """"ok" once nvim reports the REPL buffer current in terminal mode;
+    "unavailable" when no nvim socket answers (caller falls back to ctrl+a);
+    anything else is nvim's refusal reason."""
+    for sock in pane_nvim_sockets(pane_id):
+        if nvim_rpc(sock, "1") != "1":
+            continue  # stale socket or modal nvim
+        res = nvim_rpc(sock, _FOCUS_LUA)
+        if res is None:
+            return "unavailable"
+        if not res.startswith("ok:"):
+            return res
+        # startinsert lands after the RPC returns; in a terminal buffer's
+        # NORMAL mode typed text would run as commands, so confirm first.
+        want, state = "t:" + res[3:], None
+        for _ in range(10):
+            time.sleep(0.1)
+            state = nvim_rpc(sock, "vim.api.nvim_get_mode().mode .. ':' .. vim.api.nvim_get_current_buf()")
+            if state == want:
+                return "ok"
+            if state is None:
+                return "unavailable"
+        return f"the REPL did not reach terminal mode (nvim at {state})"
+    return "unavailable"
 
 
 def ensure_repl_visible(pane_id: str) -> None:
     """Guard for REPL-nested peers (omp inside nvim): raw typing lands in
     whatever pane window has focus, so the omp input box must be visible
-    before sending. Same remedy as agent-discord's relay, verified live
-    2026-09-05: toggle the REPL with ctrl+a (the user's yarepl binding);
-    open-but-unfocused hides on the first toggle and reopens on the second.
-    Bounded at two toggles, then refuse."""
+    before sending. RPC first (focus_repl_via_rpc): works in any nvim mode
+    and jumps a scrolled-back float to its live end. The user's ctrl+a
+    cannot: it is mapped in normal+terminal mode only, so with the editor
+    in INSERT mode it is i_CTRL-A and does nothing. The ctrl+a double
+    toggle (open-but-unfocused hides on the first, reopens on the second;
+    verified live 2026-09-05) stays as the fallback when no nvim socket
+    answers. Refuses rather than type blind."""
+    focus = focus_repl_via_rpc(pane_id)
+    if focus == "ok":
+        if repl_visible(pane_id):
+            return
+        print("omp-peer: REPL focused via nvim RPC but its input frame is not on screen; refusing to type blind", file=sys.stderr)
+        sys.exit(4)
+    if focus != "unavailable":
+        print(f"omp-peer: nvim answered RPC but {focus}; refusing to type blind", file=sys.stderr)
+        sys.exit(4)
     if repl_visible(pane_id):
         return
     for _ in range(2):
@@ -160,12 +276,14 @@ def wait_for(
     cwd: str,
     timeout: float,
     match,  # (entries, start_idx) -> int | None
+    start: int | None = None,
 ) -> tuple[Path, int]:
-    """Poll the newest session file for `match` over fresh entries only.
+    """Poll the newest session file for `match` over fresh entries only
+    (entries from index `start` on, default: those written after the call).
     Returns (file, matched_index)."""
     deadline = time.monotonic() + timeout
     tracked: Path | None = find_session_file(cwd)
-    baseline = len(entries_of(tracked)) if tracked else 0
+    baseline = start if start is not None else (len(entries_of(tracked)) if tracked else 0)
     print(f"omp-peer: waiting for {label} (timeout {timeout:.0f}s) ...", file=sys.stderr)
     while time.monotonic() < deadline:
         current = find_session_file(cwd)
@@ -255,12 +373,10 @@ def main() -> None:
         print(f"delivered {sfile}")
         return
 
-    base = idx + 1
-
-    def reply_match(entries: list[dict], start: int) -> int | None:
-        return is_reply(entries, max(start, base))
-
-    rfile, ridx = wait_for("reply", cwd, args.reply_timeout, reply_match)
+    # Scan from just after the delivered message, not from "now": a fast
+    # reply is already in the file by the time this wait starts (seen
+    # live 2026-10-26: answered 2.4s after delivery, skipped, exit 3).
+    rfile, ridx = wait_for("reply", cwd, args.reply_timeout, is_reply, start=idx + 1)
     entries = entries_of(rfile)
     print(entry_text(entries[ridx]).strip())
 

@@ -174,10 +174,12 @@ transcript instead:
 - No reply within ~90s of a confirmed delivery usually means the peer is
   stuck on an approval dialog (omp approvals are UI-only, invisible to
   herdr): STOP and surface it to the user instead of resending.
-- REPL-nested peers are guarded automatically: omp-peer checks the peer's
-  input box is visible and toggles it open (ctrl+a, the user's yarepl
-  binding) if not — refusing rather than typing blind after two attempts.
-  Pass `--no-guard` for standalone agent panes.
+- REPL-nested peers are guarded automatically: omp-peer focuses the peer's
+  yarepl float over the pane's nvim socket (works in any nvim mode, jumps a
+  scrolled-back float to its live end), then checks omp's input frame is on
+  screen; with no nvim socket it falls back to toggling ctrl+a (the user's
+  yarepl binding, normal/terminal mode only). It refuses (exit 4) rather
+  than type blind. Pass `--no-guard` for standalone agent panes.
 - NEVER let a nested agent CLI claim your pane. A `claude`/`codex` process
   you spawn as a subprocess inherits `HERDR_PANE_ID` and registers ITSELF
   as that pane's agent session -- even a one-shot `claude -p` probe. herdr
