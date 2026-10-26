@@ -77,14 +77,20 @@ def agent_info(target: str) -> tuple[str, str]:
 # Case-insensitive: the header writes model ids in lowercase too
 # (glm-5.3-flash once prewalk switches to the smol role).
 REPL_MARKERS = re.compile(r"╭──[^\n╮]*(Prewalk|Opus|Sonnet|GLM|π)", re.I)
+# The input box's bottom border. Accepted only after nvim RPC confirmed the
+# REPL focused in terminal mode: omp can redraw the box without its header
+# row (seen live 2026-10-26 in a narrowed float: two bottom borders, no top).
+INPUT_BOX = re.compile(r"╰─ {2,}[^\n]*─╯")
 
 
-def repl_visible(pane_id: str) -> bool:
+def repl_visible(pane_id: str, rpc_focused: bool = False) -> bool:
     # The whole visible screen: yarepl's float sits mid-pane, so its input
     # frame can land above any fixed bottom window (missed by one line
     # with --lines 10, seen live 2026-10-26).
     rc, out, _ = herdr("agent", "read", pane_id, "--source", "visible")
-    return rc == 0 and bool(REPL_MARKERS.search(out or ""))
+    if rc != 0:
+        return False
+    return bool(REPL_MARKERS.search(out or "") or (rpc_focused and INPUT_BOX.search(out or "")))
 
 
 # nvim RPC focus -- same machinery as agent-discord's relay
@@ -195,7 +201,7 @@ def ensure_repl_visible(pane_id: str) -> None:
     answers. Refuses rather than type blind."""
     focus = focus_repl_via_rpc(pane_id)
     if focus == "ok":
-        if repl_visible(pane_id):
+        if repl_visible(pane_id, rpc_focused=True):
             return
         print("omp-peer: REPL focused via nvim RPC but its input frame is not on screen; refusing to type blind", file=sys.stderr)
         sys.exit(4)

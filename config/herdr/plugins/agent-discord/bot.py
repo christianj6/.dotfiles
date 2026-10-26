@@ -219,16 +219,21 @@ def transcript_contains(cwd: str, needle: str, since_byte: int) -> bool:
         return False
 
 
-async def repl_visible(pane_id: str) -> bool:
+async def repl_visible(pane_id: str, rpc_focused: bool = False) -> bool:
     """omp's input-frame header line (its top border carrying the model /
     Prewalk) on screen. Samples the whole visible read, not just its tail:
     the float sits mid-screen, so its header can land above a fixed tail
     window. Anchored to the border because a bare model name also shows in
     the welcome banner of a scrolled-back float. Case-insensitive: the
     header writes model ids in lowercase too (glm-5.3-flash once prewalk
-    has switched the loop to the smol role) -- `GLM` alone missed it."""
+    has switched the loop to the smol role) -- `GLM` alone missed it.
+    With rpc_focused (nvim confirmed the REPL current in terminal mode) the
+    input box's bottom border also counts: omp can redraw the box without
+    its header row (seen live 2026-10-26 in a narrowed float)."""
     ok, out, _ = herdr_raw("agent", "read", pane_id, "--source", "visible")
-    return bool(re.search(r"╭──[^\n╮]*(Prewalk|Opus|Sonnet|GLM|π)", out or "", re.I))
+    out = out or ""
+    return bool(re.search(r"╭──[^\n╮]*(Prewalk|Opus|Sonnet|GLM|π)", out, re.I)
+                or (rpc_focused and re.search(r"╰─ {2,}[^\n]*─╯", out)))
 
 
 async def relay_via_pane(pane_id: str, cwd: str, text: str) -> str:
@@ -254,7 +259,7 @@ async def relay_via_pane(pane_id: str, cwd: str, text: str) -> str:
     Returns "ok", "guard", or "unconfirmed"."""
     focus = await asyncio.to_thread(focus_repl_via_rpc, pane_id)
     if focus == "ok":
-        if not await repl_visible(pane_id):
+        if not await repl_visible(pane_id, rpc_focused=True):
             log(f"relay_via_pane({pane_id}): REPL focused via RPC but its input box is not on screen")
             return "guard"
     elif focus != "unavailable":
