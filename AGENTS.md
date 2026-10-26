@@ -52,3 +52,11 @@ project, register it there for the claude pane with:
 
 Remove it the same way (`claude mcp remove rea -s project`) when the work
 is done. Never re-add user-scope MCP servers.
+
+## Config model roles: never commit the churn
+
+The owner switches the `modelRoles:` values in `config/omp/config.yml`
+frequently (task/advisor/smol/slow). Those hunks stay UNCOMMITTED by
+policy (owner decision 2026-10-26) — commit only structural config.yml
+changes (extensions, keys, wiring), and re-check `git diff` before any
+config.yml commit so model-role churn is never swept in.
