@@ -219,6 +219,7 @@ git -C ~/.dotfiles config core.hooksPath .githooks
 mkdir -p ~/.omp/agent/agents ~/.omp/agent/rules ~/.omp/agent/skills/code-style
 ln -sf ~/.dotfiles/config/omp/agents/implementer.md ~/.omp/agent/agents/implementer.md
 ln -sf ~/.dotfiles/config/omp/rules/image-overlay.md ~/.omp/agent/rules/image-overlay.md
+ln -sf ~/.dotfiles/config/omp/rules/agent-pane-messaging.md ~/.omp/agent/rules/agent-pane-messaging.md
 ln -sf ~/.dotfiles/config/omp/skills/code-style/SKILL.md ~/.omp/agent/skills/code-style/SKILL.md
 
 # Vendored mattpocock/skills set (grill-with-docs, improve-codebase-architecture,

@@ -62,3 +62,7 @@ Model tiers vary by session: you may be on a premium model or on the glm workhor
 ## Showing images to the user
 
 Inline tool-result images auto-display bottom-left; to place an image deliberately, read `rule://image-overlay` and use `herdr-img`.
+
+## Messaging other agents through panes
+
+Long pane messages truncate silently and `send-text` never submits on its own; anything over ~2 sentences goes in a file and the pane message is the path plus one line. Read `rule://agent-pane-messaging` before using `herdr pane send-text`, `tmux send-keys`, or any pane-keyed delivery.
