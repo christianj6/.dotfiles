@@ -340,6 +340,29 @@ def test_version_for_pid_reads_marker():
         os.unlink(f"/tmp/omp-config-versions/{os.getpid()}")
 
 
+def test_gate_verdict_caps_pinned_working():
+    # OWNER-VISIBLE 2026-10-31 (heinzel pane w5:p8): a working-classified
+    # tail (toolResult/user/toolCall) with no further transcript writes
+    # pinned the sidebar at "working" forever -- the agent sat at its
+    # prompt while herdr still said working. Past WORKING_STALE_SECONDS of
+    # silence the only truthful display is idle.
+    now = 1_000_000.0
+    assert watch.gate_verdict("working", now - 5, now, now=now) == ("working", 5.0)
+    assert watch.gate_verdict("working", now - watch.WORKING_STALE_SECONDS - 1,
+                              now, now=now)[0] == "idle"
+    # maybe_idle keeps its shorter grace window
+    assert watch.gate_verdict("maybe_idle", now - 5, now, now=now)[0] == "working"
+    assert watch.gate_verdict("maybe_idle", now - watch.IDLE_GRACE_SECONDS - 1,
+                              now, now=now)[0] == "idle"
+    # terminal verdicts pass through; unrecognizable tails keep prior state
+    assert watch.gate_verdict("blocked", now - 99_999, now, now=now) == (None, None)
+    assert watch.gate_verdict(None, None, now, now=now) == (None, None)
+    # no parseable entry timestamp -> fall back to the file mtime
+    old = now - watch.WORKING_STALE_SECONDS - 1
+    assert watch.gate_verdict("working", None, old, now=now)[0] == "idle"
+    assert watch.gate_verdict("working", None, now, now=now)[0] == "working"
+
+
 def main():
     groups = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in groups:

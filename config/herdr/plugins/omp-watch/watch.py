@@ -84,6 +84,14 @@ POLL_SECONDS = 3
 # entries carry no verdict signal, so they must not carry a wake signal
 # either.
 IDLE_GRACE_SECONDS = 45
+# A "working"-classified tail (toolResult/user/toolCall) only proves the
+# agent worked AT SOME POINT. If the transcript then goes silent for this
+# long, the turn is dead (hard omp exit mid-loop, unparseable tail) or the
+# pane was abandoned -- the sidebar must fall back to idle instead of
+# pinning "working" forever (owner-visible on w5:p8, 2026-10-31: pane at
+# its prompt, sidebar stuck on "working"). Generous: a genuinely working
+# omp writes transcript entries far more often than this.
+WORKING_STALE_SECONDS = 900
 # Daemon mode (--daemon): consecutive all-failing ticks before the watcher
 # concludes the herdr server itself is gone and exits cleanly, freeing the
 # singleton lock for the next server start's [[startup]] instance. Without
@@ -273,6 +281,8 @@ def classify_entry(e: dict) -> Optional[str]:
             return "working"
         if has_text:
             return "maybe_idle"
+        # Thinking-only/empty content means reasoning, not yet answered
+        # (pinned contract: test_unfinished_tails_are_working).
         return "working"
     return None
 
@@ -364,6 +374,35 @@ def latest_verdict(
                     return v, _entry_epoch(e)
     return None, None
 
+
+def gate_verdict(
+    tail_verdict: Optional[str],
+    tail_epoch: Optional[float],
+    mtime: float,
+    now: Optional[float] = None,
+) -> Tuple[Optional[str], Optional[float]]:
+    """(verdict, quiet) for a tail verdict, applying the signal-age gates.
+
+    blocked/exit pass through untouched (terminal for their turn) and
+    unrecognizable tails return (None, None) so main() keeps its previous
+    state. "maybe_idle" and "working" are both gated on the age of the
+    newest RECOGNIZABLE entry's own timestamp -- never the file mtime,
+    which unrecognized harness appends keep bumping for hours.
+
+    A working-classified tail (toolResult / user message / toolCall /
+    empty-content assistant) only proves the agent worked at some POINT.
+    Past WORKING_STALE_SECONDS of transcript silence the turn is dead
+    (hard omp exit mid-loop, unparseable tail) or the pane was abandoned,
+    and the truthful display is idle instead of a "working" pinned
+    forever -- owner-visible 2026-10-31 on heinzel's pane, at its prompt
+    while the sidebar still said working."""
+    if tail_verdict in ("blocked", "exit") or tail_verdict is None:
+        return (None, None)
+    now = time.time() if now is None else now
+    signal_ts = tail_epoch if tail_epoch is not None else mtime
+    quiet = now - signal_ts
+    limit = WORKING_STALE_SECONDS if tail_verdict == "working" else IDLE_GRACE_SECONDS
+    return ("working" if quiet < limit else "idle", quiet)
 
 def process_cwd(pid: int) -> Optional[str]:
     proc_cwd = Path(f"/proc/{pid}/cwd")
@@ -751,28 +790,9 @@ def main() -> None:
                 quiet = None
                 if sfile is not None:
                     tail_verdict, tail_epoch = latest_verdict(sfile)
-                    if tail_verdict == "blocked":
-                        # Turn-level failure (model/provider error): hold
-                        # blocked until the transcript's next entry -- a new
-                        # user message flips to working, a successful retry
-                        # resolves to its own verdict. No quiescence gate:
-                        # an error entry is terminal for its turn.
-                        verdict = "blocked"
-                    elif tail_verdict == "working":
-                        verdict = "working"
-                    elif tail_verdict == "maybe_idle":
-                        # Signal age, not file age: unrecognized appends
-                        # (harness nudges, model_change) bump mtime for
-                        # hours after the turn ended without carrying any
-                        # verdict signal; keying on mtime re-armed the
-                        # grace window on each one. Fall back to mtime only
-                        # when the entry itself carries no parseable
-                        # timestamp.
-                        signal_ts = tail_epoch
-                        if signal_ts is None:
-                            signal_ts = sfile.stat().st_mtime
-                        quiet = time.time() - signal_ts
-                        verdict = "working" if quiet < IDLE_GRACE_SECONDS else "idle"
+                    gated, quiet = gate_verdict(tail_verdict, tail_epoch, sfile.stat().st_mtime)
+                    if gated is not None:
+                        verdict = gated
                 dlog(
                     f"{pane_id}: cwd={cwd_raw!r} sfile={sfile.name if sfile else None} "
                     f"tail_verdict={tail_verdict!r} verdict={verdict!r} "
