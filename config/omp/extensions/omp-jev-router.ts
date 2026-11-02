@@ -167,25 +167,64 @@ export default function (api) {
     return null;
   }
 
+  // Payload shapes: Responses-style (payload.input) and chat-style
+  // (payload.messages — openai-completions, what opencode-go sends). Normalize
+  // both into the item list the extractors below understand, and return a
+  // writer so pruning lands in the right place. Before this, the router was
+  // inert for any provider sending messages (verified 2026-11-02: a
+  // deepseek/openai-completions session made no Jev call).
+  function payloadItems(payload) {
+    if (Array.isArray(payload.input)) {
+      return {
+        items: payload.input,
+        write: function (i, t) { payload.input[i].output = t; }
+      };
+    }
+    if (!Array.isArray(payload.messages)) return null;
+    var items = [], targets = {};
+    payload.messages.forEach(function (m, mi) {
+      if (m.role === "tool") {
+        var out = typeof m.content === "string" ? m.content : "";
+        var idx = items.push({ type: "function_call_output", output: out }) - 1;
+        targets[idx] = { mi: mi, kind: "tool" };
+        return;
+      }
+      if (Array.isArray(m.content)) {
+        m.content.forEach(function (b) {
+          if (b && b.type === "tool_result") {
+            var o = typeof b.content === "string" ? b.content : "";
+            var i2 = items.push({ type: "function_call_output", output: o }) - 1;
+            targets[i2] = { mi: mi, kind: "block", block: b };
+          }
+        });
+      }
+      if (m.role) items.push({ role: m.role, content: m.content });
+    });
+    return {
+      items: items,
+      write: function (i, t) {
+        var tg = targets[i];
+        if (!tg) return;
+        if (tg.kind === "tool") payload.messages[tg.mi].content = t;
+        else if (tg.kind === "block") tg.block.content = t;
+      }
+    };
+  }
+
   api.on("before_provider_request", async function (event) {
-    // TODO: JEV_MODE=observe still prunes. Only "off" is checked here, and
-    // nothing below tests for "observe" (confirmed in a harness 2026-11-02).
-    // Owner to decide the intended observe semantics.
     if (MODE === "off") return;
 
     var payload = event.payload;
-    // TODO: only Responses-style payloads (payload.input) are handled. If
-    // opencode-go/deepseek-v4.1-flash sends chat-style payload.messages, the
-    // router is inert for the default model. A one-shot deepseek session on
-    // 2026-11-02 (omp api "openai-completions") loaded the extension but made
-    // no Jev call, which points that way. Needs an instrumented check.
-    if (!payload || !payload.input || !Array.isArray(payload.input)) return;
+    if (!payload) return;
+    var shapes = payloadItems(payload);
+    if (!shapes) return;
+    var items = shapes.items;
 
     // Model routing: workhorse by default; escalation needs a
     // deterministic struggle trigger, then Jev's final say below.
     // Expert = payload.model left untouched.
     var struggle = null;
-    try { struggle = detectStruggle(payload.input); } catch (e) { struggle = null; }
+    try { struggle = detectStruggle(items); } catch (e) { struggle = null; }
     if (ROUTE && !struggle) {
       var prevModel = payload.model;
       payload.model = WORKHORSE_MODEL;
@@ -198,16 +237,16 @@ export default function (api) {
       return;
     }
 
-    var query = extractQuery(payload.input);
+    var query = extractQuery(items);
     if (!query) return;
 
-    var unevaluated = extractToolOutputs(payload.input);
+    var unevaluated = extractToolOutputs(items);
     if (unevaluated.length > 0) unevaluated.forEach(function(c) { evaluated.add(c.hash); });
 
     try {
       // fan-out: state = query + summary + chunks; questions = one Noul
       // relevance question per chunk + thinking escalation
-      var state = { user_query: query, conversation_summary: buildSummary(payload.input) };
+      var state = { user_query: query, conversation_summary: buildSummary(items) };
       if (struggle) state.struggle_signals = struggle;
       var questions = {};
       var keyToIndex = {};
@@ -252,10 +291,16 @@ export default function (api) {
         if (prob >= THRESHOLD) continue;
 
         var entry = unevaluated[idx];
+        var pct = (prob * 100).toFixed(0);
+        if (MODE !== "prune") {
+          // observe: score and log, never mutate the payload.
+          console.error("[jev-router] observe: would prune " + entry.output.length + " chars (relevance " + pct + "%)");
+          continue;
+        }
         pruned.add(entry.hash);
         prunedCount++;
-        payload.input[entry.index].output =
-          "[context router: tool output omitted, relevance " + (prob * 100).toFixed(0) + "%, " + entry.output.length + " chars]";
+        shapes.write(entry.index,
+          "[context router: tool output omitted, relevance " + pct + "%, " + entry.output.length + " chars]");
       }
       if (prunedCount > 0) {
         console.error("[jev-router] pruned " + prunedCount + "/" + unevaluated.length + " tool outputs (threshold " + THRESHOLD + ")");
