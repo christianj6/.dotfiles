@@ -53,6 +53,19 @@ project, register it there for the claude pane with:
 Remove it the same way (`claude mcp remove rea -s project`) when the work
 is done. Never re-add user-scope MCP servers.
 
+## Working with your omp coordinator (file-only handoff)
+
+For claude panes; omp's side of this lives in its system prompt.
+
+1. **Specs arrive in a file.** Read the whole file before starting; do no speculative work first.
+2. **Pane messages are the path + one line.** Never paste a spec or report body into a pane.
+3. **Write your report to a file** next to the spec: what changed, what was run, results. Say so there if you edited anything outside the spec.
+4. **Send the path back** with `omp-peer send <omp-name> "<path + one line>"`. The address book is `herdr agent list`.
+5. **One task at a time.**
+
+Messaging another project's claude pane is off-limits; route it through omp
+(`rule://coordinator-network`). Details: `docs/handoff-verification.md`.
+
 ## Config model roles: never commit the churn
 
 The owner switches the `modelRoles:` values in `config/omp/config.yml`

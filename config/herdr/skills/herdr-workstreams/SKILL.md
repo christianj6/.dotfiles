@@ -89,7 +89,13 @@ and the same shape works for a second omp.
 4. **Name it, then talk to it** with the peer-comms recipes below:
 
        herdr agent rename <pane_id> <name>
-       omp-peer send <name> "<instruction>" --wait-reply
+       omp-peer send <name> "<instruction>" --wait-reply   # omp peers
+       herdr agent prompt <name> "<instruction>"           # claude panes
+
+   A newly started claude pane gets a handshake prompt that tells it: specs
+   arrive as file paths, reports go back as file paths (written to a file,
+   then `omp-peer send <omp-name> "<path + one line>"`), one task at a
+   time, and cross-project messaging is off-limits.
 
 5. **Close the pane you created when the work is done** (`herdr pane close
    <pane_id>`) -- that ends the agent with it.
@@ -170,6 +176,12 @@ transcript instead:
 
     omp-peer send <name-or-pane> "<instruction>"                # fires + confirms delivery
     omp-peer send <name-or-pane> "<instruction>" --wait-reply   # then prints the peer's reply text
+
+omp-peer confirms against omp transcripts only. A claude target exits 2 even
+when the message landed, and resending duplicates the task: message claude
+panes with `herdr agent prompt <name> "<path + one line>"` and confirm with
+`herdr agent read`. Omp peers must also have a cwd under `$HOME`; elsewhere
+(e.g. `$TMPDIR`) it exits 2 the same way. See `docs/handoff-verification.md`.
 
 - Big context goes by file: write it, then send "read /path/x.md and ..."
   — keep the typed prompt tiny.

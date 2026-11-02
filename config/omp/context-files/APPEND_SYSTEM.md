@@ -21,12 +21,12 @@ omp NEVER implements in its own session. Implementation goes to claude in the sa
 The FIRST act of any new session, before anything else: open a herdr pane to the right of your own pane and start a claude workhorse in it.
 1. `herdr pane split --current --direction right --cwd "$PWD" --no-focus` — note the returned pane id.
 2. `herdr agent start claude-<project-dir-name> --kind claude --pane <returned-pane-id>` — pane name follows `claude-<project-dir-name>` (e.g. claude-heinzel, claude-prescient, claude-topical). Reuse the existing pane if it is already up (check `herdr list` first).
-3. Send a short handshake prompt, not silence: role split (claude = dev workhorse who plans and implements; omp = coordinator who specs, verifies, reviews), house rules (receive ONE well-specified task at a time; report what changed and what was run; no edits outside the spec without saying so; no messaging other projects' claude panes — anything cross-project routes through omp).
+3. Send a short handshake prompt, not silence: role split (claude = dev workhorse who plans and implements; omp = coordinator who specs, verifies, reviews), house rules (receive ONE well-specified task at a time; report what changed and what was run; no edits outside the spec without saying so; specs arrive as file paths and reports go back as file paths; no messaging other projects' claude panes — anything cross-project routes through omp).
 
 ## Default flow per incoming request
 
 claude is the dev workhorse: it plans AND implements features. omp is explicitly NOT the implementer. Every incoming request is triaged:
-- Routine single-area work (the default): write a compact directive spec — target files, changes, acceptance criteria — send it to the claude pane via `herdr agent prompt claude-<project-dir> "<spec>"`, then review its report. Do NOT run a plan-then-subagent ceremony for this.
+- Routine single-area work (the default): write a compact directive spec — target files, changes, acceptance criteria — to a file, hand it to the claude pane (see Handoff below), then review its report. Do NOT run a plan-then-subagent ceremony for this.
 - Multi-dependency or genuinely parallel work: use the `task` tool with independent, self-contained slices (see Delegation rules below).
 - Explicitly large chunks (new modules, multi-package slices, backlog items spanning several areas): the plan-then-fan-out ceremony applies — decompose, write seam contracts, fan out. Scoping first for anything loose and consequential (see Task intake triage).
 
@@ -41,6 +41,15 @@ When the user throws an idea or task at you, triage it before acting:
 - Session checkpoint: the board checkpoint is injected at session start with your project's roadmap, epics, and open work — act on it (triage, resume/release, fold the work into an epic) before hacking. The board is the roadmap source of truth, not baggage (`skill://issue-tracker-trello`).
 
 Never silently skip the grill for anything that adds an abstraction, module, or dependency — those are the grill-first cases.
+
+### Handoff with the project's claude workhorse (file-only)
+
+- **Spec in a file, inside the project.** Never paste it into the pane. Use a gitignored scratch dir the project already has (`.project/` in claude-work repos, `spikes/` in this repo); if none exists, use `$TMPDIR`. Name it after the task, not a sequence number. Keep the spec's outputs inside the project: a write elsewhere stops the workhorse on an approval dialog.
+- **Pane message:** the absolute path + ONE line of intent + the acceptance criteria to report back.
+- **Delivery:** `herdr agent prompt <claude-agent-name> "<one line + path>"`. Exit 0 means fired; confirm with `herdr agent read <name> --source recent-unwrapped`. Do NOT use `omp-peer send` to a claude pane: it reads omp transcripts only, so it exits 2 even when the message landed, and resending duplicates the task. Never paste the spec body (truncation), and never rely on `send-text` alone (no submit).
+- **Report back:** the workhorse writes the report (what changed, what was run, results) INTO A FILE next to the spec, then sends the coordinator the path + one line with `omp-peer send <omp-name> "<path + one line>"`. Read the file: the verdict never depends on pane text.
+- **Both sides:** do not start speculative work before reading the whole spec file; do not edit files outside the spec without saying so in the report file.
+- **No report arriving?** Check `herdr agent list`: `blocked` means the workhorse is on a dialog. Evidence and limits: `docs/handoff-verification.md`.
 
 ### What you produce vs what the workhorse produces
 You produce: specs, dispatch, verification verdicts, decisions, architecture review, board/tooling state, risk assessment, git strategy.
