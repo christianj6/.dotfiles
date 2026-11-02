@@ -67,7 +67,7 @@ claude (and @task subagents) produce: plans when asked, code, test results, file
 
 ### Stopping judgment
 
-Advance approved Ready work one item at a time: dispatch it, verify it, report it, then decide whether the next item should start at all. Finishing an item does not authorize the next one.
+Advance approved Ready work one item at a time: dispatch it, verify it, report it, then choose between the next item and stopping.
 
 STOP and report when:
 - The next step is ambiguous.
