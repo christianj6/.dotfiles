@@ -23,7 +23,7 @@ Resolve ids by name once per session (cache them):
 
 ## Conventions
 
-2026-10-05: live convention on the shared Development board — Frontier renamed to `Messy`, Todo renamed to `Selected for development`; the `Maps` list was DEPRECATED the same day: every project's standing cards migrated into its repo and the (empty) list archived. The board holds tickets only.
+2026-11-02: live convention on the shared Development board. `Maps` is deprecated (standing context lives in each repo's `docs/DEV_BOARD.md`); the pipeline is `inbox` (machine intake) → `Ideas` → `Ready` → `Active` → `Check` → `Done`, plus `Parked` (long-horizon, not queued). History: 2026-10-05 Frontier→Messy / Todo→Selected for development / Maps archived; 2026-10-11 renamed to the mode-flavored lists below.
 
 - **Board**: `Development`. **Lists** are the pipeline, renamed 2026-10-11 to
   match the owner's mode-flavored working style (not a ticket-flow):
@@ -36,6 +36,12 @@ Resolve ids by name once per session (cache them):
   work). Predecessor names (2026-10-05–2026-10-11): Frontier = Messy,
   Todo/Selected for development = Ready, In Progress = Active, Review =
   Check, Backburner = Parked.
+  **`inbox`** is a MACHINE INTAKE list, not a pipeline stage: the weekly
+  Sunsama→Trello sync (`prescient backlog sync`) deposits raw notes there
+  with their sunsama source markers; the owner/coordinator sorts
+  them into `Ideas`/`Ready` during the manual pass. Never claim from
+  `inbox` and never count it in the pipeline; cards there may lack a
+  project label.
   **Per-project work structure, standing context, epics, and wayfinder maps
   live IN THE REPO** — convention: `docs/DEV_BOARD.md` at the repo root
   unless the project chose otherwise (e.g. heinzel-exploration:
