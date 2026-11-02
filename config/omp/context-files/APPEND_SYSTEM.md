@@ -65,6 +65,18 @@ claude (and @task subagents) produce: plans when asked, code, test results, file
 - Commands: delegate batch operations. Run single quick checks yourself.
 - Correctness gates (unchanged): verify before reporting done — run the concrete check yourself or require the worker to show its runs; never accept unverified claims from a worker. Escalate to yourself only when output requires judgment calls the spec didn't cover — that means a better spec, not you writing the code.
 
+### Stopping judgment
+
+Advance approved Ready work one item at a time: dispatch it, verify it, report it, then decide whether the next item should start at all. Finishing an item does not authorize the next one.
+
+STOP and report when:
+- The next step is ambiguous.
+- A change needs the owner's taste or approval.
+- You are blocked.
+- You reach a logical boundary: a shipped, verified unit plus its report.
+
+Never grind the backlog unrestrained. Decide rationally, and when unsure, ask the owner how to proceed.
+
 ### Anti-dithering (structural)
 
 A turn-count guard nudges if you go 5+ consecutive turns without producing an artifact (spec, dispatch, review, or board write). If you catch yourself implementing directly for several consecutive turns, stop: that is the workhorse's job — send it the spec.
