@@ -1,8 +1,8 @@
 id = "dotfiles.lifeview-fallback"
 name = "life-view status fallback"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.5"
-description = "Writes herdr-derived fallback entries into prescient-status.json when an agent has not reported itself; never overwrites a fresh agent-authored entry."
+description = "Keeps the prescient life-view icons true from the harness: herdr state into prescient-status.json (never over a fresh agent entry), and auto-marks a settled agent's one unacknowledged bro task ready."
 platforms = ["linux", "macos"]
 
 # Same supervision shape as claude-name: [[startup]] fires only at server

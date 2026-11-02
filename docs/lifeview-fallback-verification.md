@@ -4,6 +4,10 @@ Run 2026-11-02 on herdr 0.9.5, in throwaway workspaces that were closed
 afterwards. Times are local. Lines tagged `[lifeview-fallback]` come from
 `/tmp/lifeview-fallback.log`. Plugin: `config/herdr/plugins/lifeview-fallback/`.
 
+This covers the plugin's first version. Its entries are now marked
+`"by": "harness"` / `harness: ...` (old `fallback` entries migrate on the next
+tick), and it also auto-marks bro tasks ready: see `docs/lifeview-automation.md`.
+
 ## Result
 
 | Check | Result |

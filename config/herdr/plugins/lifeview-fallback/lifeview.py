@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
-"""Fallback entries in each project's prescient-status.json, from herdr's state.
+"""Keep prescient's life-view icons true from the harness, without agents.
 
-prescient's life view reads <repo>/prescient-status.json for what each agent
-is at. Agents write it themselves (`prescient status ...`); this fills the gap
-when one has not spoken yet, forgot, or let its word go stale, so its icon
-still means something.
+The life view shows each agent's state from two sources. This plugin feeds
+both, so no agent has to remember a CLI:
 
-Rules (the agent's own word always wins):
+1. The inner line comes from <repo>/prescient-status.json. Each tick, herdr's
+   own agent_status is written there for every agent that hasn't spoken for
+   itself. omp's herdr status is already transcript-backed (omp-watch), and
+   claude's comes from its hooks.
+2. The ring is green when a bro task is `ready`. When an agent settles after
+   working on its one open bro task, the plugin marks that task ready through
+   bro's HTTP API, with its last message as the summary and the provenance in
+   the note ("auto: " summary prefix). See ready_check() for every
+   condition; LIFEVIEW_AUTO_READY=0 turns it off.
+
+Status-file rules (the agent's own word always wins):
 - Entries are keyed by pane id, as `prescient status` keys them, so an
   agent's next write replaces ours in place.
-- Ours carry "by": "fallback" (prescient reads state/line/at and ignores
-  other keys) and a "fallback: ..." line.
+- Ours carry "by": "harness" (prescient reads state/line/at and ignores
+  other keys) and a "harness: ..." line. Older "by": "fallback" entries count
+  as ours too.
 - An agent-authored entry is never touched while fresh: younger than
   AGENT_FRESH_S, or within its own ttl_s. Past that, only a `working`
   herdr no longer corroborates is replaced; idle/standby/blocked stand
@@ -23,8 +32,13 @@ Rules (the agent's own word always wins):
 - Only repos that already gitignore prescient-status.json are written to,
   so no repo gains a stray tracked file.
 
-Run with no arguments in the foreground, or with --daemon to detach. See
-herdr-plugin.toml for what launches it.
+Usage: no arguments runs in the foreground; --daemon detaches (see
+herdr-plugin.toml); --once runs one tick; --explain prints, per agent, why
+its icon looks the way it does.
+
+Env: LIFEVIEW_AUTO_READY [1] (0 disables auto-ready), LIFEVIEW_SETTLE_S [60],
+LIFEVIEW_AUTO_READY_STARTED [0] (1: also tasks the agent started itself),
+BRO_URL [http://127.0.0.1:8766], PRESCIENT_URL [http://127.0.0.1:8765].
 """
 
 from __future__ import annotations
@@ -32,31 +46,51 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 POLL_SECONDS = 10
 SERVER_DEATH_TICKS = 10      # consecutive failed ticks before a daemon exits (as in claude-name)
 AGENT_FRESH_S = 180          # an agent's own entry younger than this is never touched
-FALLBACK_WORKING_TTL = 300   # s: covers herdr's blind spot; refreshed while herdr still says working
+HARNESS_WORKING_TTL = 300    # s: covers herdr's blind spot; refreshed while herdr still says working
 STATUS_FILE = "prescient-status.json"
-BY = "fallback"
+BY = "harness"
+OURS = ("harness", "fallback")   # "fallback": this plugin's first version
+SETTLE_S = float(os.environ.get("LIFEVIEW_SETTLE_S", "60"))
+AUTO_READY = os.environ.get("LIFEVIEW_AUTO_READY", "1") != "0"
+# A task the agent itself `bro task start`-ed: it knows the protocol, so its
+# silence on `ready` is likely deliberate (e.g. idle while a background bench
+# runs - seen live). Off by default; 1 lets auto-ready mark those too.
+AUTO_READY_STARTED = os.environ.get("LIFEVIEW_AUTO_READY_STARTED", "0") == "1"
+BRO_URL = os.environ.get("BRO_URL", "http://127.0.0.1:8766")
+PRESCIENT_URL = os.environ.get("PRESCIENT_URL", "http://127.0.0.1:8765")
+OPEN_TASK = ("open", "sent", "working")
+BUSY = ("working", "blocked")
 
-# herdr agent_status -> (state, line) for the fallback entry
+# herdr agent_status -> (state, line) for the harness entry
 FROM_HERDR = {
-    "working": ("working", "fallback: herdr reports working"),
-    "idle": ("idle", "fallback: herdr idle"),
-    "done": ("idle", "fallback: herdr idle"),
-    "blocked": ("blocked", "fallback: herdr blocked (approval dialog?)"),
+    "working": ("working", "harness: herdr reports working"),
+    "idle": ("idle", "harness: herdr idle"),
+    "done": ("idle", "harness: herdr idle"),
+    "blocked": ("blocked", "harness: herdr blocked (approval dialog?)"),
 }
+
+# The dashboard's ring: lowest rank wins (index.html AG_RANK, BRO_STATES)
+AG_RANK = {"ready": 0, "failed": 1, "blocked": 2, "working": 3, "queued": 4, "noted": 5,
+           "done": 6, "dropped": 7, "idle": 8}
+BRO_STATES = {"open": "queued", "sent": "queued", "reopened": "queued", "noted": "noted", "working": "working",
+              "ready": "ready", "done": "done", "dropped": "dropped", "failed": "failed"}
 
 HERDR_BIN = os.environ.get("HERDR_BIN_PATH", "herdr")
 LOCK_PATH = Path("/tmp/lifeview-fallback.lock")
 LOG_PATH = "/tmp/lifeview-fallback.log"
+CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 _lock_handle: Optional[object] = None   # module-level so the flock outlives acquire()
 
 
@@ -76,20 +110,25 @@ def acquire_singleton_lock() -> None:
     _lock_handle.flush()
 
 
-# ---- pure decision logic (unit-tested) ----
+# ---- pure decision logic: status file (unit-tested) ----
 
-def age_s(entry: Dict, now: float) -> Optional[float]:
+def epoch(iso: object) -> Optional[float]:
     try:
-        at = datetime.fromisoformat(str(entry.get("at")))
+        at = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
     if at.tzinfo is None:
         at = at.astimezone()      # naive: local time
-    return now - at.timestamp()
+    return at.timestamp()
+
+
+def age_s(entry: Dict, now: float) -> Optional[float]:
+    at = epoch(entry.get("at"))
+    return None if at is None else now - at
 
 
 def is_ours(entry: object) -> bool:
-    return isinstance(entry, dict) and entry.get("by") == BY
+    return isinstance(entry, dict) and entry.get("by") in OURS
 
 
 def agent_fresh(entry: Dict, now: float) -> bool:
@@ -126,7 +165,7 @@ def decide(agent: Dict, entries: Dict, now: float) -> Tuple[str, Optional[Dict]]
     by_pane = entries.get(pane)
 
     # The agent's own word under its name: prescient reads that first, so a
-    # pane-id fallback is a second source of truth. Leave the name entry alone.
+    # pane-id entry of ours is a second source of truth. Leave the name entry alone.
     if isinstance(by_name, dict) and not is_ours(by_name):
         return ("drop", None) if is_ours(by_pane) else ("keep", None)
 
@@ -137,13 +176,13 @@ def decide(agent: Dict, entries: Dict, now: float) -> Tuple[str, Optional[Dict]]
     if herdr not in FROM_HERDR:
         return ("keep", None)          # unknown/absent: herdr has nothing to say
     state, line = FROM_HERDR[herdr]
-    if is_ours(by_pane) and by_pane.get("state") == state:
+    if is_ours(by_pane) and by_pane.get("by") == BY and by_pane.get("state") == state:
         age = age_s(by_pane, now)
-        if state != "working" or (age is not None and age < FALLBACK_WORKING_TTL / 2):
+        if state != "working" or (age is not None and age < HARNESS_WORKING_TTL / 2):
             return ("keep", None)
     entry = {"state": state, "at": datetime.now().astimezone().isoformat(timespec="seconds"), "line": line, "by": BY}
     if state == "working":
-        entry["ttl_s"] = float(FALLBACK_WORKING_TTL)
+        entry["ttl_s"] = float(HARNESS_WORKING_TTL)
     return ("write", entry)
 
 
@@ -162,7 +201,183 @@ def plan(agents: list, entries: Dict, live_panes: set, now: float) -> Dict[str, 
     return changes
 
 
-# ---- herdr + filesystem ----
+# ---- transcripts ----
+
+def scan_tail(path: Path, max_bytes: int = 4 * 1024 * 1024) -> Dict:
+    """The newest conversational entry of a claude or omp transcript, read
+    backwards from EOF (complete lines only, as omp-watch does):
+    {verdict, at, text}. verdict is "answered" (an assistant message with
+    text and no tool call: the turn's last word), "error" (an API/provider
+    failure), or "working" (anything mid-turn: a user/tool-result entry, a
+    tool call, thinking only). text is that answer's text, when answered."""
+    out: Dict = {"verdict": None, "at": None, "text": ""}
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            pos, carry, scanned, first = size, b"", 0, True
+            f.seek(max(size - 1, 0))
+            terminated = size > 0 and f.read(1) == b"\n"
+            while pos > 0 and scanned < max_bytes:
+                n = min(65536, pos)
+                pos -= n
+                f.seek(pos)
+                parts = (f.read(n) + carry).split(b"\n")
+                scanned += n
+                carry, lines = parts[0], parts[1:]
+                if first:
+                    first = False
+                    if not terminated and lines:
+                        lines = lines[:-1]
+                for ln in reversed(lines):
+                    v = classify(ln)
+                    if v:
+                        return v
+    except OSError:
+        pass
+    return out
+
+
+def classify(line: bytes) -> Optional[Dict]:
+    try:
+        e = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(e, dict):
+        return None
+    msg = e.get("message") if isinstance(e.get("message"), dict) else {}
+    role = msg.get("role")
+    if role not in ("user", "assistant", "toolResult"):
+        return None                     # bookkeeping entries carry no turn signal
+    at = epoch(e.get("timestamp"))
+    if role != "assistant":
+        return {"verdict": "working", "at": at, "text": ""}
+    if e.get("isApiErrorMessage") or msg.get("stopReason") == "error":
+        return {"verdict": "error", "at": at, "text": ""}
+    content = msg.get("content")
+    blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
+    kinds = {b.get("type") for b in blocks if isinstance(b, dict)}
+    if kinds & {"tool_use", "toolCall"}:
+        return {"verdict": "working", "at": at, "text": ""}
+    text = " ".join(str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text").strip()
+    if not text:
+        return {"verdict": "working", "at": at, "text": ""}
+    return {"verdict": "answered", "at": at, "text": text}
+
+
+def _omp_newest_session():
+    """omp-watch's proven cwd -> newest omp session file lookup."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "omp-watch"))
+        import watch  # type: ignore
+        return watch.newest_session_file
+    except Exception:
+        return None
+    finally:
+        sys.path.pop(0)
+
+
+_omp_session = _omp_newest_session()
+
+
+def interactive(path: Path) -> bool:
+    """A claude transcript from an interactive session (entrypoint "cli"), not
+    a headless `claude -p` / SDK run (entrypoint "sdk-cli")."""
+    try:
+        with path.open("rb") as f:
+            f.seek(max(path.stat().st_size - 65536, 0))
+            return b'"entrypoint":"cli"' in f.read()
+    except OSError:
+        return False
+
+
+def transcript_of(agent: Dict, agents: list) -> Optional[Path]:
+    """herdr's session id goes stale (seen live: a pane on a session 14 h
+    newer than its claim), so for the only claude pane in a cwd the newest
+    interactive transcript in that cwd's project folder wins."""
+    if agent.get("agent") == "claude":
+        sess = (agent.get("agent_session") or {}).get("value")
+        claimed = next(iter(CLAUDE_PROJECTS.glob(f"*/{sess}.jsonl")), None) if sess else None
+        cwd = agent.get("cwd") or ""
+        if sum(1 for a in agents if a.get("agent") == "claude" and a.get("cwd") == cwd) == 1:
+            folder = CLAUDE_PROJECTS / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+            try:
+                files = sorted(folder.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            except OSError:
+                files = []
+            newest = next((f for f in files[:8] if interactive(f)), None)
+            if newest and (claimed is None or newest.stat().st_mtime > claimed.stat().st_mtime):
+                return newest
+        return claimed
+    if agent.get("agent") == "omp" and _omp_session:
+        cwd = agent.get("cwd") or ""
+        # newest file per cwd: only unambiguous with one omp in that cwd
+        if sum(1 for a in agents if a.get("agent") == "omp" and a.get("cwd") == cwd) == 1:
+            return _omp_session(cwd)
+    return None
+
+
+# ---- auto-ready (unit-tested) ----
+
+def summary_of(text: str, limit: int = 240) -> str:
+    one = " ".join(text.split())
+    return "auto: " + (one if len(one) <= limit else one[: limit - 1].rstrip() + "…")
+
+
+def tasks_for(agent: Dict, tasks: list) -> list:
+    """Open bro tasks whose agent is this one (by herdr name or pane id)."""
+    return [t for t in tasks_of(agent, tasks) if t.get("state") in OPEN_TASK]
+
+
+def tasks_of(agent: Dict, tasks: list) -> list:
+    """Every bro task whose agent is this one: its `agent`, else an agent:<name> dest
+    (how bro and the dashboard attribute it)."""
+    keys = {agent.get("name"), agent.get("pane_id")} - {None, ""}
+    def who(t: Dict) -> Optional[str]:
+        dest = str(t.get("dest") or "")
+        return t.get("agent") or (dest.split(":", 1)[1] if dest.startswith("agent:") else None)
+    return [t for t in tasks if who(t) in keys]
+
+
+def task_at(t: Dict) -> Optional[float]:
+    hist = t.get("history") or []
+    return epoch((hist[-1].get("at") if hist else None) or t.get("created"))
+
+
+def ready_check(agent: Dict, tasks: list, project_busy: List[str], tail: Dict, now: float) -> Tuple[Optional[Dict], str]:
+    """(task to mark ready, why) - or (None, why not). Every condition must
+    hold; each guards a way auto-ready could show a false green."""
+    if not AUTO_READY:
+        return None, "auto-ready off (LIFEVIEW_AUTO_READY=0)"
+    mine = tasks_for(agent, tasks)
+    if not mine:
+        return None, "no open bro task for it"
+    if len(mine) > 1:
+        return None, f"{len(mine)} open bro tasks: ambiguous, left to the agent"
+    t = mine[0]
+    keys = {agent.get("name"), agent.get("pane_id")}
+    if not AUTO_READY_STARTED and any(h.get("state") == "working" and h.get("by") in keys for h in t.get("history") or []):
+        return None, f"{t['id']} was started by the agent itself: `ready` is its call (LIFEVIEW_AUTO_READY_STARTED=1 overrides)"
+    herdr = agent.get("agent_status") or "unknown"
+    if herdr not in ("idle", "done"):
+        return None, f"herdr says {herdr}, not settled"
+    if project_busy:
+        return None, "another agent in its project is busy: " + ", ".join(project_busy)
+    if tail.get("verdict") != "answered":
+        return None, f"transcript tail is {tail.get('verdict') or 'unreadable'}, not a finished answer"
+    if tail.get("at") is None:
+        return None, "transcript tail has no timestamp"
+    quiet = now - tail["at"]
+    if quiet < SETTLE_S:
+        return None, f"settling: quiet {quiet:.0f}s of {SETTLE_S:.0f}s"
+    handed = task_at(t)
+    if handed is None or tail["at"] <= handed:
+        return None, "no answer since the task was handed over / last moved"
+    if tail.get("text", "").rstrip().endswith("?"):
+        return None, "its last message asks a question: waiting on the owner, not ready"
+    return t, f"settled {quiet:.0f}s after answering; one open task {t['id']}"
+
+
+# ---- herdr, bro, filesystem ----
 
 def list_agents() -> list:
     proc = subprocess.run([HERDR_BIN, "agent", "list"], capture_output=True, text=True, timeout=10)
@@ -171,24 +386,56 @@ def list_agents() -> list:
     return json.loads(proc.stdout)["result"]["agents"]
 
 
-def repo_root(cwd: str) -> Optional[str]:
-    """The git toplevel of cwd, as `prescient status` resolves it, if the repo
-    already gitignores the status file and its sidecars; else None."""
+def http_json(url: str, body: Optional[Dict] = None, timeout: float = 3) -> Optional[Dict]:
+    """GET (or POST body) a JSON endpoint; None when the service is down."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"} if data else {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return json.loads(res.read())
+    except Exception:
+        return None
+
+
+def bro_tasks() -> Optional[list]:
+    got = http_json(BRO_URL + "/api/tasks")
+    if not isinstance(got, dict):
+        return None
+    return [t for t in got.get("tasks") or [] if isinstance(t, dict) and t.get("id")]
+
+
+def mark_ready(t: Dict, agent: Dict, tail: Dict, quiet: float) -> Optional[Dict]:
+    who = agent.get("name") or agent.get("pane_id")
+    note = (f"auto-marked ready by the lifeview harness: {who} settled {quiet:.0f}s after its last answer "
+            "with this as its one open task; summary is that answer. LIFEVIEW_AUTO_READY=0 disables this.")
+    return http_json(BRO_URL + "/api/tasks", {"action": "ready", "id": t["id"], "by": who,
+                                              "summary": summary_of(tail.get("text", "")), "note": note})
+
+
+def git_root(cwd: str) -> Optional[str]:
     if not cwd or not os.path.isdir(cwd):
         return None
     try:
-        top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True, timeout=5)
-        if top.returncode != 0:
-            return None
-        root = top.stdout.strip()
-        # check-ignore prints each ignored path; both must be (the lock is
-        # created next to the file)
+        top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return top.stdout.strip() if top.returncode == 0 else None
+
+
+def writable(root: str) -> bool:
+    """The repo already gitignores the status file and the lock created next to it."""
+    try:
         ign = subprocess.run(["git", "-C", root, "check-ignore", STATUS_FILE, "." + STATUS_FILE + ".lock"],
                              capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
-        return None
-    return root if len(ign.stdout.split()) == 2 else None
+        return False
+    return len(ign.stdout.split()) == 2
+
+
+def repo_root(cwd: str) -> Optional[str]:
+    """The git toplevel of cwd, as `prescient status` resolves it, if it is writable()."""
+    root = git_root(cwd)
+    return root if root and writable(root) else None
 
 
 def read_entries(path: Path) -> Tuple[Dict, Dict]:
@@ -217,7 +464,7 @@ def apply(root: str, agents: list, live_panes: set) -> None:
         for key, entry in changes.items():
             if entry is None:
                 entries.pop(key, None)
-                log(f"{root}: {key} fallback removed")
+                log(f"{root}: {key} harness entry removed")
             else:
                 entries[key] = entry
                 log(f"{root}: {key} -> {entry['state']} ({entry['line']})")
@@ -226,36 +473,152 @@ def apply(root: str, agents: list, live_panes: set) -> None:
         tmp.replace(path)
 
 
-class Fallback:
+class World:
+    """One look at herdr: agents, their repos, and who in each project is busy."""
+
     def __init__(self) -> None:
-        self.failed: Dict[str, str] = {}   # root -> last error, so a stuck repo logs once
+        self.agents = [a for a in list_agents() if a.get("pane_id")]
+        self.live = {a["pane_id"] for a in self.agents}
+        roots: Dict[str, Optional[str]] = {}
+        self.root: Dict[str, Optional[str]] = {}
+        for a in self.agents:
+            cwd = a.get("cwd") or ""
+            if cwd not in roots:
+                roots[cwd] = git_root(cwd)
+            self.root[a["pane_id"]] = roots[cwd]
+
+    def project_busy(self, agent: Dict) -> List[str]:
+        mine = self.root.get(agent["pane_id"])
+        return [f"{a.get('name') or a['pane_id']} ({a.get('agent_status')})" for a in self.agents
+                if a is not agent and mine and self.root.get(a["pane_id"]) == mine and a.get("agent_status") in BUSY]
+
+
+class Harness:
+    def __init__(self) -> None:
+        self.failed: Dict[str, str] = {}      # root -> last error, so a stuck repo logs once
+        self.last_why: Dict[str, str] = {}    # pane -> last auto-ready verdict worth logging
 
     def tick(self) -> None:
-        agents = list_agents()
-        live = {a.get("pane_id") for a in agents if a.get("pane_id")}
+        w = World()
         by_root: Dict[str, list] = {}
-        for a in agents:
-            if not a.get("pane_id"):
+        writable_roots: Dict[str, bool] = {}
+        for a in w.agents:
+            root = w.root.get(a["pane_id"])
+            if root is None:
                 continue
-            root = repo_root(a.get("cwd") or "")
-            if root:
+            if root not in writable_roots:
+                writable_roots[root] = writable(root)
+            if writable_roots[root]:
                 by_root.setdefault(root, []).append(a)
         for root, group in by_root.items():
             try:
-                apply(root, group, live)
+                apply(root, group, w.live)
                 self.failed.pop(root, None)
             except Exception as exc:       # one repo must not stop the rest
                 if self.failed.get(root) != str(exc):
                     self.failed[root] = str(exc)
                     log(f"{root}: {exc}")
+        self.auto_ready(w)
+
+    def auto_ready(self, w: World) -> None:
+        if not AUTO_READY:
+            return
+        tasks = bro_tasks()
+        if tasks is None:
+            return                        # bro down: nothing to mark
+        now = time.time()
+        for a in w.agents:
+            if not tasks_for(a, tasks):
+                continue
+            path = transcript_of(a, w.agents)
+            tail = scan_tail(path) if path else {"verdict": None, "at": None, "text": ""}
+            t, why = ready_check(a, tasks, w.project_busy(a), tail, now)
+            if t is None:
+                continue
+            got = mark_ready(t, a, tail, now - tail["at"])
+            who = a.get("name") or a["pane_id"]
+            if got and (got.get("task") or {}).get("state") == "ready":
+                log(f"bro {t['id']} -> ready (auto) for {who}: {why}")
+                t["state"] = "ready"          # this tick's copy: not again
+            elif self.last_why.get(a["pane_id"]) != "mark failed":
+                self.last_why[a["pane_id"]] = "mark failed"
+                log(f"bro {t['id']}: auto-ready for {who} failed: {got}")
+
+
+# ---- --explain ----
+
+def icon_state(row_status: str, task_states: List[str]) -> str:
+    """The ring for one agent alone, as agentGroups() ranks it."""
+    cands = [BRO_STATES.get(s, "queued") for s in task_states]
+    if row_status in ("blocked", "working"):
+        cands.append(row_status)
+    return min(cands, key=lambda s: AG_RANK.get(s, 99)) if cands else "idle"
+
+
+def explain() -> None:
+    w = World()
+    tasks = bro_tasks()
+    board = http_json(PRESCIENT_URL + "/api/agent-board") or {}
+    rows = {r.get("name"): r for r in board.get("agents") or []}
+    now = time.time()
+    print(f"bro: {'up' if tasks is not None else 'DOWN (no tasks, no auto-ready)'}; "
+          f"prescient: {'up' if board else 'DOWN (icon state computed locally)'}; auto-ready {'on' if AUTO_READY else 'off'}")
+    for a in w.agents:
+        name = a.get("name") or a["pane_id"]
+        herdr = a.get("agent_status") or "unknown"
+        path = transcript_of(a, w.agents)
+        tail = scan_tail(path) if path else {"verdict": None, "at": None, "text": ""}
+        root = w.root.get(a["pane_id"])
+        entries = read_entries(Path(root) / STATUS_FILE)[1] if root else {}
+        e = entries.get(a.get("name") or "") or entries.get(a["pane_id"])
+        mine = tasks_of(a, tasks or [])
+        row = rows.get(name) or {}
+        status = row.get("status") or (e.get("state") if isinstance(e, dict) else None) or herdr
+        relevant = [t["state"] for t in mine if t.get("state") not in ("done", "dropped")]
+        icon = icon_state(status, relevant)
+        print(f"\n{name} [{a['pane_id']}, {a.get('agent')}] -> icon: {icon}")
+        print(f"  herdr: {herdr}")
+        if path:
+            age = f"{now - tail['at']:.0f}s ago" if tail.get("at") else "no timestamp"
+            print(f"  transcript: {tail.get('verdict') or 'unreadable'}, {age}  ({path.name})")
+        else:
+            print("  transcript: not found" + (" (several omp in one cwd)" if a.get("agent") == "omp" else ""))
+        if isinstance(e, dict):
+            who = "harness" if is_ours(e) else "the agent"
+            print(f"  prescient-status.json: {e.get('state')} by {who}, {age_s(e, now) or 0:.0f}s old: {e.get('line', '')}")
+        else:
+            print("  prescient-status.json: no entry" + ("" if root and writable(root) else " (repo doesn't gitignore it: not written)"))
+        if row:
+            print(f"  dashboard row: status {row.get('status')}" + (f" (herdr {row['herdr']})" if row.get("herdr") else ""))
+        print("  bro tasks: " + (", ".join(f"{t['id']} {t['state']}" for t in mine if t.get("state") not in ("done", "dropped")) or "none open"))
+        if tasks is not None:
+            print("  auto-ready: " + ready_check(a, tasks, w.project_busy(a), tail, now)[1])
+        open_tasks = [t for t in mine if t.get("state") not in ("done", "dropped")]
+        print("  why: " + why_icon(icon, herdr, status, e, open_tasks))
+
+
+def why_icon(icon: str, herdr: str, status: str, e: object, tasks: Optional[list] = None) -> str:
+    from_task = next((t for t in tasks or [] if BRO_STATES.get(t.get("state"), "queued") == icon), None)
+    if icon == "ready":
+        return f"bro task {from_task['id'] if from_task else '?'} is ready for your verdict (green)"
+    if from_task and icon != status:
+        return f"{icon}, from bro task {from_task['id']} ({from_task['state']}); the agent's own status is {status}"
+    if icon in ("working", "blocked"):
+        src = "the agent's own entry" if isinstance(e, dict) and not is_ours(e) else "herdr (via the harness)"
+        return f"{icon}, from {src}"
+    if icon == "idle":
+        if herdr == "unknown" and not isinstance(e, dict):
+            return "dim: herdr can't tell its state and it hasn't reported itself"
+        return f"dim: idle ({status}) with no open task needing you"
+    return f"{icon}: from its bro task"
 
 
 def run() -> None:
-    fb = Fallback()
+    h = Harness()
     tick_errors = 0
     while True:
         try:
-            fb.tick()
+            h.tick()
             tick_errors = 0
         except Exception as exc:
             tick_errors += 1
@@ -281,8 +644,11 @@ def daemonize() -> None:
 
 
 if __name__ == "__main__":
+    if "--explain" in sys.argv:
+        explain()
+        sys.exit(0)
     if "--once" in sys.argv:
-        Fallback().tick()
+        Harness().tick()
         sys.exit(0)
     if "--daemon" in sys.argv:
         daemonize()
