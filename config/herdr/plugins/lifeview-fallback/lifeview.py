@@ -74,6 +74,11 @@ OPEN_TASK = ("open", "sent", "working")
 BUSY = ("working", "blocked")
 
 # herdr agent_status -> (state, line) for the harness entry
+# While an agent settles toward auto-ready (see pending()), its entry stays
+# `working`: without it the ring falls to its task's `queued`, which the
+# dashboard draws grey, for the whole settle window (the grey flash).
+SETTLING = ("working", "harness: settling, auto-ready pending")
+
 FROM_HERDR = {
     "working": ("working", "harness: herdr reports working"),
     "idle": ("idle", "harness: herdr idle"),
@@ -156,9 +161,10 @@ def compatible(state: str, herdr: str) -> bool:
     return True
 
 
-def decide(agent: Dict, entries: Dict, now: float) -> Tuple[str, Optional[Dict]]:
+def decide(agent: Dict, entries: Dict, now: float, hold: bool = False) -> Tuple[str, Optional[Dict]]:
     """What to do with one agent's entries: ("keep", None), ("write", entry)
-    under its pane id, or ("drop", None) to remove our pane-id entry."""
+    under its pane id, or ("drop", None) to remove our pane-id entry. hold:
+    the agent is settling toward auto-ready, so it stays `working`."""
     pane, name = agent.get("pane_id") or "", agent.get("name") or ""
     herdr = agent.get("agent_status") or "unknown"
     by_name = entries.get(name) if name and name != pane else None
@@ -173,24 +179,29 @@ def decide(agent: Dict, entries: Dict, now: float) -> Tuple[str, Optional[Dict]]
         if agent_fresh(by_pane, now) or compatible(str(by_pane.get("state")), herdr):
             return ("keep", None)
 
-    if herdr not in FROM_HERDR:
+    if hold and herdr in ("idle", "done"):
+        state, line = SETTLING
+        ttl = SETTLE_S + 3 * POLL_SECONDS       # outlives the settle window, not a dead plugin by much
+    elif herdr in FROM_HERDR:
+        state, line = FROM_HERDR[herdr]
+        ttl = float(HARNESS_WORKING_TTL)
+    else:
         return ("keep", None)          # unknown/absent: herdr has nothing to say
-    state, line = FROM_HERDR[herdr]
-    if is_ours(by_pane) and by_pane.get("by") == BY and by_pane.get("state") == state:
+    if is_ours(by_pane) and by_pane.get("by") == BY and (by_pane.get("state"), by_pane.get("line")) == (state, line):
         age = age_s(by_pane, now)
-        if state != "working" or (age is not None and age < HARNESS_WORKING_TTL / 2):
+        if state != "working" or (age is not None and age < ttl / 2):
             return ("keep", None)
     entry = {"state": state, "at": datetime.now().astimezone().isoformat(timespec="seconds"), "line": line, "by": BY}
     if state == "working":
-        entry["ttl_s"] = float(HARNESS_WORKING_TTL)
+        entry["ttl_s"] = float(ttl)
     return ("write", entry)
 
 
-def plan(agents: list, entries: Dict, live_panes: set, now: float) -> Dict[str, Optional[Dict]]:
+def plan(agents: list, entries: Dict, live_panes: set, now: float, holds: frozenset = frozenset()) -> Dict[str, Optional[Dict]]:
     """Key -> new entry (None: delete) for one status file."""
     changes: Dict[str, Optional[Dict]] = {}
     for a in agents:
-        action, entry = decide(a, entries, now)
+        action, entry = decide(a, entries, now, a["pane_id"] in holds)
         if action == "write":
             changes[a["pane_id"]] = entry
         elif action == "drop":
@@ -377,6 +388,16 @@ def ready_check(agent: Dict, tasks: list, project_busy: List[str], tail: Dict, n
     return t, f"settled {quiet:.0f}s after answering; one open task {t['id']}"
 
 
+def pending(agent: Dict, tasks: list, project_busy: List[str], tail: Dict, now: float) -> bool:
+    """Settling toward auto-ready: not ready now, but would be once the settle
+    window has passed with nothing else changing. Every other guard still
+    applies, so an agent that won't go green (a question, a task it started,
+    no task) is never held."""
+    if ready_check(agent, tasks, project_busy, tail, now)[0] is not None:
+        return False
+    return ready_check(agent, tasks, project_busy, tail, now + SETTLE_S)[0] is not None
+
+
 # ---- herdr, bro, filesystem ----
 
 def list_agents() -> list:
@@ -448,17 +469,17 @@ def read_entries(path: Path) -> Tuple[Dict, Dict]:
     return raw, agents
 
 
-def apply(root: str, agents: list, live_panes: set) -> None:
+def apply(root: str, agents: list, live_panes: set, holds: frozenset = frozenset()) -> None:
     """Re-read and decide under prescient's lock, so an agent's write between
     our look and our write is never clobbered."""
     path = Path(root) / STATUS_FILE
     _, peek = read_entries(path)
-    if not plan(agents, peek, live_panes, time.time()):
+    if not plan(agents, peek, live_panes, time.time(), holds):
         return                          # nothing to do: don't touch the lock
     with open(path.with_name("." + STATUS_FILE + ".lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         raw, entries = read_entries(path)
-        changes = plan(agents, entries, live_panes, time.time())
+        changes = plan(agents, entries, live_panes, time.time(), holds)
         if not changes:
             return
         for key, entry in changes.items():
@@ -497,9 +518,18 @@ class Harness:
     def __init__(self) -> None:
         self.failed: Dict[str, str] = {}      # root -> last error, so a stuck repo logs once
         self.last_why: Dict[str, str] = {}    # pane -> last auto-ready verdict worth logging
+        self.seen_roots: set = set()          # repos written to: still swept once their agents are gone
 
     def tick(self) -> None:
         w = World()
+        tasks = bro_tasks() if AUTO_READY else None
+        tails = self.tails(w, tasks)
+        # Mark ready BEFORE the status write: the hold is released only once
+        # the task is green, so no board read can land between the two.
+        self.auto_ready(w, tasks, tails)
+        now = time.time()
+        holds = frozenset(a["pane_id"] for a in w.agents if a["pane_id"] in tails
+                          and pending(a, tasks or [], w.project_busy(a), tails[a["pane_id"]], now))
         by_root: Dict[str, list] = {}
         writable_roots: Dict[str, bool] = {}
         for a in w.agents:
@@ -510,28 +540,36 @@ class Harness:
                 writable_roots[root] = writable(root)
             if writable_roots[root]:
                 by_root.setdefault(root, []).append(a)
+        self.seen_roots |= set(by_root)
+        for root in self.seen_roots - set(by_root):
+            by_root[root] = []                # no live agent left: only removes our dead-pane entries
         for root, group in by_root.items():
             try:
-                apply(root, group, w.live)
+                apply(root, group, w.live, holds)
                 self.failed.pop(root, None)
             except Exception as exc:       # one repo must not stop the rest
                 if self.failed.get(root) != str(exc):
                     self.failed[root] = str(exc)
                     log(f"{root}: {exc}")
-        self.auto_ready(w)
 
-    def auto_ready(self, w: World) -> None:
-        if not AUTO_READY:
-            return
-        tasks = bro_tasks()
-        if tasks is None:
-            return                        # bro down: nothing to mark
+    @staticmethod
+    def tails(w: World, tasks: Optional[list]) -> Dict[str, Dict]:
+        """Transcript tails, read only for agents with an open bro task."""
+        out: Dict[str, Dict] = {}
+        for a in w.agents:
+            if tasks and tasks_for(a, tasks):
+                path = transcript_of(a, w.agents)
+                out[a["pane_id"]] = scan_tail(path) if path else {"verdict": None, "at": None, "text": ""}
+        return out
+
+    def auto_ready(self, w: World, tasks: Optional[list], tails: Dict[str, Dict]) -> None:
+        if not AUTO_READY or tasks is None:
+            return                        # off, or bro down: nothing to mark
         now = time.time()
         for a in w.agents:
-            if not tasks_for(a, tasks):
+            tail = tails.get(a["pane_id"])
+            if tail is None:
                 continue
-            path = transcript_of(a, w.agents)
-            tail = scan_tail(path) if path else {"verdict": None, "at": None, "text": ""}
             t, why = ready_check(a, tasks, w.project_busy(a), tail, now)
             if t is None:
                 continue

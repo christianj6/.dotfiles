@@ -61,11 +61,12 @@ class Decide(unittest.TestCase):
             self.assertEqual(self.d(agent("working"), {"wX:p1": e}), ("keep", None))
 
     def test_own_entry_kept_while_unchanged_and_refreshed_when_working(self):
-        ours = {"state": "idle", "at": at(9000), "by": "harness"}
+        ours = {"state": "idle", "at": at(9000), "by": "harness", "line": "harness: herdr idle"}
         self.assertEqual(self.d(agent("idle"), {"wX:p1": ours}), ("keep", None))
-        young = {"state": "working", "at": at(30), "by": "harness", "ttl_s": 300}
+        w = "harness: herdr reports working"
+        young = {"state": "working", "at": at(30), "by": "harness", "ttl_s": 300, "line": w}
         self.assertEqual(self.d(agent("working"), {"wX:p1": young}), ("keep", None))
-        old = {"state": "working", "at": at(200), "by": "harness", "ttl_s": 300}
+        old = {"state": "working", "at": at(200), "by": "harness", "ttl_s": 300, "line": w}
         self.assertEqual(self.d(agent("working"), {"wX:p1": old})[0], "write")
 
     def test_v1_fallback_entries_are_ours_and_migrate(self):
@@ -189,6 +190,61 @@ class AutoReady(unittest.TestCase):
         self.assertTrue(s.startswith("auto: Line one. Line two "))
         self.assertLessEqual(len(s), 6 + 240)
         self.assertNotIn("\n", s)
+
+
+class GreyFlash(unittest.TestCase):
+    """Invariant: an agent with one open bro task goes working -> ready with
+    nothing ranked below working in between; a task-less agent still goes
+    idle on the next tick."""
+
+    def ring(self, entry_state, task_state):
+        return lv.icon_state(entry_state, [task_state])
+
+    def walk(self, tasks, quiet_points):
+        a = agent("done")
+        entries, rings = {}, []
+        for quiet in quiet_points:
+            now = time.time()
+            tail = answered(ago=quiet)
+            hold = lv.pending(a, tasks, [], tail, now)
+            action, e = lv.decide(a, entries, now, hold)
+            if action == "write":
+                entries["wX:p1"] = e
+            t, _ = lv.ready_check(a, tasks, [], tail, now)
+            if t:
+                t["state"] = "ready"
+            rings.append(self.ring(entries["wX:p1"]["state"], tasks[0]["state"] if tasks else "done"))
+        return rings, entries
+
+    def test_settle_window_stays_working_until_ready(self):
+        tasks = [task(state="sent", moved_ago=600, history=[{"at": at(600), "state": "sent", "by": "bro"}])]
+        rings, entries = self.walk(tasks, [2, 15, 30, 45, 58, 61, 75])
+        first_ready = rings.index("ready")
+        self.assertTrue(all(r == "working" for r in rings[:first_ready]), rings)
+        self.assertTrue(all(r == "ready" for r in rings[first_ready:]), rings)
+        # once ready, the hold is released: the entry is back to idle (the ring stays green from the task)
+        self.assertEqual((entries["wX:p1"]["state"], entries["wX:p1"]["line"]), ("idle", "harness: herdr idle"))
+
+    def test_hold_entry_is_bounded_and_marked(self):
+        _, e = lv.decide(agent("done"), {}, time.time(), True)
+        self.assertEqual((e["state"], e["line"], e["by"]), ("working", "harness: settling, auto-ready pending", "harness"))
+        self.assertLessEqual(e["ttl_s"], lv.SETTLE_S + 3 * lv.POLL_SECONDS)
+
+    def test_no_task_goes_idle_at_once(self):
+        a = agent("done")
+        self.assertFalse(lv.pending(a, [], [], answered(ago=2), time.time()))
+        ours = {"state": "working", "at": at(20), "by": "harness", "ttl_s": 300, "line": "harness: herdr reports working"}
+        action, e = lv.decide(a, {"wX:p1": ours}, time.time(), False)
+        self.assertEqual((action, e["state"]), ("write", "idle"))
+
+    def test_no_hold_when_it_will_not_go_green(self):
+        a = agent("done")
+        started = [task(history=[{"at": at(600), "state": "working", "by": "claude-v2-wxp1"}])]
+        self.assertFalse(lv.pending(a, started, [], answered(ago=5), time.time()))
+        self.assertFalse(lv.pending(a, [task(state="sent")], [], answered(ago=5, text="Which file?"), time.time()))
+        self.assertFalse(lv.pending(a, [task(state="sent")], ["omp (working)"], answered(ago=5), time.time()))
+        self.assertFalse(lv.pending(agent("blocked"), [task(state="sent")], [], answered(ago=5), time.time()))
+        self.assertTrue(lv.pending(a, [task(state="sent")], [], answered(ago=5), time.time()))
 
 
 class Icon(unittest.TestCase):

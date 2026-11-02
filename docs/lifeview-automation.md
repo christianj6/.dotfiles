@@ -17,7 +17,7 @@ new plugin). The first version's evidence is `docs/lifeview-fallback-verificatio
 | 2. Settled with an open bro task → green without any CLI call | Pass: task `sent` → `ready` 61 s after the agent's answer, with the auto note |
 | 3. Agent-authored entry wins | Pass: `standby "custom line"` survived 8 forced ticks, herdr `working` throughout the first 5 |
 | 4. `--explain` | Pass: a green, a dim, and a guarded agent, each with its reason |
-| 5. Unit tests (`python3 test_lifeview.py`) | 21 pass |
+| 5. Unit tests (`python3 test_lifeview.py`) | 21 pass (25 with the grey-flash tests below) |
 | Bonus: herdr `blocked` → `blocked`, live | Pass: the scratch pane's trust prompt |
 
 ## What the plugin does now
@@ -199,3 +199,115 @@ the second time.
   agents share a cwd).
 - The project-busy guard firing (unit-tested only).
 - `[[startup]]` and exit-on-server-death, as in v1.
+
+## The grey flash between amber and green (fixed)
+
+Owner-reported: during the live icon test the ring went amber → **grey** →
+green. It must never pass through grey.
+
+### Cause, measured
+
+For an agent whose task is still `open`/`sent`, the dashboard's ring
+(`agentGroups()`) is the best-ranked of the task's `queued` and, while the
+agent's row says so, `working`. Once herdr says idle, the harness wrote
+`idle`, so `working` dropped out and the ring fell to **`queued`**. That's a
+higher rank than `idle`, but `.ag-ic.queued` only sets a dashed border with
+the default colour, so it looks grey. It stayed that way for the whole 60 s
+settle window, until auto-ready wrote `ready`.
+
+The task never left the board or lost its agent (the spec's first
+hypothesis). It was the second: nothing ranked above `queued` while the
+settle window ran.
+
+### Fix (plugin only, no prescient change)
+
+While an agent is **settling toward auto-ready**, meaning it would be
+marked ready once the settle window has passed with nothing else changing
+(`pending()`: `ready_check()` re-run with the clock moved forward by
+`LIFEVIEW_SETTLE_S`), the harness keeps its entry at `working`, line
+`harness: settling, auto-ready pending`. The entry's `ttl_s` is the settle
+window plus three ticks (90 s), so prescient's `_working_believable()`
+believes it although herdr says idle, and a dead plugin can't hold it for
+long. Every auto-ready guard still applies, so an agent that won't go green
+(a question, a task it started itself, a busy project, no task) is never
+held. In each tick the task is now marked ready *before* the status write, so
+the hold is released only after the ring is already green.
+
+Invariant, unit-tested (`GreyFlash` in `test_lifeview.py`): for an agent with
+one open bro task, the ring goes `working` → `ready` with nothing in between,
+and a task-less agent still drops to idle on the next tick.
+
+### Before the fix: 2 s samples of `/api/agent-board?fresh=1`
+
+The ring was computed as `agentGroups()` does, for the scratch agent's project,
+with one task `sent`. Transitions only (full trace: 69 samples):
+
+    10:21:52 claude-v2-wnp1=working                tasks=['queued'] -> ring=working [amber]
+    10:22:20 claude-v2-wnp1=working(herdr done)    tasks=['queued'] -> ring=working [amber]
+    10:22:23 claude-v2-wnp1=idle(herdr done)       tasks=['queued'] -> ring=queued  [GREY]
+      ... 30 consecutive grey samples ...
+    10:23:22 claude-v2-wnp1=idle(herdr done)       tasks=['queued'] -> ring=queued  [GREY]
+    10:23:24 claude-v2-wnp1=idle(herdr done)       tasks=['ready']  -> ring=ready   [GREEN]
+
+    [lifeview-fallback] 10:21:52 <scratch repo>: wN:p1 -> working (harness: herdr reports working)
+    [lifeview-fallback] 10:22:22 <scratch repo>: wN:p1 -> idle (harness: herdr idle)
+    [lifeview-fallback] 10:23:23 bro tk-aebc58a403 -> ready (auto) for claude-v2-wnp1: settled 65s after answering; ...
+
+### After the fix: the identical run
+
+The same prompt and a new task (the earlier scratch tasks were dropped first,
+so they show `dropped`, drawn dim, and can't mask the ring). Transitions only:
+
+    10:28:44 claude-v2-wnp1=idle(herdr working)    tasks=['queued', ...] -> ring=queued  [GREY]   (before amber: tick lag)
+    10:28:50 claude-v2-wnp1=working                tasks=['queued', ...] -> ring=working [amber]
+    10:29:13 claude-v2-wnp1=working(herdr done)    tasks=['queued', ...] -> ring=working [amber]  <- the hold
+    10:30:11 claude-v2-wnp1=idle(herdr done)       tasks=['ready', ...]  -> ring=ready   [GREEN]
+
+    grey/dim samples between amber and green: 0 (of 69 samples)
+
+    [lifeview-fallback] 10:28:50 <scratch repo>: wN:p1 -> working (harness: herdr reports working)
+    [lifeview-fallback] 10:29:20 <scratch repo>: wN:p1 -> working (harness: settling, auto-ready pending)
+    [lifeview-fallback] 10:30:11 bro tk-03a699f5de -> ready (auto) for claude-v2-wnp1: settled 61s after answering; ...
+    [lifeview-fallback] 10:30:11 <scratch repo>: wN:p1 -> idle (harness: herdr idle)
+
+An intermediate run (before the ready-first reorder) logged `-> idle` and then
+`-> ready` in the same tick. A board read cached between the two writes
+(prescient memoises for 2 s) could have shown grey briefly. The reorder closes
+that.
+
+### No regression: an agent with no open task
+
+    10:31:23 claude-v2-wnp1=working             -> ring=working [amber]
+    10:31:38 claude-v2-wnp1=working(herdr done) -> ring=working [amber]
+    10:31:44 claude-v2-wnp1=idle(herdr done)    -> ring=dropped [dim]
+
+    [lifeview-fallback] 10:31:43 <scratch repo>: wN:p1 -> idle (harness: herdr idle)
+
+It was dim 6 s after herdr said done, with no hold.
+
+### Also fixed on the way
+
+A closed pane's harness entry in a repo with no live agent left was never
+swept, because ticks only visited repos with live agents. The plugin now keeps
+sweeping every repo it has written to (in memory, so it resets on a daemon
+restart). Shown live: `wN:p1 harness entry removed` after the scratch
+workspace closed.
+
+### Ways grey can still show
+
+- **Before amber, up to one tick (10 s)**: a task `sent` to an agent shows
+  `queued` (grey) until the plugin's next tick sees herdr `working`
+  (10:28:44 above). This is not between working and ready, but the owner
+  can see it. Raising the tick rate would shorten it.
+- **An agent that won't be auto-readied** (its last message is a question,
+  more than one open task, a busy project) falls to `queued` once idle. That's
+  steady grey, not a flash, and arguably right ("waiting for it"). The
+  dashboard has no colour for "waiting on the owner's answer".
+- **An agent that writes its own `prescient status idle`** without having run
+  `bro task start`: its fresh entry wins over the hold, so it's grey through
+  the settle window. Agents that follow the instructions run `start`, which
+  makes the task `working` (amber) instead.
+- **bro's POST fails**: the task stays open and auto-ready no longer passes,
+  so the hold is released and it's grey until a later tick succeeds.
+- **The plugin dies mid-settle**: the hold's `ttl_s` (90 s) runs out, then
+  grey.
