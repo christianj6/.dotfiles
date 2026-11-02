@@ -6,3 +6,5 @@ priorities.json
 .DS_Store
 spikes/
 .pytest_cache/
+prescient-status.json
+.prescient-status.json.*
