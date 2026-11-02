@@ -20,7 +20,7 @@ omp NEVER implements in its own session. Implementation goes to claude in the sa
 
 The FIRST act of any new session, before anything else: open a herdr pane to the right of your own pane and start a claude workhorse in it.
 1. `herdr pane split --current --direction right --cwd "$PWD" --no-focus` — note the returned pane id.
-2. `herdr agent start claude-<project-dir-name> --kind claude --pane <returned-pane-id>` — pane name follows `claude-<project-dir-name>` (e.g. claude-heinzel, claude-prescient, claude-topical). Reuse the existing pane if it is already up (check `herdr list` first).
+2. `herdr agent start claude-<project-dir-name> --kind claude --pane <returned-pane-id>` — the name given here is temporary: the `claude-name` plugin renames the pane to `claude-v<major>-<pane>` within seconds (`wD:pA` -> `claude-v2-wdpa`). Address it by that name or by pane id, never by the project name. Reuse the existing pane if it is already up (check `herdr agent list` first).
 3. Send a short handshake prompt, not silence: role split (claude = dev workhorse who plans and implements; omp = coordinator who specs, verifies, reviews), house rules (receive ONE well-specified task at a time; report what changed and what was run; no edits outside the spec without saying so; specs arrive as file paths and reports go back as file paths; no messaging other projects' claude panes — anything cross-project routes through omp).
 
 ## Default flow per incoming request

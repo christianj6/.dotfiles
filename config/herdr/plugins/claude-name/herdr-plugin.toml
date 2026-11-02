@@ -1,0 +1,18 @@
+id = "dotfiles.claude-name"
+name = "claude pane names"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Gives every claude pane a unique, stable roster name: claude-v<major>-<pane>."
+platforms = ["linux", "macos"]
+
+# [[startup]] fires only at server start and does not supervise (see
+# omp-watch's notes), so the event hook is the recovery path: any agent status
+# change launches names.py, and the singleton lock makes that a no-op while an
+# instance is already running. Both use --daemon so the instance outlives the
+# hook process; a daemon exits on its own once the server is gone.
+[[startup]]
+command = ["python3", "names.py", "--daemon"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["python3", "names.py", "--daemon"]

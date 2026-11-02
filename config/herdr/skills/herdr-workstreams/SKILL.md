@@ -92,9 +92,13 @@ and the same shape works for a second omp.
    then `enter`. Never pre-approve directories in bulk. Panes start in auto
    mode from `config/claude/settings.json`; do not pass a permission flag.
 
-4. **Name it, then talk to it** with the peer-comms recipes below:
+4. **Talk to it** with the peer-comms recipes below. Do not name claude panes
+   by hand: the `claude-name` plugin owns those names and sets
+   `claude-v<major>-<pane>` (`wD:pA` -> `claude-v2-wdpa`) within seconds,
+   replacing any other name once the pane is not mid-turn. Address a claude
+   pane by that name, or by pane id, which always works. To name an omp you
+   started: `herdr agent rename <pane_id> <name>`.
 
-       herdr agent rename <pane_id> <name>
        omp-peer send <name> "<instruction>" --wait-reply   # omp peers
        herdr agent prompt <name> "<instruction>"           # claude panes
 
@@ -170,9 +174,10 @@ raw pane send-text, hub/IRC). Technically every agent in a herdr pane can
 reach every other one (the herdr CLI is on every pane's PATH and
 `HERDR_ENV=1` reaches agents through the env chain); the topology above
 decides who actually should.
-The address book is `herdr agent list` (names + pane ids). Give every agent
-you start a name (`agent start` takes one); adopt an existing unnamed one
-with `herdr agent rename <pane_id> <name>`.
+The address book is `herdr agent list` (names + pane ids). omp and claude
+panes are named automatically (`omp-v<N>-<pane>`, `claude-v<major>-<pane>`).
+Any other agent you start needs a name: `agent start` takes one, and
+`herdr agent rename <pane_id> <name>` adopts an unnamed one.
 
 Send with the `omp-peer` helper (on PATH), NOT `agent prompt --wait`:
 omp lifecycle state reaches herdr via a ~3s transcript poller, so fast turns

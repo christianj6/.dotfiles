@@ -394,6 +394,11 @@ fi
 # launch -- same shape as the omp plugin marketplace calls above.
 herdr plugin link ~/.dotfiles/config/herdr/plugins/omp-watch || true
 
+# Link the claude pane-naming plugin (config/herdr/plugins/claude-name/): keeps
+# every claude pane named claude-v<major>-<pane>. It needs no separate start: its
+# [[events]] hook launches it on the next agent status change. Same shape as above.
+herdr plugin link ~/.dotfiles/config/herdr/plugins/claude-name || true
+
 # Discord bridge plugin (config/herdr/plugins/agent-discord/): provisions
 # the venv for the persistent bot (discord.py is the plugin's one
 # non-stdlib dependency -- the notify hook itself is stdlib-only), links
