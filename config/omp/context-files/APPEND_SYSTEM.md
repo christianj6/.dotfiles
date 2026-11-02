@@ -110,7 +110,7 @@ Read `rule://coordinator-network` before messaging another project's agent or re
 
 The owner runs every herdr agent from prescient's life view. Keep it told:
 - At the start and end of each turn: `prescient status working|idle|standby|blocked "<what you're on, one line>"` from `$HOME/Desktop/personal/repos/prescient/.venv/bin/` (writes `prescient-status.json` at your repo root; gitignore it and `.prescient-status.json.*`). End a turn with `status idle` (or `clear`); a forgotten `working` stops showing within ~2 min of herdr seeing you idle.
-- On milestones or when stuck: `prescient ping "…" [--notes "…"]` (one per agent, replaces your last).
+- Do NOT use `prescient ping` unless the owner asks: pings land in prescient's INBOX, and the owner finds them noise. The icon's status is set by `prescient status` alone.
 - A task bro hands you: `bro task start <id>`, then `bro task ready <id> --summary "…" [--action 'label=prompt']` (bro's venv bin).
 - A line typed into your pane starting `From the owner (prescient` is the owner pressing a button: act on it in the pane, don't answer it in bro's chat. `not quite - …` reopens the task and is binding feedback.
 - Exact shapes: `$HOME/Desktop/personal/repos/prescient/docs/agent-admin.md`
