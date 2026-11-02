@@ -356,6 +356,94 @@ class ActivityLine(unittest.TestCase):
                                    lambda a: working_tail(activity="something else")), ("keep", None))
 
 
+def turn(calls=2, span=30, said="Refactoring the parser.", key="2026-11-02T12:00:00.000+01:00", prompt="do it", tool="Bash"):
+    return {"key": key, "start": time.time() - span, "prompt": prompt, "calls": calls, "said": said, "tool": tool}
+
+
+class AutoTask(unittest.TestCase):
+    SHOWN = {"claude-v2-wxp1"}
+
+    def chk(self, a=None, tasks=None, t=None, shown=SHOWN, created=frozenset()):
+        return lv.autotask_check(a or agent("working"), tasks or [], t or turn(), shown, time.time(), created)
+
+    def test_real_work_session_opens_a_titled_task(self):
+        title, why = self.chk()
+        self.assertEqual(title, "auto: Refactoring the parser.")
+        title, _ = self.chk(t=turn(said="", prompt="Fix the login bug in auth.py please"))
+        self.assertEqual(title, "auto: Fix the login bug in auth.py please")
+        title, _ = self.chk(t=turn(said="", prompt="", tool="Read"))
+        self.assertEqual(title, "auto: running Read")
+        title, _ = self.chk(t=turn(said="x" * 500))
+        self.assertLessEqual(len(title), 6 + 114)
+
+    def test_threshold_blocks_trivial_turns(self):
+        self.assertIsNone(self.chk(t=turn(calls=0, span=600))[0])          # an answer, no tool call
+        self.assertIsNone(self.chk(t=turn(calls=1, span=30))[0])           # one quick lookup
+        self.assertIsNotNone(self.chk(t=turn(calls=1, span=lv.WORK_MIN_SPAN_S + 5))[0])   # one long tool run
+        self.assertIsNotNone(self.chk(t=turn(calls=lv.WORK_MIN_TOOL_CALLS, span=1))[0])
+
+    def test_never_duplicates(self):
+        for state in lv.COVERING:                                          # any covering task, handed or auto
+            self.assertIsNone(self.chk(tasks=[task(state=state)])[0], state)
+        self.assertIsNotNone(self.chk(tasks=[task(state="done")])[0])      # a finished one doesn't cover new work
+        t = turn()
+        marker = lv.session_marker(agent("working"), t)
+        self.assertIsNone(self.chk(t=t, created={marker})[0])              # opened this run
+        old = task(state="done", history=[{"at": at(60), "state": "sent", "by": "lifeview-harness", "note": "opened ... " + marker}])
+        self.assertIsNone(self.chk(tasks=[old], t=t)[0])                   # opened before a restart, since finished
+        self.assertIsNotNone(self.chk(tasks=[old], t=turn(key="2026-11-02T13:00:00.000+01:00"))[0])  # a new turn
+
+    def test_other_gates(self):
+        self.assertIsNone(self.chk(a=agent("idle"))[0])
+        self.assertIsNone(self.chk(a=agent("blocked"))[0])
+        self.assertIsNone(self.chk(shown=None)[0])                         # prescient down
+        self.assertIsNone(self.chk(shown={"someone-else"})[0])            # not on the life view
+        self.assertIsNone(self.chk(t=turn(key=None))[0])                   # session can't be identified
+        old = lv.AUTO_TASK
+        lv.AUTO_TASK = False
+        try:
+            self.assertIsNone(self.chk()[0])
+        finally:
+            lv.AUTO_TASK = old
+
+    def test_turn_that_just_ended_still_gets_its_task(self):
+        done_turn = dict(turn(calls=3, span=40), end=time.time() - 20)
+        self.assertIsNotNone(self.chk(a=agent("done"), t=done_turn)[0])
+        old_turn = dict(turn(calls=3, span=40), end=time.time() - lv.JUST_DONE_S - 30)
+        self.assertIsNone(self.chk(a=agent("done"), t=old_turn)[0])           # no tasks for old turns at daemon start
+        short = dict(turn(calls=1, span=200), start=time.time() - 60, end=time.time() - 30)
+        self.assertIsNone(self.chk(a=agent("idle"), t=short)[0])              # a finished turn's span is start..end
+
+    def test_task_opened_after_the_answer_still_greens(self):
+        key = datetime.fromtimestamp(time.time() - 200).astimezone().isoformat(timespec="milliseconds")
+        t = task(state="sent", history=[{"at": at(5), "state": "sent", "by": "lifeview-harness",
+                                         "note": f"opened by the lifeview harness ... [lifeview-session wX:p1@{key}]"}])
+        got, why = lv.ready_check(agent("done"), [t], [], answered(ago=120), time.time() + 70)
+        self.assertEqual(got and got["id"], "tk-1", why)
+
+    def test_harness_created_task_is_auto_ready_eligible(self):
+        t = task(state="sent", history=[{"at": at(300), "state": "sent", "by": "lifeview-harness", "note": "opened by the lifeview harness"}])
+        got, why = lv.ready_check(agent("done"), [t], [], answered(ago=120), time.time())
+        self.assertEqual(got["id"], "tk-1", why)
+
+    def test_scan_turn_counts_back_to_the_prompt(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.jsonl"
+            p.write_bytes(b"\n".join(line(e) for e in [
+                {"type": "user", "message": {"role": "user", "content": "old turn"}, "timestamp": ts(500)},
+                {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Old"}]}, "timestamp": ts(490)},
+                {"type": "user", "message": {"role": "user", "content": "Refactor the parser"}, "timestamp": ts(100)},
+                {"type": "user", "isMeta": True, "message": {"role": "user", "content": "<meta>"}, "timestamp": ts(99)},
+                {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "On it."}, {"type": "tool_use", "name": "Read"}]}, "timestamp": ts(90)},
+                {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "x"}]}, "timestamp": ts(80)},
+                {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Edit"}, {"type": "tool_use", "name": "Bash"}]}, "timestamp": ts(70)},
+            ]) + b"\n")
+            t = lv.scan_turn(p)
+            self.assertEqual((t["calls"], t["prompt"], t["said"], t["tool"]), (3, "Refactor the parser", "On it.", "Bash"))
+            self.assertAlmostEqual(time.time() - t["start"], 100, delta=3)
+            self.assertIsNotNone(t["key"])
+
+
 class Icon(unittest.TestCase):
     def test_ranks_like_the_dashboard(self):
         self.assertEqual(lv.icon_state("idle", ["ready"]), "ready")

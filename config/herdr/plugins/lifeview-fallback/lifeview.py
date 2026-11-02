@@ -52,6 +52,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -80,6 +81,18 @@ AUTO_READY_STARTED = os.environ.get("LIFEVIEW_AUTO_READY_STARTED", "0") == "1"
 BRO_URL = os.environ.get("BRO_URL", "http://127.0.0.1:8766")
 PRESCIENT_URL = os.environ.get("PRESCIENT_URL", "http://127.0.0.1:8765")
 OPEN_TASK = ("open", "sent", "working")
+# Auto-task: the harness opens a bro task for real work no task covers.
+AUTO_TASK = os.environ.get("LIFEVIEW_AUTO_TASK", "1") != "0"
+WORK_MIN_TOOL_CALLS = int(os.environ.get("LIFEVIEW_WORK_MIN_TOOL_CALLS", "2"))
+WORK_MIN_SPAN_S = 90         # ... or one tool call and a turn running this long
+JUST_DONE_S = 120            # a turn that ended this recently still gets its task (short sessions end between ticks)
+# A task in any of these states already covers the agent's work: open/sent/
+# working (handed or taken), reopened (the owner's "not quite" rework),
+# noted (bro's list), ready (awaiting the owner's verdict - follow-up work
+# belongs to it).
+COVERING = ("open", "sent", "working", "reopened", "noted", "ready")
+HARNESS_BY = "lifeview-harness"
+PLUGIN_CONFIG = Path.home() / ".config" / "herdr" / "plugins" / "config" / "dotfiles.lifeview-fallback" / "lifeview.env"
 BUSY = ("working", "blocked")
 
 # herdr agent_status -> (state, line) for the harness entry
@@ -362,14 +375,17 @@ def classify(line: bytes) -> Optional[Dict]:
     blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
     blocks = [b for b in blocks if isinstance(b, dict)]
     if role != "assistant":
-        prompt = role == "user" and not any(b.get("type") == "tool_result" for b in blocks)
-        return {"verdict": "working", "at": at, "text": "", "prompt": prompt}
+        prompt = role == "user" and not e.get("isMeta") and not any(b.get("type") == "tool_result" for b in blocks)
+        ptext = " ".join(str(b.get("text") or "") for b in blocks if b.get("type") == "text").strip() if prompt else ""
+        return {"verdict": "working", "at": at, "text": "", "prompt": prompt, "prompt_text": ptext}
     if e.get("isApiErrorMessage") or msg.get("stopReason") == "error":
         return {"verdict": "error", "at": at, "text": ""}
     text = " ".join(str(b.get("text") or "") for b in blocks if b.get("type") == "text").strip()
-    tools = [b.get("name") for b in blocks if b.get("type") in ("tool_use", "toolCall") and b.get("name")]
-    if tools or any(b.get("type") in ("tool_use", "toolCall") for b in blocks):
-        return {"verdict": "working", "at": at, "text": "", "said": text, "tool": tools[-1] if tools else None}
+    calls = [b for b in blocks if b.get("type") in ("tool_use", "toolCall")]
+    tools = [b.get("name") for b in calls if b.get("name")]
+    if calls:
+        return {"verdict": "working", "at": at, "text": "", "said": text, "tool": tools[-1] if tools else None,
+                "calls": len(calls)}
     if not text:
         return {"verdict": "working", "at": at, "text": ""}
     return {"verdict": "answered", "at": at, "text": text, "said": text}
@@ -394,6 +410,85 @@ def activity_line(state: str, tail: Optional[Dict], now: float) -> str:
     else:
         line = "working · starting (prompt received)" if recent else "working (no recent transcript activity)"
     return line[:200]
+
+
+def scan_turn(path: Path, max_bytes: int = 8 * 1024 * 1024, max_entries: int = 3000) -> Dict:
+    """The current turn of a transcript, back to its prompt: {key, start,
+    prompt, calls, said, tool}. key is the prompt's own timestamp (one turn =
+    one work session); None when the prompt is out of reach, and then no
+    task is opened (a session that can't be identified can't be deduped)."""
+    out: Dict = {"key": None, "start": None, "end": None, "prompt": "", "calls": 0, "said": "", "tool": None}
+    seen = 0
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            pos, carry, scanned, first = size, b"", 0, True
+            f.seek(max(size - 1, 0))
+            terminated = size > 0 and f.read(1) == b"\n"
+            while pos > 0 and scanned < max_bytes and seen < max_entries:
+                n = min(65536, pos)
+                pos -= n
+                f.seek(pos)
+                parts = (f.read(n) + carry).split(b"\n")
+                scanned += n
+                carry, lines = parts[0], parts[1:]
+                if first:
+                    first = False
+                    if not terminated and lines:
+                        lines = lines[:-1]
+                for ln in reversed(lines):
+                    v = classify(ln)
+                    if not v:
+                        continue
+                    seen += 1
+                    if out["end"] is None:
+                        out["end"] = v.get("at")
+                    if v.get("prompt"):
+                        if v.get("at") is not None:
+                            out.update(key=datetime.fromtimestamp(v["at"]).astimezone().isoformat(timespec="milliseconds"),
+                                       start=v["at"], prompt=v.get("prompt_text") or "")
+                        return out
+                    out["calls"] += v.get("calls", 0)
+                    out["said"] = out["said"] or v.get("said") or ""
+                    out["tool"] = out["tool"] or v.get("tool")
+    except OSError:
+        pass
+    return out
+
+
+def session_marker(agent: Dict, turn: Dict) -> str:
+    return f"[lifeview-session {agent.get('pane_id')}@{turn.get('key')}]"
+
+
+def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], now: float,
+                   created: set = frozenset()) -> Tuple[Optional[str], str]:
+    """(title for a new task, why) - or (None, why not). Opens a task only for
+    a real work session no task covers, once per session."""
+    if not AUTO_TASK:
+        return None, "auto-task off (LIFEVIEW_AUTO_TASK=0)"
+    herdr = agent.get("agent_status") or "unknown"
+    if herdr in ("idle", "done"):
+        end = turn.get("end")
+        if end is None or now - end > JUST_DONE_S:
+            return None, "not working, and no turn ended in the last 2 min"
+    elif herdr != "working":
+        return None, f"herdr says {herdr}"
+    if shown is None or (agent.get("name") or agent.get("pane_id")) not in shown:
+        return None, "not on the life view (prescient down, or a project it doesn't show)"
+    covering = [t for t in tasks_of(agent, tasks) if t.get("state") in COVERING]
+    if covering:
+        return None, "covered by " + ", ".join(f"{t['id']} ({t['state']})" for t in covering)
+    if not turn.get("key"):
+        return None, "the turn's prompt is out of reach: session can't be identified"
+    marker = session_marker(agent, turn)
+    if marker in created or any(marker in str(h.get("note") or "") for t in tasks for h in t.get("history") or []):
+        return None, "a task was already opened for this session"
+    calls = turn.get("calls", 0)
+    span = (turn.get("end") if herdr in ("idle", "done") and turn.get("end") else now) - (turn.get("start") or now)
+    if not (calls >= WORK_MIN_TOOL_CALLS or (calls >= 1 and span > WORK_MIN_SPAN_S)):
+        return None, f"trivial so far: {calls} tool call(s), {span:.0f}s (needs {WORK_MIN_TOOL_CALLS}, or 1 and >{WORK_MIN_SPAN_S}s)"
+    what = turn.get("said") or turn.get("prompt") or (f"running {turn['tool']}" if turn.get("tool") else "work")
+    return "auto: " + snippet(what, 114), f"work session: {calls} tool calls, {span:.0f}s, no task covering it"
 
 
 def _omp_newest_session():
@@ -470,9 +565,19 @@ def tasks_of(agent: Dict, tasks: list) -> list:
     return [t for t in tasks if who(t) in keys]
 
 
+SESSION_RE = re.compile(r"\[lifeview-session [^@\]]+@([^\]]+)\]")
+
+
 def task_at(t: Dict) -> Optional[float]:
+    """When the task was last handed over or moved. For a task the harness
+    opened (and nobody moved since), its work session's start: it may be
+    opened after that session's answer, which must still count."""
     hist = t.get("history") or []
-    return epoch((hist[-1].get("at") if hist else None) or t.get("created"))
+    last = hist[-1] if hist else {}
+    m = SESSION_RE.search(str(last.get("note") or "")) if last.get("by") == HARNESS_BY else None
+    if m and epoch(m.group(1)) is not None:
+        return epoch(m.group(1))
+    return epoch(last.get("at") or t.get("created"))
 
 
 def ready_check(agent: Dict, tasks: list, project_busy: List[str], tail: Dict, now: float) -> Tuple[Optional[Dict], str]:
@@ -544,6 +649,40 @@ def bro_tasks() -> Optional[list]:
     if not isinstance(got, dict):
         return None
     return [t for t in got.get("tasks") or [] if isinstance(t, dict) and t.get("id")]
+
+
+def bro_bin() -> Optional[str]:
+    """bro's CLI (task creation has no HTTP route): LIFEVIEW_BRO_BIN, else
+    BRO_BIN= in the plugin's local config file (outside this repo), else PATH."""
+    if os.environ.get("LIFEVIEW_BRO_BIN"):
+        return os.environ["LIFEVIEW_BRO_BIN"]
+    try:
+        for ln in PLUGIN_CONFIG.read_text().splitlines():
+            k, _, v = ln.partition("=")
+            if k.strip() == "BRO_BIN" and v.strip():
+                return os.path.expanduser(os.path.expandvars(v.strip()))
+    except OSError:
+        pass
+    return shutil.which("bro")
+
+
+def open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
+    """`bro task add` for the agent, left `sent` (it may still `start` it).
+    By the harness, so auto-ready's started-by-the-agent exclusion never
+    applies. Returns the new task id, or None."""
+    exe = bro_bin()
+    if not exe:
+        return None
+    who = agent.get("name") or agent["pane_id"]
+    note = (f"opened by the lifeview harness: {who} began work with no task covering it "
+            f"(LIFEVIEW_AUTO_TASK=0 disables this) {session_marker(agent, turn)}")
+    try:
+        proc = subprocess.run([exe, "task", "add", title, "--dest", f"agent:{who}", "--to", who,
+                               "--by", HARNESS_BY, "--note", note], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.match(r"(tk-[0-9a-f]+) is open", proc.stdout.strip())
+    return m.group(1) if proc.returncode == 0 and m else None
 
 
 def mark_ready(t: Dict, agent: Dict, tail: Dict, quiet: float) -> Optional[Dict]:
@@ -647,10 +786,12 @@ class Harness:
         self.failed: Dict[str, str] = {}      # root -> last error, so a stuck repo logs once
         self.last_why: Dict[str, str] = {}    # pane -> last auto-ready verdict worth logging
         self.seen_roots: set = set()          # repos written to: still swept once their agents are gone
+        self.created: set = set()             # session markers opened this run (bro's list is the durable record)
 
     def tick(self) -> None:
         w = World()
-        tasks = bro_tasks() if AUTO_READY else None
+        tasks = bro_tasks() if (AUTO_READY or AUTO_TASK) else None
+        self.auto_task(w, tasks)
         tails = self.tails(w, tasks)
         # Mark ready BEFORE the status write: the hold is released only once
         # the task is green, so no board read can land between the two.
@@ -685,6 +826,41 @@ class Harness:
                 if self.failed.get(root) != str(exc):
                     self.failed[root] = str(exc)
                     log(f"{root}: {exc}")
+
+    def auto_task(self, w: World, tasks: Optional[list]) -> None:
+        """Open a task for each agent starting real work no task covers; it
+        joins `tasks` at once, so this tick's auto-ready and hold see it."""
+        if not AUTO_TASK or tasks is None:
+            return
+        board = http_json(PRESCIENT_URL + "/api/agent-board")
+        shown = {r.get("name") for r in (board or {}).get("agents") or []} if board else None
+        now = time.time()
+        for a in w.agents:
+            herdr = a.get("agent_status")
+            if herdr not in ("working", "idle", "done") or any(t.get("state") in COVERING for t in tasks_of(a, tasks)):
+                continue                      # cheap checks first: no transcript read
+            path = transcript_of(a, w.agents)
+            if not path:
+                continue
+            if herdr != "working":            # only a turn that just ended: a cheap tail look first
+                last = scan_tail(path).get("at")
+                if last is None or now - last > JUST_DONE_S:
+                    continue
+            turn = scan_turn(path)
+            title, why = autotask_check(a, tasks, turn, shown, now, self.created)
+            if not title:
+                continue
+            marker = session_marker(a, turn)
+            self.created.add(marker)          # once per session, even if bro's list lags or the add fails
+            tid = open_task(a, title, turn)
+            who = a.get("name") or a["pane_id"]
+            if tid:
+                log(f"bro {tid} opened (auto) for {who}: {why}")
+                tasks.append({"id": tid, "state": "sent", "agent": who, "dest": f"agent:{who}",
+                              "history": [{"at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                                           "state": "sent", "by": HARNESS_BY, "note": marker}]})
+            else:
+                log(f"auto-task for {who} failed (bro CLI: {bro_bin() or 'not found'})")
 
     @staticmethod
     def tails(w: World, tasks: Optional[list]) -> Dict[str, Dict]:
@@ -765,6 +941,9 @@ def explain() -> None:
         print("  bro tasks: " + (", ".join(f"{t['id']} {t['state']}" for t in mine if t.get("state") not in ("done", "dropped")) or "none open"))
         if tasks is not None:
             print("  auto-ready: " + ready_check(a, tasks, w.project_busy(a), tail, now)[1])
+            turn = scan_turn(path) if path else {}
+            shown = set(rows) if board else None
+            print("  auto-task: " + autotask_check(a, tasks, turn, shown, now)[1])
         open_tasks = [t for t in mine if t.get("state") not in ("done", "dropped")]
         print("  why: " + why_icon(icon, herdr, status, e, open_tasks))
 

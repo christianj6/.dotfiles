@@ -404,8 +404,11 @@ herdr plugin link ~/.dotfiles/config/herdr/plugins/claude-name || true
 # herdr-derived state into a project's prescient-status.json when its agent
 # hasn't reported itself (never over a fresh agent-authored entry), and
 # auto-marks a settled agent's one unacknowledged bro task ready
-# (LIFEVIEW_AUTO_READY=0 disables). Like claude-name, its [[events]] hook
-# launches it on the next status change.
+# (LIFEVIEW_AUTO_READY=0 disables), and opens a task for real work no task
+# covers (LIFEVIEW_AUTO_TASK=0 disables). Auto-task needs bro's CLI: set
+# BRO_BIN=<path> in ~/.config/herdr/plugins/config/dotfiles.lifeview-fallback/lifeview.env
+# (local only, never versioned) or put `bro` on PATH. Like claude-name, its
+# [[events]] hook launches it on the next status change.
 herdr plugin link ~/.dotfiles/config/herdr/plugins/lifeview-fallback || true
 
 # Discord bridge plugin (config/herdr/plugins/agent-discord/): provisions

@@ -462,3 +462,126 @@ since the task's point was the green itself.
   coordinator did this live: `idle`, 2 s old, herdr working).
 - **An agent's `working` with a long `ttl_s`**: believed for its ttl, as
   asked.
+
+## Auto-task: the harness opens the task for work nobody tasked
+
+Owner decision 2026-11-02: agents should auto-create tasks for the work they
+do. Before this, an agent that did real work without being handed a bro task
+went amber → dim and never green, because green needs a task in `ready`.
+
+### What it does (`autotask_check()`, `scan_turn()`)
+
+- **A work session is one turn**, identified by its prompt's own timestamp
+  (`scan_turn()` reads back to the prompt; tool results and claude `isMeta`
+  entries aren't prompts).
+- **Threshold (no spam)**: at least `LIFEVIEW_WORK_MIN_TOOL_CALLS` (2) tool
+  calls, or one tool call and a turn running over 90 s. A plain answer or a
+  single quick lookup never opens a task.
+- **When**: while herdr says `working`, or for a turn that **ended in the
+  last 2 min**. The first live run showed why the second case is needed: a
+  27 s, three-call turn reached two calls between ticks and ended before the
+  next one. It went amber → dim with no task. Older turns never get a task,
+  so a daemon start doesn't backfill.
+- **Never duplicates**: no task when any task already covers the agent
+  (`open`, `sent`, `working`, `reopened`, `noted`, or `ready`, where follow-up
+  work belongs to the task awaiting the verdict), or when this session was
+  already given one. That is checked against this run's memory *and* against
+  a `[lifeview-session <pane>@<prompt time>]` marker in every task's history
+  notes, so it survives a daemon restart.
+- **Only agents the life view shows** (rows of `/api/agent-board`), so with
+  prescient down nothing is opened.
+- **Created through bro's CLI** (`bro task add ... --dest agent:<name> --by
+  lifeview-harness`; bro has no HTTP route for task creation), and left
+  `sent`, so the agent may still `start` it. The CLI's location comes from
+  `LIFEVIEW_BRO_BIN`, else `BRO_BIN=` in the plugin's local config file
+  (`~/.config/herdr/plugins/config/dotfiles.lifeview-fallback/lifeview.env`,
+  never versioned), else `PATH`.
+- **Title**: `auto: ` plus the turn's newest assistant text, else its prompt,
+  else `running <tool>` (at most 120 chars). The prompt comes before
+  `running <tool>`, unlike the hover rule, because `auto: running Bash` says
+  nothing about the work.
+- **Pairs with auto-ready**: the task is by `lifeview-harness`, so the
+  started-by-the-agent exclusion doesn't apply. Its reference time for the
+  "answer newer than the handover" guard is the session's start (from the
+  marker), so a task opened just after the answer still greens.
+- `LIFEVIEW_AUTO_TASK=0` turns it off.
+
+### 1. The full loop, with no task and no agent CLI call
+
+A scratch claude with no bro task, prompted to make three foreground tool
+calls (a 15 s sleep, `wc -l`, `wc -w`) and reply, with no `prescient`/`bro`
+commands. 2 s samples, transitions only:
+
+    bro tasks for claude-v2-wrp1 before: []
+    11:58:13 claude-v2-wrp1=idle(herdr working) tasks=[]          -> ring=idle    [dim]   (tick lag)
+    11:58:19 claude-v2-wrp1=working             tasks=[]          -> ring=working [amber] hover='working · starting (prompt received)'
+    11:58:39 claude-v2-wrp1=working             tasks=['queued']  -> ring=working [amber] hover='working · running Bash'
+    11:58:41 claude-v2-wrp1=working(herdr done) tasks=['queued']  -> ring=working [amber]   <- settle hold
+    11:59:50 claude-v2-wrp1=idle(herdr done)    tasks=['ready']   -> ring=ready   [GREEN]
+    grey/dim samples between amber and green: 0
+
+    [lifeview-fallback] 11:58:38 bro tk-5f2131c13d opened (auto) for claude-v2-wrp1: work session: 2 tool calls, 26s, no task covering it
+    [lifeview-fallback] 11:59:50 bro tk-5f2131c13d -> ready (auto) for claude-v2-wrp1: settled 70s after answering; one open task tk-5f2131c13d
+
+`bro task list --all`, then the record:
+
+    tk-5f2131c13d  ready    2026-11-02T11:58  -> claude-v2-wrp1   auto: Do not run any prescient or bro commands in this session. Do these as three separate
+    "summary": "auto: On this second run, `words.txt` still has 3 lines and 3 words.",
+    history: open (bro)
+             sent (lifeview-harness) "opened by the lifeview harness: claude-v2-wrp1 began work with no task covering it
+                  (LIFEVIEW_AUTO_TASK=0 disables this) [lifeview-session wR:p1@2026-11-02T11:58:12.727+01:00]"
+             ready (claude-v2-wrp1)  "auto-marked ready by the lifeview harness: ... settled 70s after its last answer ..."
+
+The title is the prompt because the agent wrote no text before its tool calls.
+
+### 2. A trivial turn opens nothing
+
+"Without using any tools, reply with just the word: ok". No open task for the
+agent at every 10 s sample for 150 s, which covers the turn and the 2 min
+just-finished window. Afterwards `--explain` said `auto-task: not working, and
+no turn ended in the last 2 min`. A single quick lookup (one call, under 90 s)
+is unit-tested (`AutoTask.test_threshold_blocks_trivial_turns`).
+
+### 3. An owner hand-off is not duplicated
+
+A task was handed to the scratch agent first (`bro task add --dest
+agent:claude-v2-wrp1`), then the same three-call work was run:
+
+    before: ['tk-e16e5ed0ef sent by=lifeview-verification']
+    +10s .. +90s: the same single task while the agent works and settles
+    +100s: ['tk-e16e5ed0ef ready by=lifeview-verification']     <- auto-ready greened the hand-off itself
+
+There was no second task. The scratch tasks were dropped afterwards.
+
+### Live on the owner's agents
+
+Within minutes of going live it opened tasks for real agents: the
+coordinator in conversation with the owner, a work agent mid-deploy, this
+pane, and heinzel's claude. Those titles are project content, so they aren't
+reproduced here.
+
+### What can still produce a spurious task
+
+- **Conversation turns with tool calls.** A coordinator discussing a plan
+  with the owner reads a couple of files: 2+ tool calls, so it gets a task,
+  and then a green for "the conversation". Seen live within a minute of going
+  live. The threshold only filters turns with fewer than 2 tool calls (and
+  under 90 s).
+- **Every real turn is a new session.** Once the owner gives a verdict on one
+  (`done`/`dropped`), the agent's next multi-tool turn opens another, so a
+  busy agent produces a task per turn. While a task is `ready`, new work
+  folds into it instead.
+- **Turns that are housekeeping**: a status check, a cleanup, a reply that
+  "nothing of mine is running" (seen live on heinzel) all pass the
+  threshold.
+- **A misread prompt boundary** (an injected message read as a prompt) would
+  split a turn in two. Prompts are matched on claude's user entries without
+  tool results and without `isMeta`, and on omp's user messages.
+- **Titles are early**: the title is set when the task opens, from whatever
+  the turn said by then. The auto-ready summary (the final answer) is the
+  better description.
+
+What the thresholds buy: a plain answer, a single lookup, and any turn while a
+task already covers the agent never open one. They can't tell "work worth the
+owner's verdict" from "busy with something". Raising
+`LIFEVIEW_WORK_MIN_TOOL_CALLS` trades missed greens for fewer spurious ones.
