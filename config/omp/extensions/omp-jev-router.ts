@@ -15,15 +15,23 @@
 //      payload's reasoning/thinking parameter when present, else logs a
 //      recommendation to stderr.
 //
+// Jev runs through OpenRouter's decisions endpoint (/api/alpha/decisions).
+// Jev is a decisions model: OpenRouter refuses it on chat/completions.
+// Contract and live evidence: docs/jev-openrouter.md.
+//
 // Env:
-//   JEV_API_KEY    TypeSafe API key
-//   JEV_THRESHOLD  prune when relevance probability < threshold [0.1]
-//   JEV_MODE       "prune" (default) | "observe" | "off"
-//   JEV_ROUTE      "1" enables workhorse-first model routing [off]
+//   OPENROUTER_API_KEY  OpenRouter key, from the env or ~/.dotfiles/.env
+//   JEV_API_KEY         fallback key only; not required
+//   JEV_MODEL           Jev model on OpenRouter [~typesafe/jev-latest]
+//   JEV_ENDPOINT        decisions endpoint [https://openrouter.ai/api/alpha/decisions]
+//   JEV_THRESHOLD       prune when relevance probability < threshold [0.1]
+//   JEV_MODE            "prune" (default) | "observe" | "off"
+//   JEV_ROUTE           "1" enables workhorse-first model routing [off]
 
 export default function (api) {
   console.error("[jev-router] extension loaded");
-  var JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+  var JEV_ENDPOINT = process.env.JEV_ENDPOINT || "https://openrouter.ai/api/alpha/decisions";
+  var JEV_MODEL = process.env.JEV_MODEL || "~typesafe/jev-latest";
   var THRESHOLD = parseFloat(process.env.JEV_THRESHOLD || "0.1");
   var MODE = process.env.JEV_MODE || "prune";
   var ROUTE = process.env.JEV_ROUTE === "1"; // routing off by default
@@ -45,16 +53,25 @@ export default function (api) {
   var STUCK_MIN = 3; // identical tool outputs inside the window
   var CONFIRM_THRESHOLD = 0.5; // Jev noul below this vetoes escalation
 
+  // OPENROUTER_API_KEY first; JEV_API_KEY is a fallback only. Env wins over
+  // ~/.dotfiles/.env for each name.
   function getApiKey() {
-    if (process.env.JEV_API_KEY) return process.env.JEV_API_KEY;
+    var names = ["OPENROUTER_API_KEY", "JEV_API_KEY"];
+    var fileVals = {};
     try {
       var fs = require("fs");
       var envPath = require("os").homedir() + "/.dotfiles/.env";
       var src = fs.readFileSync(envPath, "utf-8");
       for (var line of src.split("\n")) {
-        if (line.startsWith("JEV_API_KEY=")) return line.split("=", 2)[1];
+        for (var n of names) {
+          if (line.startsWith(n + "=")) fileVals[n] = line.split("=", 2)[1];
+        }
       }
     } catch (e) {}
+    for (var name of names) {
+      if (process.env[name]) return process.env[name];
+      if (fileVals[name]) return fileVals[name];
+    }
     return null;
   }
 
@@ -151,9 +168,17 @@ export default function (api) {
   }
 
   api.on("before_provider_request", async function (event) {
+    // TODO: JEV_MODE=observe still prunes. Only "off" is checked here, and
+    // nothing below tests for "observe" (confirmed in a harness 2026-11-02).
+    // Owner to decide the intended observe semantics.
     if (MODE === "off") return;
 
     var payload = event.payload;
+    // TODO: only Responses-style payloads (payload.input) are handled. If
+    // opencode-go/deepseek-v4.1-flash sends chat-style payload.messages, the
+    // router is inert for the default model. A one-shot deepseek session on
+    // 2026-11-02 (omp api "openai-completions") loaded the extension but made
+    // no Jev call, which points that way. Needs an instrumented check.
     if (!payload || !payload.input || !Array.isArray(payload.input)) return;
 
     // Model routing: workhorse by default; escalation needs a
@@ -207,7 +232,7 @@ export default function (api) {
           instructions: "A coding agent tripped this deterministic signal: '" + struggle + "'. Given the user query and conversation summary, is the agent genuinely blocked or struggling on a problem that needs a stronger model for this request? Normal incremental progress (reads, edits, rebuilds that change results) is not struggling."
         };
       }
-      var body = JSON.stringify({ state: state, model: "jev-latest", questions: questions });
+      var body = JSON.stringify({ state: state, model: JEV_MODEL, questions: questions });
       var resp = await fetch(JEV_ENDPOINT, {
         method: "POST",
         headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
