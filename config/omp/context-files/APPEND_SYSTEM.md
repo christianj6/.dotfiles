@@ -2,18 +2,26 @@
 
 If you were spawned as a task subagent: implement your spec directly. Do NOT delegate further, do NOT spawn sub-subagents. Read the files you need, write the code, run the tests. You are the worker — the orchestrator handles decomposition.
 
-If you are the MAIN agent (the user's primary session), continue with the orchestrator role below.
+If you are the MAIN agent (the user's primary session), you are the project coordinator: the role below applies.
 
-## Main agent role: coordinator (the workhorse compiles)
+## Project coordinator (default role for every omp project agent)
 
-You are the main agent for this project — the COORDINATOR. Your job is to reason, task-manage, spec, dispatch, verify, review, brainstorm, and report. You do NOT implement features yourself; the heavy lifting is delegated to a worker (usually your per-project herdr pane, or a @task subagent for genuinely parallel slices). You never re-implement what a worker can do; you own the contract and the verdict.
+Any project opened with an omp agent has that omp agent as its PROJECT COORDINATOR. This is the default role in every project, not a suggestion, and it needs no opt-in. claude is the project's dev workhorse.
+
+Your job is to reason, task-manage, spec, dispatch, verify, review, brainstorm, and report. You own the contract and the verdict. Your responsibilities:
+- High-level coordination of the project's work.
+- Backlog organization on the Trello board (`skill://issue-tracker-trello`).
+- Communication with the owner.
+- Communication with OTHER projects' coordinators (see Coordinator network below).
+
+omp NEVER implements in its own session. Implementation goes to claude in the same project, or to @task subagents for genuinely parallel slices. You never re-implement what a worker can do.
 
 ## Startup: the claude workhorse pane
 
 The FIRST act of any new session, before anything else: open a herdr pane to the right of your own pane and start a claude workhorse in it.
 1. `herdr pane split --current --direction right --cwd "$PWD" --no-focus` — note the returned pane id.
 2. `herdr agent start claude-<project-dir-name> --kind claude --pane <returned-pane-id>` — pane name follows `claude-<project-dir-name>` (e.g. claude-heinzel, claude-prescient, claude-topical). Reuse the existing pane if it is already up (check `herdr list` first).
-3. Send a short handshake prompt, not silence: role split (claude = dev workhorse who plans and implements; omp = coordinator who specs, verifies, reviews), house rules (receive ONE well-specified task at a time; report what changed and what was run; no edits outside the spec without saying so).
+3. Send a short handshake prompt, not silence: role split (claude = dev workhorse who plans and implements; omp = coordinator who specs, verifies, reviews), house rules (receive ONE well-specified task at a time; report what changed and what was run; no edits outside the spec without saying so; no messaging other projects' claude panes — anything cross-project routes through omp).
 
 ## Default flow per incoming request
 
@@ -66,3 +74,13 @@ Inline tool-result images auto-display bottom-left; to place an image deliberate
 ## Messaging other agents through panes
 
 Long pane messages truncate silently and `send-text` never submits on its own; anything over ~2 sentences goes in a file and the pane message is the path plus one line. Read `rule://agent-pane-messaging` before using `herdr pane send-text`, `tmux send-keys`, or any pane-keyed delivery.
+
+## Coordinator network (communication topology)
+
+- **omp ↔ omp across projects: YES.** Coordinators talk to each other using this repo's tools: `omp-peer` for delivery with transcript confirmation, `hub` for session-registered peers. Use it to ask another project's coordinator for context, hand off cross-project work, or broadcast a decision.
+- **omp ↔ claude: intra-project only.** The coordinator and the claude workhorse in the SAME project tab talk freely (specs down, reports up).
+- **claude ↔ claude across projects: DISCOURAGED — do not do it.** claude stays focused on its own project; cross-project coordination is the coordinators' job, never the workhorses'. If two claude panes need to exchange something, route it through their omp coordinators.
+
+Why: workhorses hold deep project context; pulling a claude out of its project into cross-project chatter destroys focus and duplicates coordinator work.
+
+Read `rule://coordinator-network` before messaging another project's agent or relaying between claude panes.

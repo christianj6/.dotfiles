@@ -146,11 +146,18 @@ needing the premium model's judgment.
 
 ## Peer comms (agent-to-agent)
 
+**Topology:** omp↔omp across projects is the default and expected path.
+claude panes are messaged by their own project coordinator only (the omp in
+the same project tab). Cross-project claude messaging is discouraged: do not
+do it; route the exchange through the two projects' omp coordinators. Full
+rule: `rule://coordinator-network`.
+
 **DEFAULT comm strategy for agent-to-agent messaging: the `omp-peer`
 helper** — use it before any other channel (`herdr agent prompt`,
-raw pane send-text, hub/IRC). Every agent in a herdr pane can message
-every other one: the herdr CLI is on every pane's PATH and `HERDR_ENV=1`
-reaches agents through the env chain.
+raw pane send-text, hub/IRC). Technically every agent in a herdr pane can
+reach every other one (the herdr CLI is on every pane's PATH and
+`HERDR_ENV=1` reaches agents through the env chain); the topology above
+decides who actually should.
 The address book is `herdr agent list` (names + pane ids). Give every agent
 you start a name (`agent start` takes one); adopt an existing unnamed one
 with `herdr agent rename <pane_id> <name>`.
