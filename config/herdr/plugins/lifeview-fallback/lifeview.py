@@ -21,9 +21,13 @@ Status-file rules (the agent's own word always wins):
   other keys) and a "harness: ..." line. Older "by": "fallback" entries count
   as ours too.
 - An agent-authored entry is never touched while fresh: younger than
-  AGENT_FRESH_S, or within its own ttl_s. Past that, only a `working`
-  herdr no longer corroborates is replaced; idle/standby/blocked stand
-  until the agent replaces them (see compatible()).
+  AGENT_FRESH_S, or within its own ttl_s. Past that, a `working` herdr no
+  longer corroborates is replaced (see compatible()), and an idle/standby
+  older than LIFEVIEW_STALE_OVERRIDE_S loses to herdr working/blocked when
+  the transcript agrees (see stale_override()). An agent's `blocked` is
+  never overridden.
+- The line of a working/blocked/settling entry is what the transcript says
+  the agent is doing (see activity_line()), for the dashboard's hover.
 - herdr "unknown" or absent says nothing, so nothing is written for it.
 - Ours are removed once the agent has its own entry under its name, or
   once its pane is gone from herdr.
@@ -37,6 +41,7 @@ herdr-plugin.toml); --once runs one tick; --explain prints, per agent, why
 its icon looks the way it does.
 
 Env: LIFEVIEW_AUTO_READY [1] (0 disables auto-ready), LIFEVIEW_SETTLE_S [60],
+LIFEVIEW_STALE_OVERRIDE_S [300],
 LIFEVIEW_AUTO_READY_STARTED [0] (1: also tasks the agent started itself),
 BRO_URL [http://127.0.0.1:8766], PRESCIENT_URL [http://127.0.0.1:8765].
 """
@@ -63,6 +68,10 @@ STATUS_FILE = "prescient-status.json"
 BY = "harness"
 OURS = ("harness", "fallback")   # "fallback": this plugin's first version
 SETTLE_S = float(os.environ.get("LIFEVIEW_SETTLE_S", "60"))
+# An agent's own idle/standby older than this loses to herdr working/blocked
+# when its transcript agrees (see stale_override()).
+STALE_OVERRIDE_S = float(os.environ.get("LIFEVIEW_STALE_OVERRIDE_S", "300"))
+TAIL_RECENT_S = 900          # a transcript entry older than this proves nothing (omp-watch's WORKING_STALE_SECONDS)
 AUTO_READY = os.environ.get("LIFEVIEW_AUTO_READY", "1") != "0"
 # A task the agent itself `bro task start`-ed: it knows the protocol, so its
 # silence on `ready` is likely deliberate (e.g. idle while a background bench
@@ -161,48 +170,114 @@ def compatible(state: str, herdr: str) -> bool:
     return True
 
 
-def decide(agent: Dict, entries: Dict, now: float, hold: bool = False) -> Tuple[str, Optional[Dict]]:
+def stale_override(e: Dict, herdr: str, tail: Optional[Dict], now: float) -> bool:
+    """Does an agent's own entry lose to the harness? Only when all hold:
+    1. it is idle/standby (never blocked: a human is being asked something)
+       and older than STALE_OVERRIDE_S (the caller has already ruled out a
+       fresh entry or one within its ttl_s);
+    2. herdr says working or blocked;
+    3. the transcript agrees: its newest recognizable entry is mid-turn
+       (working, or an error for blocked) and younger than TAIL_RECENT_S.
+       herdr alone is never enough (its omp "working" can stick for hours)."""
+    if e.get("state") not in ("idle", "standby"):
+        return False
+    age = age_s(e, now)
+    if age is None or age <= STALE_OVERRIDE_S:
+        return False
+    if herdr not in ("working", "blocked"):
+        return False
+    if not tail or tail.get("at") is None or now - tail["at"] > TAIL_RECENT_S:
+        return False
+    return tail.get("verdict") == "working" or (herdr == "blocked" and tail.get("verdict") == "error")
+
+
+def decide(agent: Dict, entries: Dict, now: float, hold: bool = False,
+           tail_of=None) -> Tuple[str, Optional[Dict]]:
     """What to do with one agent's entries: ("keep", None), ("write", entry)
-    under its pane id, or ("drop", None) to remove our pane-id entry. hold:
-    the agent is settling toward auto-ready, so it stays `working`."""
+    under its pane id, ("write_name", entry) under its herdr name, or
+    ("drop", None) to remove our pane-id entry. hold: the agent is settling
+    toward auto-ready, so it stays `working`. tail_of(agent): its transcript
+    tail, asked only when a stale agent entry might be overridden."""
     pane, name = agent.get("pane_id") or "", agent.get("name") or ""
     herdr = agent.get("agent_status") or "unknown"
     by_name = entries.get(name) if name and name != pane else None
     by_pane = entries.get(pane)
 
+    memo: list = []
+
+    def get_tail() -> Optional[Dict]:   # read only when a line or an override needs it
+        if not memo:
+            memo.append(tail_of(agent) if tail_of else None)
+        return memo[0]
+
+    def overridden(e: Dict) -> Optional[Dict]:
+        if agent_fresh(e, now) or e.get("state") not in ("idle", "standby") or herdr not in ("working", "blocked") \
+                or not stale_override(e, herdr, get_tail(), now):
+            return None
+        state = FROM_HERDR[herdr][0]
+        age = age_s(e, now) or 0
+        suffix = f" (agent's {age / 60:.0f}m-old {e['state']} overridden)"
+        entry = {"state": state, "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                 "line": activity_line(state, get_tail(), now)[: 200 - len(suffix)] + suffix, "by": BY,
+                 "overrode": {"state": e["state"], "age_s": round(age), "line": str(e.get("line") or "")[:200]}}
+        if state == "working":
+            entry["ttl_s"] = float(HARNESS_WORKING_TTL)
+        return entry
+
     # The agent's own word under its name: prescient reads that first, so a
-    # pane-id entry of ours is a second source of truth. Leave the name entry alone.
+    # pane-id entry of ours is a second source of truth. Leave the name entry
+    # alone - unless it is stale and contradicted, then ours replaces it there.
     if isinstance(by_name, dict) and not is_ours(by_name):
+        e = overridden(by_name)
+        if e:
+            return ("write_name", e)
         return ("drop", None) if is_ours(by_pane) else ("keep", None)
 
     if isinstance(by_pane, dict) and not is_ours(by_pane) and by_pane.get("state"):
+        e = overridden(by_pane)
+        if e:
+            return ("write", e)
         if agent_fresh(by_pane, now) or compatible(str(by_pane.get("state")), herdr):
             return ("keep", None)
 
     if hold and herdr in ("idle", "done"):
         state, line = SETTLING
+        if tail_of:
+            line = activity_line("settling", get_tail(), now)
         ttl = SETTLE_S + 3 * POLL_SECONDS       # outlives the settle window, not a dead plugin by much
     elif herdr in FROM_HERDR:
         state, line = FROM_HERDR[herdr]
+        if tail_of and state in ("working", "blocked"):
+            line = activity_line(state, get_tail(), now)
         ttl = float(HARNESS_WORKING_TTL)
     else:
         return ("keep", None)          # unknown/absent: herdr has nothing to say
+    carried = by_pane.get("overrode") if is_ours(by_pane) and by_pane.get("state") == state else None
+    if carried:                        # still the override it was: keep saying what it replaced
+        suffix = str(by_pane.get("line") or "")
+        suffix = suffix[suffix.find(" (agent's "):] if " (agent's " in suffix else ""
+        line = line[: 200 - len(suffix)] + suffix
     if is_ours(by_pane) and by_pane.get("by") == BY and (by_pane.get("state"), by_pane.get("line")) == (state, line):
         age = age_s(by_pane, now)
         if state != "working" or (age is not None and age < ttl / 2):
             return ("keep", None)
     entry = {"state": state, "at": datetime.now().astimezone().isoformat(timespec="seconds"), "line": line, "by": BY}
+    if carried:
+        entry["overrode"] = carried
     if state == "working":
         entry["ttl_s"] = float(ttl)
     return ("write", entry)
 
 
-def plan(agents: list, entries: Dict, live_panes: set, now: float, holds: frozenset = frozenset()) -> Dict[str, Optional[Dict]]:
+def plan(agents: list, entries: Dict, live_panes: set, now: float, holds: frozenset = frozenset(),
+         tail_of=None) -> Dict[str, Optional[Dict]]:
     """Key -> new entry (None: delete) for one status file."""
     changes: Dict[str, Optional[Dict]] = {}
     for a in agents:
-        action, entry = decide(a, entries, now, a["pane_id"] in holds)
-        if action == "write":
+        action, entry = decide(a, entries, now, a["pane_id"] in holds, tail_of)
+        if action == "write_name":
+            changes[a["name"]] = entry
+        elif action == "write":
             changes[a["pane_id"]] = entry
         elif action == "drop":
             changes[a["pane_id"]] = None
@@ -214,14 +289,22 @@ def plan(agents: list, entries: Dict, live_panes: set, now: float, holds: frozen
 
 # ---- transcripts ----
 
+ACTIVITY_LOOKBACK = 60        # recognizable entries scanned back for what the agent is doing
+
+
 def scan_tail(path: Path, max_bytes: int = 4 * 1024 * 1024) -> Dict:
     """The newest conversational entry of a claude or omp transcript, read
     backwards from EOF (complete lines only, as omp-watch does):
-    {verdict, at, text}. verdict is "answered" (an assistant message with
-    text and no tool call: the turn's last word), "error" (an API/provider
-    failure), or "working" (anything mid-turn: a user/tool-result entry, a
-    tool call, thinking only). text is that answer's text, when answered."""
-    out: Dict = {"verdict": None, "at": None, "text": ""}
+    {verdict, at, text, activity}. verdict is "answered" (an assistant
+    message with text and no tool call: the turn's last word), "error" (an
+    API/provider failure), or "working" (anything mid-turn: a user/tool-
+    result entry, a tool call, thinking only). text is that answer's text,
+    when answered. activity is what the current turn is doing, for the hover:
+    its newest assistant text, else `running <tool>` for its newest tool call
+    (the scan stops at the turn's user prompt, so an older turn never shows)."""
+    out: Dict = {"verdict": None, "at": None, "text": "", "activity": None}
+    tool = None
+    seen = 0
     try:
         size = path.stat().st_size
         with path.open("rb") as f:
@@ -241,14 +324,29 @@ def scan_tail(path: Path, max_bytes: int = 4 * 1024 * 1024) -> Dict:
                         lines = lines[:-1]
                 for ln in reversed(lines):
                     v = classify(ln)
-                    if v:
-                        return v
+                    if not v:
+                        continue
+                    if seen == 0:
+                        out.update(verdict=v["verdict"], at=v["at"], text=v["text"])
+                    seen += 1
+                    if v.get("said"):
+                        out["activity"] = v["said"]
+                        return out
+                    tool = tool or v.get("tool")
+                    if v.get("prompt") or seen >= ACTIVITY_LOOKBACK:
+                        out["activity"] = f"running {tool}" if tool else None
+                        return out
     except OSError:
         pass
+    if tool:
+        out["activity"] = f"running {tool}"
     return out
 
 
 def classify(line: bytes) -> Optional[Dict]:
+    """One entry's turn signal (see scan_tail), plus what it shows: said
+    (assistant text, also beside a tool call), tool (the tool it calls),
+    prompt (a user's prompt, which starts a turn - not a tool result)."""
     try:
         e = json.loads(line)
     except ValueError:
@@ -260,19 +358,42 @@ def classify(line: bytes) -> Optional[Dict]:
     if role not in ("user", "assistant", "toolResult"):
         return None                     # bookkeeping entries carry no turn signal
     at = epoch(e.get("timestamp"))
-    if role != "assistant":
-        return {"verdict": "working", "at": at, "text": ""}
-    if e.get("isApiErrorMessage") or msg.get("stopReason") == "error":
-        return {"verdict": "error", "at": at, "text": ""}
     content = msg.get("content")
     blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
-    kinds = {b.get("type") for b in blocks if isinstance(b, dict)}
-    if kinds & {"tool_use", "toolCall"}:
-        return {"verdict": "working", "at": at, "text": ""}
-    text = " ".join(str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text").strip()
+    blocks = [b for b in blocks if isinstance(b, dict)]
+    if role != "assistant":
+        prompt = role == "user" and not any(b.get("type") == "tool_result" for b in blocks)
+        return {"verdict": "working", "at": at, "text": "", "prompt": prompt}
+    if e.get("isApiErrorMessage") or msg.get("stopReason") == "error":
+        return {"verdict": "error", "at": at, "text": ""}
+    text = " ".join(str(b.get("text") or "") for b in blocks if b.get("type") == "text").strip()
+    tools = [b.get("name") for b in blocks if b.get("type") in ("tool_use", "toolCall") and b.get("name")]
+    if tools or any(b.get("type") in ("tool_use", "toolCall") for b in blocks):
+        return {"verdict": "working", "at": at, "text": "", "said": text, "tool": tools[-1] if tools else None}
     if not text:
         return {"verdict": "working", "at": at, "text": ""}
-    return {"verdict": "answered", "at": at, "text": text}
+    return {"verdict": "answered", "at": at, "text": text, "said": text}
+
+
+def snippet(text: str, limit: int = 90) -> str:
+    one = " ".join(str(text).split())
+    return one if len(one) <= limit else one[: limit - 1].rstrip() + "…"
+
+
+def activity_line(state: str, tail: Optional[Dict], now: float) -> str:
+    """The hover line for a harness entry: what the transcript says the agent
+    is doing, not a constant. <=200 chars, one line."""
+    recent = bool(tail and tail.get("at") is not None and now - tail["at"] <= TAIL_RECENT_S)
+    act = snippet(tail["activity"]) if recent and tail.get("activity") else None
+    if state == "settling":
+        line = f"settling · {act}" if act else "settling · auto-ready pending"
+    elif state == "blocked":
+        line = "blocked · waiting on an approval prompt" + (f" ({act})" if act else "")
+    elif act:
+        line = f"working · {act}"
+    else:
+        line = "working · starting (prompt received)" if recent else "working (no recent transcript activity)"
+    return line[:200]
 
 
 def _omp_newest_session():
@@ -469,26 +590,33 @@ def read_entries(path: Path) -> Tuple[Dict, Dict]:
     return raw, agents
 
 
-def apply(root: str, agents: list, live_panes: set, holds: frozenset = frozenset()) -> None:
+def apply(root: str, agents: list, live_panes: set, holds: frozenset = frozenset(), tail_of=None) -> None:
     """Re-read and decide under prescient's lock, so an agent's write between
     our look and our write is never clobbered."""
     path = Path(root) / STATUS_FILE
     _, peek = read_entries(path)
-    if not plan(agents, peek, live_panes, time.time(), holds):
+    if not plan(agents, peek, live_panes, time.time(), holds, tail_of):
         return                          # nothing to do: don't touch the lock
     with open(path.with_name("." + STATUS_FILE + ".lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         raw, entries = read_entries(path)
-        changes = plan(agents, entries, live_panes, time.time(), holds)
+        changes = plan(agents, entries, live_panes, time.time(), holds, tail_of)
         if not changes:
             return
         for key, entry in changes.items():
+            before = entries.get(key)
             if entry is None:
                 entries.pop(key, None)
                 log(f"{root}: {key} harness entry removed")
+            elif entry.get("overrode") and not (is_ours(before) and before.get("overrode")):
+                entries[key] = entry
+                o = entry["overrode"]
+                log(f"{root}: {key} -> {entry['state']} (overrode stale agent {o['state']}, {o['age_s']}s)")
             else:
                 entries[key] = entry
-                log(f"{root}: {key} -> {entry['state']} ({entry['line']})")
+                if not (is_ours(before) and before.get("state") == entry["state"]):   # line-only refreshes stay quiet
+                    # never the transcript-derived part: it can be private project content
+                    log(f"{root}: {key} -> {entry['state']} ({entry['line'] if entry['line'].startswith('harness:') else 'harness, from the transcript'})")
         tmp = path.with_name("." + STATUS_FILE + ".tmp")
         tmp.write_text(json.dumps({**raw, "agents": entries}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         tmp.replace(path)
@@ -530,6 +658,12 @@ class Harness:
         now = time.time()
         holds = frozenset(a["pane_id"] for a in w.agents if a["pane_id"] in tails
                           and pending(a, tasks or [], w.project_busy(a), tails[a["pane_id"]], now))
+
+        def tail_of(a: Dict) -> Dict:          # read on demand: only override candidates ask
+            if a["pane_id"] not in tails:
+                path = transcript_of(a, w.agents)
+                tails[a["pane_id"]] = scan_tail(path) if path else {"verdict": None, "at": None, "text": ""}
+            return tails[a["pane_id"]]
         by_root: Dict[str, list] = {}
         writable_roots: Dict[str, bool] = {}
         for a in w.agents:
@@ -545,7 +679,7 @@ class Harness:
             by_root[root] = []                # no live agent left: only removes our dead-pane entries
         for root, group in by_root.items():
             try:
-                apply(root, group, w.live, holds)
+                apply(root, group, w.live, holds, tail_of)
                 self.failed.pop(root, None)
             except Exception as exc:       # one repo must not stop the rest
                 if self.failed.get(root) != str(exc):

@@ -311,3 +311,154 @@ workspace closed.
   so the hold is released and it's grey until a later tick succeeds.
 - **The plugin dies mid-settle**: the hold's `ttl_s` (90 s) runs out, then
   grey.
+
+## A stale agent-authored entry pinned the icon (fixed)
+
+Owner-reported (heinzel): an agent working for several minutes, with herdr
+`working` and its transcript active, showed dim. The precedence rule let an
+agent's own `idle`/`standby` stand until the agent replaced it, so an agent
+that stopped calling `prescient status` stayed frozen at its last word.
+
+### Reproduced live (heinzel), on the old daemon
+
+    claude-v2-w5p1a [w5:p1A, claude] -> icon: idle
+      herdr: working
+      transcript: working, 4s ago
+      prescient-status.json: idle by the agent, 5194s old:
+      dashboard row: status idle (herdr working)
+      why: dim: idle (idle) with no open task needing you
+
+Seconds later heinzel's coordinator dispatched work and the agent wrote its own
+`working`, which cleared it. The agent's own word still wins whenever it
+reports.
+
+### Reproduced on a scratch agent, then fixed: the same scene twice
+
+The scratch agent's entry was seeded with an agent-authored `idle` written
+10 minutes earlier, then it was prompted to run a 30 s foreground sleep with
+no `prescient`/`bro` calls. Board sampled every 2 s.
+
+Before (old daemon): dim for the whole turn.
+
+    11:23:27 claude-v2-wpp1=idle(herdr working) -> ring=idle [dim]
+      ... dim at every sample through 11:24:04 (herdr working throughout) ...
+    explain: prescient-status.json: idle by the agent, 626s old: finished the earlier thing
+             dashboard row: status idle (herdr working)
+
+After (daemon restarted on the new code): amber from the first tick.
+
+    11:24:32 claude-v2-wpp1=idle(herdr working) -> ring=idle [dim]      (tick lag)
+    11:24:38 claude-v2-wpp1=working             -> ring=working [amber]
+      ... amber through the turn ...
+    [lifeview-fallback] 11:24:37 <scratch repo>: wP:p1 -> working (overrode stale agent idle, 610s)
+    [lifeview-fallback] 11:25:18 <scratch repo>: wP:p1 -> idle (harness: herdr idle)
+
+    claude-v2-wpp1 [wP:p1, claude] -> icon: working
+      herdr: working
+      transcript: working, 18s ago
+      prescient-status.json: working by harness, 6s old: working · running Bash (agent's 10m-old idle overridden)
+      dashboard row: status working
+      why: working, from herdr (via the harness)
+
+With no bro task at all, the row's `working` alone makes the ring amber
+(`working` ranks above `idle` in `agentGroups()`).
+
+### The rule now (`stale_override()`)
+
+An agent-authored entry loses to the harness only when all hold:
+
+1. it is `idle`/`standby`, older than `LIFEVIEW_STALE_OVERRIDE_S` (300 s),
+   and neither fresh (<180 s) nor within its own `ttl_s`;
+2. herdr says `working` or `blocked`;
+3. the transcript agrees: its newest recognizable entry is mid-turn
+   (`working`, or an API error for `blocked`) and younger than 900 s
+   (omp-watch's dead-turn limit). herdr alone is never enough.
+
+An agent's `blocked` is never overridden. The overriding entry keeps
+`"by": "harness"`, says what it replaced in its line, and carries an
+`overrode` record. An entry the agent wrote under its herdr name is overridden
+under that name (prescient reads it first). Everything else is unchanged:
+agent intent within the window wins, plus the settle hold, auto-ready, and
+ready-before-idle.
+
+### Guards, live
+
+| Guard | Scene | Result |
+| --- | --- | --- |
+| (a) fresh `standby` survives | agent `standby "custom line"` 5 s old, then works 25 s, 5 forced ticks | Pass: untouched while herdr `working` |
+| (b) `blocked` survives regardless of age | agent `blocked` 5000 s old, then works 25 s, 5 forced ticks | Pass: untouched while herdr `working` |
+| (c) no flapping | agent `idle` 5000 s old, herdr idle, transcript settled, 3 forced ticks | Pass: untouched |
+| (d) herdr alone is not enough | agent `idle` 5000 s old, agent works 30 s, transcript lookup disabled, 5 forced ticks | Pass: untouched (see the note) |
+
+(a) to (c) ran with the real daemon alive alongside the forced ticks. For (d),
+the first attempt was invalid: killing the daemon isn't enough, because
+herdr's event hook relaunched it the moment the agent's status changed
+(11:27:49), and that real daemon correctly overrode from the real transcript.
+The rerun held the plugin's singleton lock in the test process, so no daemon
+could run (`daemons=none` at every tick), and the entry stayed the agent's.
+Unit tests cover all four guards (`StaleOverride`).
+
+## The hover says what the agent is doing
+
+Owner-reported: hovering over thor showed nothing useful. The dashboard shows
+`said.line` and falls back to herdr's terminal title. thor has no title, and
+the harness line was the constant `harness: herdr reports working`.
+
+The line of a harness `working`/`blocked`/settling entry is now derived from
+the transcript (`activity_line()`): the current turn's newest assistant text
+(about 90 chars, one line), else `running <tool>` for its newest tool call.
+The scan stops at the turn's own prompt, so an older turn never shows.
+
+    working · <newest assistant text>      working · running Bash
+    working · starting (prompt received)   working (no recent transcript activity)
+    blocked · waiting on an approval prompt (<activity>)
+    settling · <the answer it settled on>
+
+Lines are at most 200 chars with no newlines. An agent-authored line is never
+rewritten. The plugin's log never carries the transcript-derived part, since
+it can be private project content.
+
+### thor, before and after
+
+    before  board row: title '', said.line 'harness: herdr reports working' (while working)
+    after   board row: title '', said.line 'working · <thor's current message, redacted here: work content>'
+
+The unredacted strings were shown to the owner in the session report, not
+here (AGENTS.md: no work content in this public repo).
+
+The grey-flash regression with the new lines (a fresh scratch agent, one task
+`sent`, 2 s samples):
+
+    11:41:20 working                -> ring=working [amber] hover='working (no recent transcript activity)'
+    11:41:30 working                -> ring=working [amber] hover='working · running Bash'
+    11:41:42 working(herdr done)    -> ring=working [amber] hover='working · running Bash'
+    11:41:51 working(herdr done)    -> ring=working [amber] hover='settling · The 20-second sleep finished, and `words.txt` has 3 lines.'
+    11:42:51 idle                   -> ring=ready   [GREEN] hover='harness: herdr idle'
+    grey/dim samples between amber and green: 0 (of 69)
+
+The first working sample's line came from a brand-new session whose
+transcript wasn't resolvable yet. It was right on the next tick.
+
+### A real auto-ready, for the record
+
+`tk-4b1e38a589`, an icon test the owner handed the dotfiles coordinator, was
+auto-marked ready at 10:38:46 with the summary *"auto: Fresh test running on
+my own icon…"*. That's a statement that it was waiting, not that it had
+finished: the false-green class flagged above. The owner accepted it as done,
+since the task's point was the green itself.
+
+### Stale entries that still cannot be corrected
+
+- **An agent's `blocked`**: never overridden by design, so a forgotten
+  `blocked` stays blue until the agent writes again.
+- **A long silent tool call**: a turn with no transcript entry for over 900 s
+  (one long foreground build) fails guard 3, so a stale `idle` shows dim
+  during it.
+- **No resolvable transcript**: two omp agents in one cwd, or two claude
+  panes in one cwd with a stale herdr session claim. Guard 3 can't pass.
+- **herdr `unknown`**: never overrides.
+- **An agent that writes `idle` while still working**: its word stands for
+  the 300 s staleness window before the override can apply (heinzel's
+  coordinator did this live: `idle`, 2 s old, herdr working).
+- **An agent's `working` with a long `ttl_s`**: believed for its ttl, as
+  asked.

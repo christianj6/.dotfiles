@@ -247,6 +247,115 @@ class GreyFlash(unittest.TestCase):
         self.assertTrue(lv.pending(a, [task(state="sent")], [], answered(ago=5), time.time()))
 
 
+def working_tail(ago=5, activity="running bash"):
+    return {"verdict": "working", "at": time.time() - ago, "text": "", "activity": activity}
+
+
+class StaleOverride(unittest.TestCase):
+    """A stale agent idle/standby loses to herdr working/blocked only when the
+    transcript agrees; the four guards keep the agent's word otherwise."""
+
+    def d(self, herdr, entry, tail, key="wX:p1"):
+        return lv.decide(agent(herdr), {key: entry}, time.time(), False, lambda a: tail)
+
+    def test_stale_idle_overridden_when_herdr_and_transcript_agree(self):
+        action, e = self.d("working", {"state": "idle", "at": at(5047), "line": "old word"}, working_tail())
+        self.assertEqual((action, e["state"], e["by"]), ("write", "working", "harness"))
+        self.assertIn("(agent's 84m-old idle overridden)", e["line"])
+        self.assertAlmostEqual(e["overrode"]["age_s"], 5047, delta=2)
+        self.assertLessEqual(len(e["line"]), 200)
+
+    def test_stale_idle_under_its_name_is_overridden_there(self):
+        action, e = self.d("working", {"state": "idle", "at": at(5047)}, working_tail(), key="claude-v2-wxp1")
+        self.assertEqual((action, e["state"]), ("write_name", "working"))
+
+    def test_herdr_blocked_overrides_stale_standby(self):
+        action, e = self.d("blocked", {"state": "standby", "at": at(900)}, working_tail(activity="running bash"))
+        self.assertEqual((action, e["state"]), ("write", "blocked"))
+        self.assertTrue(e["line"].startswith("blocked · waiting on an approval prompt"))
+
+    def test_guard_a_fresh_standby_survives(self):
+        for ago in (5, 170, 290):           # fresh (<180 s) and within the 300 s staleness window
+            self.assertEqual(self.d("working", {"state": "standby", "at": at(ago), "line": "custom"}, working_tail())[0], "keep", ago)
+        self.assertEqual(self.d("working", {"state": "idle", "at": at(1000), "ttl_s": 3600}, working_tail())[0], "keep")
+
+    def test_guard_b_agent_blocked_survives_regardless_of_age(self):
+        for herdr in ("working", "blocked", "idle"):
+            self.assertEqual(self.d(herdr, {"state": "blocked", "at": at(90000)}, working_tail())[0], "keep", herdr)
+
+    def test_guard_c_idle_with_herdr_idle_and_quiet_transcript_not_overridden(self):
+        quiet = {"verdict": "answered", "at": time.time() - 4000, "text": "done", "activity": "done"}
+        for herdr in ("idle", "done"):
+            self.assertEqual(self.d(herdr, {"state": "idle", "at": at(5000)}, quiet)[0], "keep", herdr)
+        # herdr working but the transcript has settled: not enough
+        self.assertEqual(self.d("working", {"state": "idle", "at": at(5000)}, quiet)[0], "keep")
+        settled = {"verdict": "answered", "at": time.time() - 5, "text": "done", "activity": "done"}
+        self.assertEqual(self.d("working", {"state": "idle", "at": at(5000)}, settled)[0], "keep")
+
+    def test_guard_d_no_transcript_means_herdr_alone_is_not_enough(self):
+        for tail in (None, {"verdict": None, "at": None, "text": "", "activity": None},
+                     working_tail(ago=lv.TAIL_RECENT_S + 60)):
+            self.assertEqual(self.d("working", {"state": "idle", "at": at(5000)}, tail)[0], "keep", tail)
+
+    def test_override_is_carried_and_logged_once(self):
+        _, first = self.d("working", {"state": "idle", "at": at(5047)}, working_tail())
+        action, again = lv.decide(agent("working"), {"wX:p1": first}, time.time(), False, lambda a: working_tail(activity="running grep"))
+        self.assertEqual(action, "write")                       # the activity changed
+        self.assertIn("(agent's 84m-old idle overridden)", again["line"])
+        self.assertEqual(again["overrode"], first["overrode"])
+
+
+class ActivityLine(unittest.TestCase):
+    def tail_from(self, entries):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.jsonl"
+            p.write_bytes(b"\n".join(line(e) for e in entries) + b"\n")
+            return lv.scan_tail(p)
+
+    def test_last_assistant_text_names_the_activity(self):
+        tail = self.tail_from([
+            {"type": "user", "message": {"role": "user", "content": "go"}, "timestamp": ts(30)},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "Fixed the picker dedupe and\nreran the bench."}, {"type": "tool_use", "name": "Bash"}]}, "timestamp": ts(20)},
+            {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]}, "timestamp": ts(10)},
+        ])
+        line_ = lv.activity_line("working", tail, time.time())
+        self.assertEqual(line_, "working · Fixed the picker dedupe and reran the bench.")
+
+    def test_tool_call_only_yields_running_tool(self):
+        tail = self.tail_from([
+            {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "go"}]}, "timestamp": ts(30)},
+            {"type": "message", "message": {"role": "assistant", "content": [{"type": "thinking"}, {"type": "toolCall", "name": "bash"}]}, "timestamp": ts(5)},
+        ])
+        self.assertEqual(lv.activity_line("working", tail, time.time()), "working · running bash")
+
+    def test_an_older_turn_never_shows(self):
+        tail = self.tail_from([
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "OLD TURN ANSWER"}]}, "timestamp": ts(300)},
+            {"type": "user", "message": {"role": "user", "content": "next task"}, "timestamp": ts(20)},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Read"}]}, "timestamp": ts(10)},
+        ])
+        self.assertEqual(lv.activity_line("working", tail, time.time()), "working · running Read")
+
+    def test_fallbacks_and_limits(self):
+        now = time.time()
+        self.assertEqual(lv.activity_line("working", None, now), "working (no recent transcript activity)")
+        stale = {"verdict": "working", "at": now - lv.TAIL_RECENT_S - 5, "activity": "x"}
+        self.assertEqual(lv.activity_line("working", stale, now), "working (no recent transcript activity)")
+        started = {"verdict": "working", "at": now - 3, "activity": None}
+        self.assertEqual(lv.activity_line("working", started, now), "working · starting (prompt received)")
+        self.assertEqual(lv.activity_line("blocked", None, now), "blocked · waiting on an approval prompt")
+        long_ = lv.activity_line("settling", {"at": now, "activity": "y" * 500}, now)
+        self.assertTrue(long_.startswith("settling · y"))
+        self.assertLessEqual(len(long_), 200)
+        self.assertNotIn("\n", long_)
+
+    def test_agent_authored_line_never_rewritten(self):
+        e = {"state": "working", "at": at(20), "line": "my own words"}
+        self.assertEqual(lv.decide(agent("working"), {"wX:p1": e}, now := time.time(), False,
+                                   lambda a: working_tail(activity="something else")), ("keep", None))
+
+
 class Icon(unittest.TestCase):
     def test_ranks_like_the_dashboard(self):
         self.assertEqual(lv.icon_state("idle", ["ready"]), "ready")
