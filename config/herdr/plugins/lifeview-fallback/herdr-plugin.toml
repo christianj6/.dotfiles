@@ -1,0 +1,16 @@
+id = "dotfiles.lifeview-fallback"
+name = "life-view status fallback"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Writes herdr-derived fallback entries into prescient-status.json when an agent has not reported itself; never overwrites a fresh agent-authored entry."
+platforms = ["linux", "macos"]
+
+# Same supervision shape as claude-name: [[startup]] fires only at server
+# start, so the event hook is the recovery path; the singleton lock makes
+# repeat launches a no-op. --daemon so the instance outlives the hook process.
+[[startup]]
+command = ["python3", "lifeview.py", "--daemon"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["python3", "lifeview.py", "--daemon"]

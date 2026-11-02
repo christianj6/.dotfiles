@@ -400,6 +400,12 @@ herdr plugin link ~/.dotfiles/config/herdr/plugins/omp-watch || true
 # [[events]] hook launches it on the next agent status change. Same shape as above.
 herdr plugin link ~/.dotfiles/config/herdr/plugins/claude-name || true
 
+# Link the life-view fallback plugin (config/herdr/plugins/lifeview-fallback/):
+# writes herdr-derived entries into a project's prescient-status.json when its
+# agent hasn't reported itself, never over a fresh agent-authored one. Like
+# claude-name, its [[events]] hook launches it on the next status change.
+herdr plugin link ~/.dotfiles/config/herdr/plugins/lifeview-fallback || true
+
 # Discord bridge plugin (config/herdr/plugins/agent-discord/): provisions
 # the venv for the persistent bot (discord.py is the plugin's one
 # non-stdlib dependency -- the notify hook itself is stdlib-only), links
