@@ -35,3 +35,10 @@ sessions/[0-9A-Za-z_]+/[0-9T_.\-]+\.jsonl
 # Allowlist: path-convention mentions with placeholders (<pid>, $1, *) --
 # config/herdr/bin/workspace-rollout reads claude's per-pid session record
 !\.claude/(sessions|projects)/(<pid>|\$1|\*)
+
+# Allowlist: the shared admin paragraph (prescient docs/agent-admin.md §7)
+# must tell every agent where the harness's own CLIs live, so the prescient
+# and bro venv-bin paths appear verbatim in the global instructions. Narrow
+# on purpose: only those two tool paths, never personal repo content.
+!\$HOME/Desktop/personal/repos/(prescient|bro)/\.venv/bin
+!\$HOME/Desktop/personal/repos/prescient/docs/agent-admin\.md
