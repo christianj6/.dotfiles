@@ -272,7 +272,22 @@ fi
 # were both claiming the same `--agent omp` on the same pane. Installing the
 # native integration here would silently reintroduce that conflict on every
 # fresh machine. If a future omp release fixes the extension API, revisit.
+#
+# claude's settings, hook, and global context: same per-file symlink pattern as
+# the extensions -- versioned source in config/claude/, live in ~/.claude (copies
+# drift; see the extension rationale above). The install writes THROUGH symlinks:
+# it would append a second, machine-absolute hook entry to the versioned
+# settings and rewrite the versioned hook. So drop our links first, let it write
+# throwaway real files, then link back. A newer herdr hook therefore reaches the
+# repo only by a deliberate commit: when `herdr integration status` says
+# outdated, copy the new hook into config/claude/hooks/.
+mkdir -p ~/.claude/hooks
+[ -L ~/.claude/settings.json ] && rm ~/.claude/settings.json
+[ -L ~/.claude/hooks/herdr-agent-state.sh ] && rm ~/.claude/hooks/herdr-agent-state.sh
 herdr integration install claude || true
+ln -sf ~/.dotfiles/config/claude/settings.json ~/.claude/settings.json
+ln -sf ~/.dotfiles/config/claude/hooks/herdr-agent-state.sh ~/.claude/hooks/herdr-agent-state.sh
+ln -sf ~/.dotfiles/config/claude/CLAUDE.md ~/.claude/CLAUDE.md
 
 # herdr config: symlink the versioned settings into ~/.config/herdr. The
 # versioned file carries onboarding=false and macOS login-shell panes; the

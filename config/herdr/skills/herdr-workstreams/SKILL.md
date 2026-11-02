@@ -81,10 +81,16 @@ and the same shape works for a second omp.
        herdr pane run <pane_id> "cd /path/to/project && claude"
        herdr pane run <pane_id> "cd /path/to/project && omp"
 
-3. **Verify** (allow a few seconds; a first run in an untrusted directory
-   sits on claude's trust prompt, which herdr reports as `blocked`):
+3. **Verify** (allow a few seconds):
 
        herdr agent list        # pane_id | agent | agent_status
+
+   A first run in a new directory sits on claude's trust prompt, and herdr
+   may report it as `blocked` or `unknown`, so read the pane. Its default
+   is "No, exit": when you created the directory or the user named it,
+   answer for that directory only with `herdr pane send-keys <pane_id> down`,
+   then `enter`. Never pre-approve directories in bulk. Panes start in auto
+   mode from `config/claude/settings.json`; do not pass a permission flag.
 
 4. **Name it, then talk to it** with the peer-comms recipes below:
 
