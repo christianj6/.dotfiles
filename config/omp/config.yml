@@ -25,12 +25,12 @@ providers:
     - mojeek
   memoryModel: online
 modelRoles: 
-  default: opencode-go/glm-5.3-flash
-  advisor: openrouter/z-ai/glm-5.3-flash
+  default: opencode-go/deepseek-v4.1-flash
+  advisor: opencode-go/deepseek-v4.1-flash
   smol: opencode-go/glm-5.3-flash
   slow: opencode-go/glm-5.3-flash
-  task: opencode-go/glm-5.3-flash
-  commit: openrouter/z-ai/glm-5.3-flash
+  task: opencode-go/deepseek-v4.1-flash
+  commit: opencode-go/deepseek-v4.1-flash
 symbolPreset: nerd
 theme: 
   dark: titanium
