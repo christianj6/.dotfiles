@@ -25,7 +25,7 @@
 //   JEV_MODEL           Jev model on OpenRouter [~typesafe/jev-latest]
 //   JEV_ENDPOINT        decisions endpoint [https://openrouter.ai/api/alpha/decisions]
 //   JEV_THRESHOLD       prune when relevance probability < threshold [0.1]
-//   JEV_MODE            "prune" (default) | "observe" | "off"
+//   JEV_MODE            "off" (DEFAULT, dormant) | "observe" | "prune"
 //   JEV_ROUTE           "1" enables workhorse-first model routing [off]
 
 export default function (api) {
@@ -33,7 +33,7 @@ export default function (api) {
   var JEV_ENDPOINT = process.env.JEV_ENDPOINT || "https://openrouter.ai/api/alpha/decisions";
   var JEV_MODEL = process.env.JEV_MODEL || "~typesafe/jev-latest";
   var THRESHOLD = parseFloat(process.env.JEV_THRESHOLD || "0.1");
-  var MODE = process.env.JEV_MODE || "prune";
+  var MODE = process.env.JEV_MODE || "off";
   var ROUTE = process.env.JEV_ROUTE === "1"; // routing off by default
   var MAX_CHARS = 6000;
   var evaluated = new Set();
