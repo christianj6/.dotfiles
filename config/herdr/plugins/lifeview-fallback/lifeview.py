@@ -83,7 +83,27 @@ PRESCIENT_URL = os.environ.get("PRESCIENT_URL", "http://127.0.0.1:8765")
 # Task hub cut-over switch (docs/go-task-hub.md wave 3): "bro" keeps today's
 # behaviour; "prescient" routes create/list/ready through the hub service.
 # Default bro so an older service is never required.
-TASK_HUB = os.environ.get("LIFEVIEW_TASK_HUB", "bro")
+PLUGIN_CONFIG = Path.home() / ".config" / "herdr" / "plugins" / "config" / "dotfiles.lifeview-fallback" / "lifeview.env"
+
+
+def _plugin_env(key: str, default: str = "") -> str:
+    """An env value, else KEY= from the plugin's local config file (outside this
+    repo). herdr launches this daemon without our env, so the config file is the
+    only way to flip a switch for the live process."""
+    v = os.environ.get("LIFEVIEW_" + key)
+    if v:
+        return v.strip().lower()
+    try:
+        for ln in PLUGIN_CONFIG.read_text().splitlines():
+            k, _, val = ln.partition("=")
+            if k.strip() == "LIFEVIEW_" + key and val.strip():
+                return val.strip().lower()
+    except OSError:
+        pass
+    return default
+
+
+TASK_HUB = _plugin_env("TASK_HUB", "bro")
 HUB_URL = PRESCIENT_URL
 OPEN_TASK = ("open", "sent", "working")
 # Auto-task: the harness opens a bro task for real work no task covers.
@@ -97,7 +117,6 @@ JUST_DONE_S = 120            # a turn that ended this recently still gets its ta
 # belongs to it).
 COVERING = ("open", "sent", "working", "reopened", "noted", "ready")
 HARNESS_BY = "lifeview-harness"
-PLUGIN_CONFIG = Path.home() / ".config" / "herdr" / "plugins" / "config" / "dotfiles.lifeview-fallback" / "lifeview.env"
 BUSY = ("working", "blocked")
 
 # herdr agent_status -> (state, line) for the harness entry
@@ -753,7 +772,12 @@ def project_name(agent: Dict) -> Optional[str]:
     """The hub's REQUIRED project: the git toplevel's basename (the same rule
     `prescient status` and the CLI use), never derived from a dest string."""
     root = git_root(str(agent.get("cwd") or ""))
-    return os.path.basename(root) if root else None
+    if not root:
+        return None
+    # The board's rule (prescient's gantt.agent.project_of): the repo folder's
+    # name with a leading dot dropped -- `.dotfiles` is "dotfiles". Matching it
+    # is what keeps one project from splitting into two on the hub.
+    return os.path.basename(root).lstrip(".") or None
 
 
 def git_root(cwd: str) -> Optional[str]:
