@@ -743,6 +743,8 @@ def open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
     """`bro task add` for the agent, left `sent` (it may still `start` it).
     By the harness, so auto-ready's started-by-the-agent exclusion never
     applies. Returns the new task id, or None."""
+    if TASK_HUB == "prescient" and hub_available():
+        return hub_open_task(agent, title, turn)
     exe = bro_bin()
     if not exe:
         return None
