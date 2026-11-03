@@ -96,3 +96,43 @@ Every place that selects a destination for **bro's own** work must ask the same 
 Sites: `_command` explicit work (`:2904`, gap 1), `delegate_to` (`:3217`, gap 3), and any future one. **Better than fixing three call sites:** put the rule in one helper — e.g. `own_work_dest(stack)` returning `dev_id()`-derived coordinator else `dev_agent()` — and have all three call it. Three copies of a precedence rule is how the next one drifts.
 
 And the test must be an implied-task-about-bro case, not a status case: `"when you're in standby, fix that"`-shaped input, asserting the dest is bro's **coordinator**. A status-ask test passes today and proves nothing about gap 3.
+
+---
+
+## CORRECTION: my gap-3 diagnosis was wrong, and it was the exact error my new rule names
+
+The coordinator checked my claim before accepting it. It does not hold.
+
+`dev_agent()` does **not** return bro's Claude. `is_dev()` (`voicebridge.py:84`) is:
+
+```python
+def is_dev(a: dict) -> bool:
+    """Is this herdr agent bro's coordinator (the orchestrator)?"""
+    if DEV_AGENT:
+        return a.get("name") == DEV_AGENT
+    if a.get("name") == "orchestrator":
+        return True
+    return a.get("agent") == "omp" and Path(a.get("cwd") or "").name == BRO_REPO.name
+```
+
+So it returns the **omp pane** — verified at runtime: `dev_agent -> omp-v34-wdp5 | kind: omp | cwd: .../bro`. `dev_agent()` has always *been* `dev_id()` in substance. My sentence "`delegate_to` returns bro's Claude, skipping bro's coordinator" was **wrong**.
+
+**How I made the error is the point.** I read the *name* `dev_agent` and inferred "Claude". I never read `is_dev`'s predicate. That is precisely the failure the `fixed-claim-call-sites` rule describes — I checked that `dev_id()` was absent from the call site and concluded the coordinator was bypassed, without checking what the function I *did* see actually returns. Absence of one name is not evidence about a behaviour. My rule's own tell applies to me: a claim with no predicate in it.
+
+The coordinator's characterisation is the accurate one and I am adopting it rather than restating mine: **what was actually missing was `coordinator:bro` (the hub-shaped destination), the Claude fallback when neither coordinator form is available, and the de-duplication.** The bug was smaller than I described; the fix is larger and better than I proposed.
+
+## The build — read in source
+
+`own_work_dest(stack, project)` at `:2188`, precedence in the docstring, **eight** occurrences (definition + seven call sites). It is better than my proposal:
+
+```python
+if project:  return self.handler_for(project, stack), False
+if (c := self.bro_coordinator(stack)) is not None:  return c, False          # coordinator:bro
+if (a := dev_agent(self.agents())) is not None:     return agent_destination(a), False   # the omp pane
+claude = ...                                                                  # only now, bro's Claude
+return (agent_destination(claude), True) if claude is not None else (None, False)
+```
+
+A genuine three-tier fallback — hub destination, then pane, then Claude — and it returns **whether it fell back**, which is what lets bro say honestly who it went to. I proposed a two-tier helper and would have collapsed the distinction between "the coordinator took it" and "the Claude is covering".
+
+The `_needs_task` tail rewrite is gone, so an implied task can no longer be rewritten back to a Claude after the fact. And the which-slot fix means "it's for you" hands on only for `task`/`filing` — a status or question intent can no longer be converted into a hand-over by the clarification. 653 green.
