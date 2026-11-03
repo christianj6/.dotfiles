@@ -57,6 +57,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from urllib.parse import quote
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -132,6 +133,7 @@ FROM_HERDR = {
 }
 
 # The dashboard's ring: lowest rank wins (index.html AG_RANK, BRO_STATES)
+AG_RANK_VERSION = 2   # prescient's published rank table version
 AG_RANK = {"ready": 0, "failed": 1, "blocked": 2, "working": 3, "queued": 4, "noted": 5,
            "done": 6, "dropped": 7, "idle": 8}
 BRO_STATES = {"open": "queued", "sent": "queued", "reopened": "queued", "noted": "noted", "working": "working",
@@ -731,6 +733,19 @@ def hub_mark_ready(t: Dict, agent: Dict, tail: Dict, quiet: float) -> Optional[D
                                               "summary": summary_of(tail.get("text", "")), "note": note})
 
 
+def resolver_status(project: str) -> Optional[dict]:
+    """prescient's authoritative {status, why, rank_table_version} for a project
+    (wave 4). Version-gated: an unknown table version is refused, never guessed."""
+    got = http_json(PRESCIENT_URL + "/api/tasks/status?project=" + quote(project, safe=""), timeout=3)
+    if not isinstance(got, dict):
+        return None
+    v = got.get("rank_table_version")
+    if v != AG_RANK_VERSION:
+        log(f"resolver rank_table_version={v!r} != {AG_RANK_VERSION} - ignoring it")
+        got = {**got, "stale_table": True}
+    return got
+
+
 def bro_tasks_via_hub() -> Optional[list]:
     got = http_json(HUB_URL + "/api/tasks", timeout=3)
     if not isinstance(got, dict):
@@ -1011,7 +1026,11 @@ def explain() -> None:
         row = rows.get(name) or {}
         status = row.get("status") or (e.get("state") if isinstance(e, dict) else None) or herdr
         relevant = [t["state"] for t in mine if t.get("state") not in ("done", "dropped")]
-        icon = icon_state(status, relevant)
+        resolved = resolver_status(root.rsplit("/", 1)[-1].lstrip(".")) if root else None
+        if resolved and not resolved.get("stale_table") and resolved.get("status"):
+            icon = resolved["status"]
+        else:
+            icon = icon_state(status, relevant)
         print(f"\n{name} [{a['pane_id']}, {a.get('agent')}] -> icon: {icon}")
         print(f"  herdr: {herdr}")
         if path:

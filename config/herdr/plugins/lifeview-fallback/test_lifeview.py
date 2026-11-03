@@ -500,5 +500,30 @@ class TaskHubSwitch(unittest.TestCase):
         self.assertIsNone(lv.project_name({"cwd": "/nonexistent"}))
 
 
+class Resolver(unittest.TestCase):
+    """Wave 4: prescient publishes {status, why, rank_table_version}; the plugin
+    must read it version-gated (never rank against a table it does not know)."""
+
+    def test_known_version_is_used(self):
+        self.assertEqual(lv.AG_RANK_VERSION, 2)
+
+    def test_unknown_version_is_flagged_not_trusted(self):
+        old = lv.http_json
+        try:
+            lv.http_json = lambda *a, **k: {"status": "ready", "rank_table_version": 99}
+            got = lv.resolver_status("prescient")
+            self.assertTrue(got.get("stale_table"), "an unknown table version must be flagged")
+        finally:
+            lv.http_json = old
+
+    def test_missing_resolver_is_none(self):
+        old = lv.http_json
+        try:
+            lv.http_json = lambda *a, **k: None
+            self.assertIsNone(lv.resolver_status("prescient"))
+        finally:
+            lv.http_json = old
+
+
 if __name__ == "__main__":
     unittest.main()
