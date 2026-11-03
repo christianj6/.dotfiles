@@ -525,5 +525,26 @@ class Resolver(unittest.TestCase):
             lv.http_json = old
 
 
+class TaskSystemTurns(unittest.TestCase):
+    """The loop rule (2026-11-03): a turn that is itself about the task system
+    must never open a task -- it would create a card about the card, which
+    nudges the agent, whose next turn does it again."""
+
+    def check(self, turn):
+        return lv.task_system_turn(turn)
+
+    def test_coordinator_turns_about_the_hub_are_ignored(self):
+        self.assertTrue(self.check({"said": "prescient task list --state queued"}))
+        self.assertTrue(self.check({"said": "curl /api/tasks"}))
+        self.assertTrue(self.check({"prompt": "clear the queued tasks", "said": "prescient task clear"}))
+        self.assertTrue(self.check({"said": "lifeview --explain"}))
+        self.assertTrue(self.check({"said": "sqlite3 tasks.sqlite3"}))
+
+    def test_ordinary_project_work_is_not_ignored(self):
+        self.assertFalse(self.check({"prompt": "fix the parser", "said": "The parser is fine.", "tools": ["Edit"]}))
+        self.assertFalse(self.check({"prompt": "run the tests", "said": "pytest", "tools": ["Bash"]}))
+        self.assertFalse(self.check({"tools": ["Bash"]}))          # a tool name alone decides nothing
+
+
 if __name__ == "__main__":
     unittest.main()

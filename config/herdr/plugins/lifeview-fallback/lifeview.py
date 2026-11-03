@@ -410,7 +410,7 @@ def classify(line: bytes) -> Optional[Dict]:
     tools = [b.get("name") for b in calls if b.get("name")]
     if calls:
         return {"verdict": "working", "at": at, "text": "", "said": text, "tool": tools[-1] if tools else None,
-                "calls": len(calls)}
+                "calls": len(calls), "tools": tools}
     if not text:
         return {"verdict": "working", "at": at, "text": ""}
     return {"verdict": "answered", "at": at, "text": text, "said": text}
@@ -442,7 +442,8 @@ def scan_turn(path: Path, max_bytes: int = 8 * 1024 * 1024, max_entries: int = 3
     prompt, calls, said, tool}. key is the prompt's own timestamp (one turn =
     one work session); None when the prompt is out of reach, and then no
     task is opened (a session that can't be identified can't be deduped)."""
-    out: Dict = {"key": None, "start": None, "end": None, "prompt": "", "calls": 0, "said": "", "tool": None}
+    out: Dict = {"key": None, "start": None, "end": None, "prompt": "", "calls": 0, "said": "", "tool": None,
+                 "tools": []}
     seen = 0
     try:
         size = path.stat().st_size
@@ -476,6 +477,9 @@ def scan_turn(path: Path, max_bytes: int = 8 * 1024 * 1024, max_entries: int = 3
                     out["calls"] += v.get("calls", 0)
                     out["said"] = out["said"] or v.get("said") or ""
                     out["tool"] = out["tool"] or v.get("tool")
+                    for t in v.get("tools") or []:
+                        if t not in out["tools"]:
+                            out["tools"].append(t)
     except OSError:
         pass
     return out
@@ -483,6 +487,29 @@ def scan_turn(path: Path, max_bytes: int = 8 * 1024 * 1024, max_entries: int = 3
 
 def session_marker(agent: Dict, turn: Dict) -> str:
     return f"[lifeview-session {agent.get('pane_id')}@{turn.get('key')}]"
+
+
+# Tools whose arguments name the task system. A turn that touches any of these
+# is the coordinator WORKING ON the hub, not doing project work -- auto-tasking
+# it would create a card about the card that was just created, which nudges the
+# agent, whose next turn does it again (the self-referential loop, 2026-11-03).
+TASK_SYSTEM_TOOLS = ("Bash", "bash", "shell", "exec", "terminal")
+TASK_SYSTEM_ARG = re.compile(
+    r"(\bprescient\s+task\b|\bbro\s+task\b|/api/tasks|tasks\.sqlite3|prescient-status\.json"
+    r"|lifeview|taskhub|\bhub\.py\b)", re.I)
+
+
+def task_system_turn(turn: Dict) -> bool:
+    """True when this turn's own commands/prompt are about the task system."""
+    blob = " ".join(str(x or "") for x in (
+        turn.get("prompt"), turn.get("said"),
+        " ".join(turn.get("tools") or []),
+    ))
+    if TASK_SYSTEM_ARG.search(blob):
+        return True
+    # a tool name alone is not enough (Bash is used for everything); the
+    # argument scan above is what decides.
+    return False
 
 
 def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], now: float,
@@ -508,6 +535,8 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
     marker = session_marker(agent, turn)
     if marker in created or any(marker in str(h.get("note") or "") for t in tasks for h in t.get("history") or []):
         return None, "a task was already opened for this session"
+    if task_system_turn(turn):
+        return None, "this turn is about the task system itself (hub/CLI/tray) - auto-task would loop on its own output"
     calls = turn.get("calls", 0)
     span = (turn.get("end") if herdr in ("idle", "done") and turn.get("end") else now) - (turn.get("start") or now)
     if not (calls >= WORK_MIN_TOOL_CALLS or (calls >= 1 and span > WORK_MIN_SPAN_S)):
