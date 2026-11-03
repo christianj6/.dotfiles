@@ -409,8 +409,12 @@ def classify(line: bytes) -> Optional[Dict]:
     calls = [b for b in blocks if b.get("type") in ("tool_use", "toolCall")]
     tools = [b.get("name") for b in calls if b.get("name")]
     if calls:
+        blob = " ".join(
+            " ".join(str(x) for x in (b.get("arguments"), b.get("intent")) if x)
+            for b in calls
+        )
         return {"verdict": "working", "at": at, "text": "", "said": text, "tool": tools[-1] if tools else None,
-                "calls": len(calls), "tools": tools}
+                "calls": len(calls), "tools": tools, "did": blob[:2000]}
     if not text:
         return {"verdict": "working", "at": at, "text": ""}
     return {"verdict": "answered", "at": at, "text": text, "said": text}
@@ -443,7 +447,7 @@ def scan_turn(path: Path, max_bytes: int = 8 * 1024 * 1024, max_entries: int = 3
     one work session); None when the prompt is out of reach, and then no
     task is opened (a session that can't be identified can't be deduped)."""
     out: Dict = {"key": None, "start": None, "end": None, "prompt": "", "calls": 0, "said": "", "tool": None,
-                 "tools": []}
+                 "tools": [], "did": ""}
     seen = 0
     try:
         size = path.stat().st_size
@@ -480,6 +484,8 @@ def scan_turn(path: Path, max_bytes: int = 8 * 1024 * 1024, max_entries: int = 3
                     for t in v.get("tools") or []:
                         if t not in out["tools"]:
                             out["tools"].append(t)
+                    if v.get("did"):
+                        out["did"] = (out["did"] + " " + v["did"])[:4000]
     except OSError:
         pass
     return out
@@ -502,7 +508,7 @@ TASK_SYSTEM_ARG = re.compile(
 def task_system_turn(turn: Dict) -> bool:
     """True when this turn's own commands/prompt are about the task system."""
     blob = " ".join(str(x or "") for x in (
-        turn.get("prompt"), turn.get("said"),
+        turn.get("prompt"), turn.get("said"), turn.get("did"),
         " ".join(turn.get("tools") or []),
     ))
     if TASK_SYSTEM_ARG.search(blob):

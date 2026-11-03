@@ -540,6 +540,16 @@ class TaskSystemTurns(unittest.TestCase):
         self.assertTrue(self.check({"said": "lifeview --explain"}))
         self.assertTrue(self.check({"said": "sqlite3 tasks.sqlite3"}))
 
+    def test_tool_arguments_count_as_the_signal(self):
+        """The real looping turn said nothing about the hub -- its Bash ARGUMENTS
+        did. That is the signal that has to decide, or the loop survives."""
+        self.assertTrue(self.check({"said": "All five cases behave correctly.", "tools": ["Bash"],
+                                    "did": '{"command":"prescient task list --state queued"}'}))
+        self.assertTrue(self.check({"tools": ["Bash"],
+                                    "did": '{"command":"curl -s localhost:8765/api/tasks"}'}))
+        self.assertFalse(self.check({"prompt": "fix the parser", "said": "done", "tools": ["Edit"],
+                                     "did": '{"path":"src/parser.py"}'}))
+
     def test_ordinary_project_work_is_not_ignored(self):
         self.assertFalse(self.check({"prompt": "fix the parser", "said": "The parser is fine.", "tools": ["Edit"]}))
         self.assertFalse(self.check({"prompt": "run the tests", "said": "pytest", "tools": ["Bash"]}))
