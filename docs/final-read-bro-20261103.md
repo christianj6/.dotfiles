@@ -88,3 +88,37 @@ So the moment a project name arrives, a *status question* becomes a hand-over. `
 ## The open question I am not deciding
 
 Explicit "fix it" still going straight to the project's Claude is the owner's call, and the coordinator has put it to him. My read, for the record: it should go to the coordinator for the same reason `tk-a49ea85f1d54` did — the coordinator owns whether it or its Claude does the work — but it changes who receives explicit work, so it is his decision and the path stays untouched until he answers.
+
+---
+
+## Review of the which-slot build, in flight (2026-11-03 ~16:50)
+
+The worker has the work uncommitted in `bro/voicebridge.py` (82+/7-). Read it while it is still cheap to change.
+
+**Good, and better than the spec asked:** the consumption path dispatches on the stored kind exactly as specified —
+`status` answers with no effect, `question` re-decides with the effects **stripped** (`q.effects = []`, route/propose
+removed, unbacked reply replaced), `None` answers-and-asks and files nothing, and only `task`/`filing` reach
+`handler_for`. `answered()` sets `clears_which` so the slot clears at the commit and never on a prefix. The
+`handler_for` gap I found is fixed at `:3214` (`and d.available`).
+
+**Finding 1 — `which_kind` is mislabelled on a whole family of requests.** `EXPLICIT` matches bare verbs, so
+`explicit_filing` is true for:
+
+```
+'add a retry to the heinzel sync'                 -> 'filing'  (it is a task)
+'tell heinzel to check the status of the sync'     -> 'filing'  (it is a task, arguably a status read)
+```
+
+Both matched on the single word `add` / `tell`. **Harmless for behaviour** — verified: `task` and `filing` take the same
+branch, so both still hand on correctly. But it makes the telemetry lie, and the telemetry is the thing that is
+supposed to make the next misfire diagnosable instead of inferred. Fix: test the stronger signals first —
+`implied_task` / `TELL_TO` / `HAND_TO` / `SEND_IT` / `dev_request` **before** `explicit_filing`, since naming a
+recipient or an action is more specific than the word "add". A two-line reorder, and the `which_slot {kind}` event
+then means something.
+
+**Finding 2 — `which_kind`'s docstring says "plainly one", but the classifier never returns `None` for a
+request-shaped sentence.** `'the thing with the buffer'` correctly gives `None`, which is right. Just worth keeping the
+`None` branch genuinely reachable: if every utterance ends up classified, the "answer-and-ask" safety net never fires
+and we have the same silent assumption as before, only quieter.
+
+Neither blocks. Both are cheap now and expensive after the commit.
