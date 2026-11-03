@@ -56,3 +56,18 @@ The three leftovers need one sentence from the owner, or a drop from the tray. T
 ## Correction to my own earlier report
 
 I told both coordinators "task_hub_effect count for this run: 0" for run `20261103-154353`. **Wrong** — that run has 4. My filter checked top-level `kind` and then grepped a lowercased copy, so I missed them; the correct query reads every `effect`/`task_hub_effect` event with its timestamp. The claim that survived is the one that mattered (effects *inside* the LISTENING stretch 63.9–86.9 s = 0), but I got the number wrong and it is now corrected in `docs/listening-roundtrip-verified.md`.
+
+## Why the count was N and not 1+N — the reasoning that matters
+
+The repro test (`tests/test_duplicate_factory.py`, 4 green) pins the distinction rather than the number:
+
+- **Old code, as it actually was:** `holds` absent → the in-decision hub branch creates on every used prefix, and `effects` stays empty → the release creates nothing → **N**. The four rows are the speculative ones, exactly as observed.
+- **Old shape against today's brain:** `claims_have_effects` would rebuild an Effect from the `route` action, so a release *would* fire → **1+N**. That is the coordinator's arithmetic — correct for a counterfactual, wrong for what the owner saw.
+
+So "1+N" and "N" are both right about different trees; the observed data say N. The test asserts `len(made) == 4` with `holds` deleted, and asserts `creates(on_hub) == []` during decide plus `task_hub_effect == 1` with `holds = True`. That is the shape of a real regression test: it would go red if either half came back.
+
+## State
+
+- bro: `612` tests, `4a056ff` (repro) and `9c2a002` (root cause), **unpushed**.
+- Real-run guard separates the runs: trips on `142059` / `152908` / `154353`, clean on `155714` (post-fix).
+- **Still unproven:** the mic after `3c483b0`. "Yes" to an offer should produce exactly **one** `task_hub_effect`. The replay proves the code path; only the microphone proves the integration.
