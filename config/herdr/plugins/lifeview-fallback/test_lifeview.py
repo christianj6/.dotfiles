@@ -2,6 +2,7 @@
 """Unit tests for lifeview.py's decision logic: python3 test_lifeview.py"""
 
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -459,7 +460,18 @@ class TaskHubSwitch(unittest.TestCase):
     to bro, so an older prescient (no /api/tasks) can never break auto-tasks."""
 
     def test_default_is_bro(self):
-        self.assertEqual(lv.TASK_HUB, "bro")
+        """The parsed default, independent of this machine's config file (which
+        is set to prescient after cut-over): no env, no file -> bro."""
+        old_cfg = lv.PLUGIN_CONFIG
+        try:
+            lv.PLUGIN_CONFIG = Path("/nonexistent/lifeview.env")
+            os.environ.pop("LIFEVIEW_TASK_HUB", None)
+            self.assertEqual(lv._plugin_env("TASK_HUB", "bro"), "bro")
+            os.environ["LIFEVIEW_TASK_HUB"] = "prescient"
+            self.assertEqual(lv._plugin_env("TASK_HUB", "bro"), "prescient")
+        finally:
+            os.environ.pop("LIFEVIEW_TASK_HUB", None)
+            lv.PLUGIN_CONFIG = old_cfg
 
     def test_bro_path_when_hub_unavailable(self):
         old_hub, old_bin, old_avail = lv.TASK_HUB, lv.bro_bin, lv.hub_available
