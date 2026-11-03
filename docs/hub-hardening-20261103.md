@@ -47,3 +47,20 @@ Also fixed in passing: a bell addressed by **pane id** was kept but never delive
 - prescient: 821 tests, hub intact through the restart (126 items).
 - bro: 561 tests, `41b5d11` **not pushed** (4 ahead).
 - **Voice stays down** — no `bro voice mic` process. The owner's test is pending and must exercise the fixed try/press/reopen path.
+
+## 5. Voice up — verified at 2026-11-03 15:29
+
+| Process | PID | Mode it actually sees |
+|---|---|---|
+| `bro serve` | 44537 (up 1h10m+) | `{"mode": "prescient", "source": "env"}` |
+| `bro voice mic --live` | 24739 | telemetry run `20261103-152908`, `{"kind":"task_hub","source":"file","task_hub":"prescient"}` |
+
+Both prescient, one store, and the core's split guard passed (it refuses to start if it disagrees with serve — the guard that would otherwise let the two halves write different stores).
+
+`/api/tasks`: **126 rows, 126 hub-backed, 0 non-hub.** First row `tk-cbbc4b8a61dc working hub=true hub_state=working bro/dev`.
+
+### Build staleness is a real hazard, now documented
+
+The first launch after the rebuild failed with `contract mismatch: core 10, brain 11`. Confirmed the mechanism rather than assuming it: `contract/contract.go` uses `//go:embed contract.json`, and `contract.json` now reads `"version": 11`, while the running `bin/bro` carries `"version": 11` after the rebuild. So a stale binary genuinely embeds the old number, and the refusal is the contract working as designed — not a code defect.
+
+**Rule: run `make` before starting the core after any round that touches the contract.** The failure mode is a clean refusal, which is the good case; the bad case would be two halves agreeing on a stale contract.
