@@ -16,6 +16,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.dotfiles/scripts/git-guard.py\" --claude",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   },
   "enabledPlugins": {

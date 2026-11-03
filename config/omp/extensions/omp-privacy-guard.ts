@@ -1,40 +1,36 @@
 // omp-privacy-guard — the ~/.dotfiles repo is PUBLIC (fresh-VM clone without
-// auth). Tool-call layer of the privacy guardrail:
-//   .githooks/pre-commit  -> local commits (bypassable with --no-verify)
-//   this extension        -> git commit/push bash calls (cannot be bypassed)
-//   CI (check-private.yml) -> full tracked-tree audit on push + daily
-// A bash call touching git commit|push runs scripts/check-private.py
-// --staged against the session repo and blocks on findings. Only repos that
-// ship the scanner (scripts/private-patterns.txt present) are affected.
-// Board bookkeeping and project names are fine by owner decision
+// auth). Agent layer of the privacy guardrail:
+//   .githooks/pre-commit  -> staged content (read from the index)
+//   .githooks/commit-msg  -> the commit message
+//   .githooks/pre-push    -> every commit a push publishes (content + messages)
+//   this extension        -> keeps an agent from switching those hooks off
+// The hooks do the scanning, when git runs, on what git actually commits and
+// pushes, so `git add x && git commit` is covered. This blocks the ways
+// around them for a repo that ships scripts/private-patterns.txt: --no-verify
+// (and commit's -n), a core.hooksPath override, and a clone whose hooksPath
+// isn't .githooks. The decision is scripts/git-guard.py, shared with
+// Claude's PreToolUse hook (config/claude/settings.json): one rule set.
+// Project names and board bookkeeping are fine by owner decision
 // (2026-10-05) — tune private-patterns.txt with the owner, never bypass.
 export default function (api) {
-  var GIT_WRITE = /\bgit\b[^|;&]*\b(commit|push)\b/;
-  var exec = require("child_process").execSync;
+  var fs = require("fs");
+  var exec = require("child_process").execFileSync;
+  var GUARD = (process.env.HOME || "") + "/.dotfiles/scripts/git-guard.py";
 
   api.on("tool_call", async function (event) {
     if (event.toolName !== "bash") return;
     var cmd = String((event.input || {}).command || "");
-    if (!GIT_WRITE.test(cmd)) return;
-    var root = "";
+    if (cmd.indexOf("git") < 0 || !fs.existsSync(GUARD)) return;
+    var out;
     try {
-      root = String(exec("git rev-parse --show-toplevel", { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"] })).trim();
+      out = JSON.parse(String(exec("python3", [GUARD, "--check", cmd, "--cwd", process.cwd()], { stdio: ["ignore", "pipe", "pipe"], timeout: 15000 })));
     } catch (e) {
-      return; // not inside a git repo
+      return; // the guard itself failed: the git hooks still run
     }
-    var fs = require("fs");
-    if (!fs.existsSync(root + "/scripts/private-patterns.txt")) return; // guard ships only with this repo
-    var out = "";
-    try {
-      exec("python3 scripts/check-private.py --staged", { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
-    } catch (e) {
-      out = String((e && e.stderr) || e);
+    if (out && out.block) {
       return {
         block: true,
-        reason:
-          "Privacy guard: staged content matches scripts/private-patterns.txt — private content must not land in this PUBLIC repo.\n" +
-          out +
-          "\nRemove the content or tune private-patterns.txt with the owner. Never bypass (--no-verify included).",
+        reason: "Privacy guard: " + out.reason + "\nNever bypass the privacy hooks of this PUBLIC repo.",
       };
     }
   });

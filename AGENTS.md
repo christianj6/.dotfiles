@@ -24,16 +24,25 @@ level what is visible in the code base and auditable from commit history.
 
 ## Enforcement
 
-Two local layers run `scripts/check-private.py` against
-`scripts/private-patterns.txt` (the owner's tuning knob) — deliberately
-no cloud CI for this (owner decision 2026-10-05, too much infrastructure
-for a simple local check):
+Local layers only, against `scripts/private-patterns.txt` (the owner's
+tuning knob) — deliberately no cloud CI for this (owner decision
+2026-10-05, too much infrastructure for a simple local check):
 
-1. `.githooks/pre-commit` — blocks local commits (repo sets
-   `core.hooksPath=.githooks`).
-2. `config/omp/extensions/omp-privacy-guard.ts` — blocks `git commit`/`git
-   push` tool calls, catching `--no-verify` bypasses.
-   Manual full-tree audit when wanted: `python3 scripts/check-private.py --all`.
+1. Git hooks (`setup.sh` sets `core.hooksPath=.githooks`), all running
+   `scripts/check-private.py`:
+   - `pre-commit` — the staged content, read from the index;
+   - `commit-msg` — the commit message (messages are published too);
+   - `pre-push` — every commit the push publishes, content and messages,
+     however it was committed.
+2. `scripts/git-guard.py` — keeps agents from switching the hooks off:
+   blocks `--no-verify` (and commit's `-n`), `core.hooksPath` overrides,
+   and commits from a clone whose hooks aren't wired. Used by omp
+   (`config/omp/extensions/omp-privacy-guard.ts`) and Claude (the
+   `PreToolUse` Bash hook in `config/claude/settings.json`). It reads the
+   command line, so a script that runs git is out of its sight; the hooks
+   still run there.
+
+Manual full-tree audit when wanted: `python3 scripts/check-private.py --all`.
 
 If a line is flagged but genuinely belongs in the repo, propose a pattern
 change to the owner — never bypass the hook or the guard. If you find

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Privacy guard, last line: scan every commit this push publishes (added
+# lines and messages), however it was committed (a --no-verify commit too).
+exec python3 "$(git rev-parse --show-toplevel)/scripts/check-private.py" --pre-push

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Privacy guard: commit messages are published too. Block a message that
+# matches scripts/private-patterns.txt.
+exec python3 "$(git rev-parse --show-toplevel)/scripts/check-private.py" --commit-msg "$1"
