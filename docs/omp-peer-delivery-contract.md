@@ -44,3 +44,23 @@ stdout on success: `delivered <session-file>`. All progress and diagnostics go t
 | 4 | `failed` (safe to retry) |
 
 For a **claude** target, `ok` cannot be proven from exit 0/2 — confirm with `herdr agent read` before reporting `ok`, else report `pending`.
+
+## Decision: the hub does NOT shell out to `omp-peer` (2026-11-03)
+
+Prescient's `agent._deliver` is the nudge path, not this CLI. Rationale (prescient's, accepted):
+
+- `_deliver` already handles the nvim-nested omp case — the same case this contract's exit 2/4 carve out — and is the path hardened by `842f2b7`/`e9e60c0` after the owner twice had to press Enter by hand.
+- It yields a richer verdict than an exit code: it can distinguish **"typed but not submitted"** (failed, *not* retryable — retrying duplicates) from "raised with nothing typed" (failed, retryable). `omp-peer`'s exit 1 cannot express that difference.
+
+The **vocabulary stays shared**, which is what matters for callers: both paths report `nudged: ok | pending | failed` plus `retryable: bool` on the item.
+
+| `_deliver` outcome | `nudged` | `retryable` |
+|---|---|---|
+| nested path, read-back confirms submitted | `ok` | — |
+| fast path, prompt returned (typed, nothing read back) | `pending` | — |
+| raised, nothing typed | `failed` | **yes** |
+| raised, "typed but not submitted" | `failed` | **no** (retry duplicates) |
+
+For **claude** targets `_deliver`'s existing read-back decides: `ok` only when it passes, otherwise `pending`.
+
+This document remains the contract for `omp-peer` itself (bro's client and any other caller), and the source of truth for *why* exit 2 must never be treated as failure.
