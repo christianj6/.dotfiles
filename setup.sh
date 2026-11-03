@@ -222,6 +222,7 @@ ln -sf ~/.dotfiles/config/omp/rules/image-overlay.md ~/.omp/agent/rules/image-ov
 ln -sf ~/.dotfiles/config/omp/rules/agent-pane-messaging.md ~/.omp/agent/rules/agent-pane-messaging.md
 ln -sf ~/.dotfiles/config/omp/rules/stall-watch.md ~/.omp/agent/rules/stall-watch.md
 ln -sf ~/.dotfiles/config/omp/rules/coordinator-network.md ~/.omp/agent/rules/coordinator-network.md
+ln -sf ~/.dotfiles/config/omp/rules/fixed-claim-call-sites.md ~/.omp/agent/rules/fixed-claim-call-sites.md
 ln -sf ~/.dotfiles/config/omp/skills/code-style/SKILL.md ~/.omp/agent/skills/code-style/SKILL.md
 
 # Vendored mattpocock/skills set (grill-with-docs, improve-codebase-architecture,
