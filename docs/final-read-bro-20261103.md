@@ -60,3 +60,31 @@ And add the case to `tests/test_coordinator_first.py`: coordinator present-but-d
 Ship-ready apart from that one line. The corruption I caused is repaired and verified; the tests are behaviour-level, not plumbing; every commit cites the observation behind it.
 
 **Unpushed, as agreed.** bro is 16 ahead of `origin/main`. Prescient and dotfiles are in sync.
+
+---
+
+## The which-slot spec — confirmed, and one addition
+
+I verified the mechanism myself rather than accepting the description:
+
+```python
+# slot creation (voicebridge.py:2626 and 3 other sites)
+self._which = (time.monotonic(), self.with_context(ptext, pid), msg_id, "fresh")
+#                        ^when          ^text only — NO KIND     ^msg id  ^state
+```
+
+The consumer at `:2546` dispatches on **the presence of a project name**, not on what was asked:
+
+```python
+if which and ... and (project := self.named_project(text)):
+    dest = self.handler_for(project, stack)
+    return made(self.vary("pass", dest.label), [Effect(dest.id, dest.label, which[1], [which[2]])])
+```
+
+So the moment a project name arrives, a *status question* becomes a hand-over. `asks_status()` exists and is used elsewhere; it never gets a second look here. That is exactly the owner's 16:07 experience: "ask files what the status was" → "Which project?" → "Dot files" → routed as work.
+
+**Addition to the spec I want on record:** the kind must be classified at **slot creation**, and the classifier must be able to say *"I don't know"*. If the slot records `kind` only when it is certain, an ambiguous request still becomes a task — which is the original bug wearing a label. The safe default for an unrecognised kind is to **answer and ask**, never to file. Also: the `which` slot must be cleared on **any** consumption path, including a status answer — otherwise a later "dot files" re-enters a stale slot. (The code deliberately does *not* clear on speculative prefixes, which is right; the clear belongs at commit.)
+
+## The open question I am not deciding
+
+Explicit "fix it" still going straight to the project's Claude is the owner's call, and the coordinator has put it to him. My read, for the record: it should go to the coordinator for the same reason `tk-a49ea85f1d54` did — the coordinator owns whether it or its Claude does the work — but it changes who receives explicit work, so it is his decision and the path stays untouched until he answers.
