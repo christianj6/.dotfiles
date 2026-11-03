@@ -543,6 +543,8 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
         return None, "a task was already opened for this session"
     if task_system_turn(turn):
         return None, "this turn is about the task system itself (hub/CLI/tray) - auto-task would loop on its own output"
+    if is_coordinator(tasks):
+        return None, "this agent coordinates; its work is other agents' tasks, not its own card"
     calls = turn.get("calls", 0)
     span = (turn.get("end") if herdr in ("idle", "done") and turn.get("end") else now) - (turn.get("start") or now)
     if not (calls >= WORK_MIN_TOOL_CALLS or (calls >= 1 and span > WORK_MIN_SPAN_S)):
@@ -613,6 +615,22 @@ def summary_of(text: str, limit: int = 240) -> str:
 def tasks_for(agent: Dict, tasks: list) -> list:
     """Open bro tasks whose agent is this one (by herdr name or pane id)."""
     return [t for t in tasks_of(agent, tasks) if t.get("state") in OPEN_TASK]
+
+
+def is_coordinator(tasks: list) -> bool:
+    """True when this agent is a project coordinator rather than a workhorse.
+
+    Evidence, in order: it already holds an item whose target is `coordinator`
+    (the hub's role for a project's omp), or it has coordinated before (any item
+    it was nudged with). A coordinator's turns are coordination -- reading specs,
+    dispatching, clearing queues -- and auto-tasking them is what produced the
+    self-referential loop (2026-11-03). Workhorses and claude panes have no such
+    items, so they keep the automatic green.
+    """
+    for t in tasks:
+        if str(t.get("target") or "") == "coordinator":
+            return True
+    return False
 
 
 def tasks_of(agent: Dict, tasks: list) -> list:

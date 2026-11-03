@@ -556,5 +556,25 @@ class TaskSystemTurns(unittest.TestCase):
         self.assertFalse(self.check({"tools": ["Bash"]}))          # a tool name alone decides nothing
 
 
+class CoordinatorExemption(unittest.TestCase):
+    """A coordinator's turns ARE coordination; auto-tasking them loops on the
+    cards it is creating (2026-11-03). Workhorses keep the automatic green."""
+
+    def test_coordinator_detected_by_target(self):
+        self.assertTrue(lv.is_coordinator([{"target": "coordinator"}]))
+        self.assertFalse(lv.is_coordinator([{"target": "dev"}]))
+        self.assertFalse(lv.is_coordinator([]))
+
+    def test_coordinator_turns_never_open_cards(self):
+        title, why = lv.autotask_check(
+            {"name": "omp-v34-wdp5", "pane_id": "wD:p5", "agent_status": "working"},
+            [{"id": "tk-1", "target": "coordinator", "state": "done"}],
+            {"key": "2026-11-03T12:00:00.000+01:00", "start": 0, "calls": 10, "said": "reading the design doc"},
+            {"omp-v34-wdp5"}, time.time() + 10 ** 6,
+        )
+        self.assertIsNone(title)
+        self.assertIn("coordinates", why)
+
+
 if __name__ == "__main__":
     unittest.main()
