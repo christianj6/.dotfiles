@@ -68,3 +68,9 @@ This document remains the contract for `omp-peer` itself (bro's client and any o
 ## Correction (2026-11-03, from prescient's wave-1 report)
 
 **A claude target is ALWAYS `pending`, never `ok`.** This document said "confirm with `herdr agent read` before reporting ok" — but `agent._deliver` only reads the pane back on the **nested-omp** path; a claude target always takes the fast `agent prompt` path, where nothing is read back. So under this contract's own rule a claude delivery can never be *proven*, and the hub reports `pending` for every claude nudge. That is correct behaviour (a pending nudge is not evidence either way; the reaper judges on "still queued AND target idle"), not a bug.
+
+## Confirmation (2026-11-03, live): the nested path can be *proven*
+
+`nudged: ok` is achievable — verified end-to-end on the live hub: a harness-created item (`tk-7d844f474f72`) reached prescient's coordinator through the **nested-omp** path, the pane read-back confirmed the line had left the input box, the item stored `nudged=ok, retryable=0`, and the owner's verdict moved it `queued → done` six seconds later.
+
+So the earlier statement needs one refinement: a **claude** target can only ever be `pending`, but a **nested-omp** target can be `ok` (read-back) or `pending` (fast path returned, nothing read back). Both are honest; neither is a failure.
