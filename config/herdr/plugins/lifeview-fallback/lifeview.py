@@ -80,6 +80,11 @@ AUTO_READY = os.environ.get("LIFEVIEW_AUTO_READY", "1") != "0"
 AUTO_READY_STARTED = os.environ.get("LIFEVIEW_AUTO_READY_STARTED", "0") == "1"
 BRO_URL = os.environ.get("BRO_URL", "http://127.0.0.1:8766")
 PRESCIENT_URL = os.environ.get("PRESCIENT_URL", "http://127.0.0.1:8765")
+# Task hub cut-over switch (docs/go-task-hub.md wave 3): "bro" keeps today's
+# behaviour; "prescient" routes create/list/ready through the hub service.
+# Default bro so an older service is never required.
+TASK_HUB = os.environ.get("LIFEVIEW_TASK_HUB", "bro")
+HUB_URL = PRESCIENT_URL
 OPEN_TASK = ("open", "sent", "working")
 # Auto-task: the harness opens a bro task for real work no task covers.
 AUTO_TASK = os.environ.get("LIFEVIEW_AUTO_TASK", "1") != "0"
@@ -645,6 +650,8 @@ def http_json(url: str, body: Optional[Dict] = None, timeout: float = 3) -> Opti
 
 
 def bro_tasks() -> Optional[list]:
+    if TASK_HUB == "prescient" and hub_available():
+        return bro_tasks_via_hub()
     got = http_json(BRO_URL + "/api/tasks")
     if not isinstance(got, dict):
         return None
@@ -664,6 +671,53 @@ def bro_bin() -> Optional[str]:
     except OSError:
         pass
     return shutil.which("bro")
+
+
+def hub_available() -> bool:
+    """True when the prescient task hub answers. Cached briefly: the plugin
+    ticks every 10 s and must not add a probe per tick per agent."""
+    global _HUB_OK
+    now = time.time()
+    if _HUB_OK and now - _HUB_OK[0] < 30:
+        return _HUB_OK[1]
+    got = http_json(HUB_URL + "/api/tasks?state=queued&limit=1", timeout=2)
+    ok = isinstance(got, dict) and isinstance(got.get("items"), list)
+    _HUB_OK = (now, ok)
+    return ok
+
+
+_HUB_OK: tuple = (0.0, False)
+
+
+def hub_open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
+    """Harness create through the hub (wave 3): project is REQUIRED and comes
+    from the git toplevel, never derived from a dest string."""
+    project = project_name(agent)
+    if not project:
+        return None
+    who = agent.get("name") or agent["pane_id"]
+    note = (f"opened by the lifeview harness: {who} began work with no task covering it "
+            f"(LIFEVIEW_AUTO_TASK=0 disables this) {session_marker(agent, turn)}")
+    got = http_json(HUB_URL + "/api/tasks", {"op": "create", "text": title, "project": project,
+                                             "target": "coordinator", "origin": "harness", "note": note})
+    item = (got or {}).get("item") or {}
+    return item.get("id") if item.get("id") else None
+
+
+def hub_mark_ready(t: Dict, agent: Dict, tail: Dict, quiet: float) -> Optional[Dict]:
+    who = agent.get("name") or agent.get("pane_id")
+    note = ("auto-marked ready by the lifeview harness: " + who +
+            f" settled {quiet:.0f}s after its last answer with this as its one open task; "
+            "summary is that answer. LIFEVIEW_AUTO_READY=0 disables this.")
+    return http_json(HUB_URL + "/api/tasks", {"op": "ready", "id": t["id"], "by": who,
+                                              "summary": summary_of(tail.get("text", "")), "note": note})
+
+
+def bro_tasks_via_hub() -> Optional[list]:
+    got = http_json(HUB_URL + "/api/tasks", timeout=3)
+    if not isinstance(got, dict):
+        return None
+    return [i for i in got.get("items") or [] if isinstance(i, dict) and i.get("id")]
 
 
 def open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
@@ -686,11 +740,20 @@ def open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
 
 
 def mark_ready(t: Dict, agent: Dict, tail: Dict, quiet: float) -> Optional[Dict]:
+    if TASK_HUB == "prescient" and hub_available():
+        return hub_mark_ready(t, agent, tail, quiet)
     who = agent.get("name") or agent.get("pane_id")
     note = (f"auto-marked ready by the lifeview harness: {who} settled {quiet:.0f}s after its last answer "
             "with this as its one open task; summary is that answer. LIFEVIEW_AUTO_READY=0 disables this.")
     return http_json(BRO_URL + "/api/tasks", {"action": "ready", "id": t["id"], "by": who,
                                               "summary": summary_of(tail.get("text", "")), "note": note})
+
+
+def project_name(agent: Dict) -> Optional[str]:
+    """The hub's REQUIRED project: the git toplevel's basename (the same rule
+    `prescient status` and the CLI use), never derived from a dest string."""
+    root = git_root(str(agent.get("cwd") or ""))
+    return os.path.basename(root) if root else None
 
 
 def git_root(cwd: str) -> Optional[str]:

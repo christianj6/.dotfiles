@@ -454,5 +454,30 @@ class Icon(unittest.TestCase):
         self.assertEqual(lv.icon_state("standby", []), "idle")
 
 
+class TaskHubSwitch(unittest.TestCase):
+    """Wave 3 guard: with LIFEVIEW_TASK_HUB unset the plugin must keep talking
+    to bro, so an older prescient (no /api/tasks) can never break auto-tasks."""
+
+    def test_default_is_bro(self):
+        self.assertEqual(lv.TASK_HUB, "bro")
+
+    def test_bro_path_when_hub_unavailable(self):
+        old_hub, old_bin, old_avail = lv.TASK_HUB, lv.bro_bin, lv.hub_available
+        try:
+            lv.TASK_HUB, lv.bro_bin = "prescient", (lambda: None)
+            lv.hub_available = lambda: False
+            self.assertIsNone(lv.open_task({"pane_id": "wX:p1", "name": "a", "cwd": "/tmp"}, "t", {}))
+        finally:
+            lv.TASK_HUB, lv.bro_bin, lv.hub_available = old_hub, old_bin, old_avail
+
+    def test_project_name_from_git_toplevel(self):
+        # required by the hub; never derived from a dest string
+        import subprocess as sp
+        with tempfile.TemporaryDirectory() as d:
+            sp.run(["git", "init", "-q", d], check=True)
+            self.assertEqual(lv.project_name({"cwd": d}), Path(d).name)
+        self.assertIsNone(lv.project_name({"cwd": "/nonexistent"}))
+
+
 if __name__ == "__main__":
     unittest.main()
