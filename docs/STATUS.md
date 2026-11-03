@@ -1,26 +1,22 @@
 # Status: .dotfiles
-Updated: 2026-10-26 12:23 (Europe/Berlin)
+Updated: 2026-11-03 13:00 (Europe/Berlin)
 
 ## Now
-- Nothing in flight — all delegated work has landed and is pushed. Standing by.
+- Nothing in flight — the task-hub cut-over is complete and verified. Clean checkpoint.
 
 ## Next
-- Roll the remaining stale panes onto config v24 when convenient (dotfiles tab, heinzel tab, the Thor demo-worktree tab) — one `workspace-rollout <tab>` each.
-- Optional: also scrub the "#pi#1" buffer label from NvChad's tabline/statusline (the float itself is already clean).
+- Wave 5 finish: remove bro's local task storage (the archive is written and gitignored).
+- Watch the first real week of hub usage; the auto-task loop rule is live but young.
 
 ## Waiting on the owner
-- One uncommitted line in `config/omp/config.yml`: the `task` model role was switched to `anthropic/claude-sonnet-5`. Commit it (subagents reroute to Sonnet) or revert it — your call.
-- Two omp panes (prescient `w5:p14`, topical `w5:p16`) are `NEEDS-MANUAL`: their nvim sat on a modal prompt during the rollout. Dismiss the prompt, then run `workspace-rollout w5:tN --only w5:p14` and `workspace-rollout w5:tP --only w5:p16`.
+- Nothing blocking.
 
 ## Blocked
 - Nothing.
 
 ## Recently landed
-- `workspace-rollout`: one command brings a project tab's agent panes to the latest config version at their next idle point, resuming each session — with dry-run, per-pane targeting, and self-detection of the herdr registry-wedge failure mode.
-- Config v24 is live: Thor verified end-to-end (session resumed, sidebar state accurate); prescient and topical claude panes rolled.
-- Discord replies now work mid-typing: the relay focuses the omp REPL over nvim RPC instead of the fragile ctrl+a dance; `omp-peer` got the same upgrade, and the running bot already has it.
-- Trello `Maps` list deprecated — every project's standing context now lives in its own repo (`docs/DEV_BOARD.md`).
-- Privacy guardrail on this public repo: pre-commit hook + agent extension + `AGENTS.md` policy, all local (no cloud CI, per owner).
-- terminal-browser disabled pending a performance rethink; root-cause analysis in `docs/terminal-browser-perf.md`.
-- omp REPL float: wider (70% width, 90-col floor) and the `#pi#1` label removed from the float.
-- `rea` MCP server moved off global registration — project-scoped on demand only (decomp tasks).
+- **Task hub is live.** prescient owns tasks (SQLite store + enforced state machine + HTTP + CLI); bro is a client behind `TASK_HUB=prescient`; Trello is the async audit log. bro's old store is frozen and archived.
+- **One route, one delivery path, one resolver.** Coordinator inbox = `state=queued&target=coordinator`; nudges go through prescient's hardened `_deliver`; the plugin's icon diagnostics read prescient's `{status, why}` (ranks v2, version-gated).
+- **All panes on v34**, sessions resumed; agents instructed to use `prescient task start|ready` (bro's verbs forward for one release).
+- **Three hub bugs found by smoke-testing**, not by assuming: a dropped hub dispatch in the plugin's auto-task path (local store kept being written), env-only switches invisible to the herdr-launched daemon, and a self-referential auto-task loop (fixed by a rule: a turn about the task system never opens a task, and tool *arguments* count as the signal).
+- **Auto-task re-enabled** with that rule; `--explain` answers "why is my icon like this" from one source.
