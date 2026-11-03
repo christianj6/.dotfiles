@@ -6,6 +6,8 @@ Updated: 2026-11-03 17:05 (Europe/Berlin)
 - The claim-without-effect class is fixed and pinned by a regression test. One observation still outstanding: "yes" to an
   offer on the real mic must produce exactly ONE `task_hub_effect`.
 - The which-slot intent fix (a status question must not become a work item) is spec'd with the build in flight.
+- Explicit "fix it" → coordinator first: two gaps remain (no-project falls to bro's Claude; `coordinator:bro` doesn't
+  exist). Spec'd and routed to both repos.
 
 ## Next
 - **Privacy guardrail hole** (see Blocked) — the one thing I would fix next.
@@ -13,8 +15,7 @@ Updated: 2026-11-03 17:05 (Europe/Berlin)
 - Watch the first real week of hub usage; the auto-task rule is live but young.
 
 ## Waiting on the owner
-- **Explicit "fix it"**: does it go to the project's coordinator (like every other hand-over) or straight to its Claude?
-  It changes who receives explicit work, so it is your call; bro is untouched until you answer.
+- **Nothing blocking your decisions.** Explicit "fix it" is decided: coordinator first (`docs/spec-explicit-fix-it-coordinator-first.md`). The mic observation is deferred by your call and stays recorded as unproven.
 - `tk-fcf2134447ac`, `tk-b8fdc5c99e33` + three duplicates (`tk-1c332dde48ea`, `tk-5809a064b04e`, `tk-2840f7a41414`):
   real rows that need a drop or an answer. Only you may drop, and I will not record a `harness` drop to tidy up.
 
