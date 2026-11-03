@@ -52,3 +52,47 @@ Before this change, bro's own explicit work reached `claude-v2-wdp6` directly. N
 - Nothing in bro resolves a destination by the bare string `bro`.
 
 The coordinator's claim holds on all three.
+
+---
+
+## Gap 3, verified: `delegate_to` bypasses the coordinator for bro's own work
+
+The coordinator flagged this and it is real. Independent check of `voicebridge.py:3202`:
+
+```
+calls dev_agent: True
+calls dev_id:    False
+  -> bro-own work in delegate_to returns BRO'S CLAUDE, skipping bro's coordinator
+```
+
+`delegate_to` ends with:
+
+```python
+if project and (dest := self.handler_for(project, stack)) is not None:
+    return dest                       # a named/talked-about project: coordinator-aware, correct
+if not about_bro:
+    return None                       # asks which project - correct
+a = dev_agent(self.agents())          # <- bro's own Claude, never dev_id()
+return agent_destination(a) if a is not None else None
+```
+
+So every path that goes **through a project** is already coordinator-first; only the `about_bro` path skips it. That is the same shape as gap 1 and it is why the fix belongs in one place.
+
+### Why this is the one that would have silently defeated the change
+
+`delegate_to` is called from `_needs_task` (`:2970`), i.e. for **implied** tasks — "if there's an implied task you should just start delegating that". `handler_for` is bypassed exactly when the owner's words are about bro itself and name no project. So:
+- a **status** ask → `handler_for` → coordinator ✔ (this is why `99c165a` appeared to hold)
+- an **implied task about bro** → `dev_agent` → bro's Claude ✘
+
+My earlier acceptance of `99c165a` was therefore narrower than I stated: I verified the precedence **inside `handler_for`** and did not verify every caller. That is my error, and it is the same class as the `1+N` mistake — checking the function and inferring the system.
+
+### The complete fix, now three sites with one rule
+
+Every place that selects a destination for **bro's own** work must ask the same question, in this order:
+
+1. a project (named or recently talked about) → `handler_for(project, stack)`
+2. bro's own project → **`dev_id()` first**, then `dev_agent()` as the fallback
+
+Sites: `_command` explicit work (`:2904`, gap 1), `delegate_to` (`:3217`, gap 3), and any future one. **Better than fixing three call sites:** put the rule in one helper — e.g. `own_work_dest(stack)` returning `dev_id()`-derived coordinator else `dev_agent()` — and have all three call it. Three copies of a precedence rule is how the next one drifts.
+
+And the test must be an implied-task-about-bro case, not a status case: `"when you're in standby, fix that"`-shaped input, asserting the dest is bro's **coordinator**. A status-ask test passes today and proves nothing about gap 3.
