@@ -74,3 +74,23 @@ The unknown-tier rule holds in both directions — an unrecognised tier reads "u
 **Wording mismatch to watch in first use (not a blocker):** the tray tooltip promises "answers them all when you say
 you're done", while the core's `kept()` line says 'say "your turn" and I'll answer them'. Both true, different
 phrases named at different moments.
+
+---
+
+**Core restarted, listening mode live (verified 2026-11-03 15:43, bro core pid 45198).**
+
+| Check | Evidence |
+|---|---|
+| started from the existing binary, no rebuild | pid 45198 `voice mic --live`; `bin/bro` made 15:36 with contract v11 + LISTENING present |
+| startup event says the right store | run `20261103-154353` → `{"kind":"task_hub","source":"file","task_hub":"prescient"}` |
+| `tier` survives prescient's forward | `GET localhost:8765/api/voice` → `{"running":true,"session":"live","tier":"ACTIVE","since_ms":42043,"state":"IDLE","output":"Beyond TV"}` — this is the exact object the page renders |
+| hub untouched by the restart | 125 done / 2 ready before and after; **no row created after 14:43** |
+
+The round-trip (`just listen` → `I am done`) has **not** been spoken yet — the core had just started. That is the one
+thing still unproven by observation: `listen_done` handing the stretch over as one turn with zero effects. It is
+covered by bro's own tests, but tests are not the owner's microphone, and the earlier hand-off taught that lesson
+(the pipe worked while the *intent* was wrong).
+
+**What to watch on the first real use:** the tray should read a light-blue "listening" — not grey (off) and not blank
+(on). If it shows "on" while bro is silent, the page is stale and needs a reload; the served bytes are correct, so a
+hard refresh is the fix, not a code change.
