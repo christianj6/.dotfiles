@@ -1,21 +1,29 @@
 # Status: .dotfiles
-Updated: 2026-11-03 16:00 (Europe/Berlin)
+Updated: 2026-11-03 17:05 (Europe/Berlin)
 
 ## Now
-- Voice hand-off is live end to end and the owner has used it on the real mic. Listening mode is up and proven.
-- One known defect in flight: a spec-hit turn can claim a hand-over with no effect behind it (bro's coordinator has the spec).
+- Voice hand-off works on the real mic; listening mode is live and proven (held thoughts, one closing turn, zero effects).
+- The claim-without-effect class is fixed and pinned by a regression test. One observation still outstanding: "yes" to an
+  offer on the real mic must produce exactly ONE `task_hub_effect`.
+- The which-slot intent fix (a status question must not become a work item) is spec'd with the build in flight.
 
 ## Next
-- bro: the claim-without-effect invariant (see Waiting on).
+- **Privacy guardrail hole** (see Blocked) — the one thing I would fix next.
 - Wave 5 finish: remove bro's local task storage (archive written and gitignored).
 - Watch the first real week of hub usage; the auto-task rule is live but young.
 
 ## Waiting on the owner
-- **bro has 9 commits unpushed** on main. Nothing is at risk locally, but they are only on this machine.
-- `tk-fcf2134447ac` (bro/dev, ready): a *question* that became a work item. The dev agent answered it in the summary, so it is complete in substance — drop or answer it as you see fit. Not touched by me.
+- **Explicit "fix it"**: does it go to the project's coordinator (like every other hand-over) or straight to its Claude?
+  It changes who receives explicit work, so it is your call; bro is untouched until you answer.
+- `tk-fcf2134447ac`, `tk-b8fdc5c99e33` + three duplicates (`tk-1c332dde48ea`, `tk-5809a064b04e`, `tk-2840f7a41414`):
+  real rows that need a drop or an answer. Only you may drop, and I will not record a `harness` drop to tidy up.
 
 ## Blocked
-- Nothing.
+- **The privacy guard has a push-time hole** (`docs/privacy-guardrail-audit.md`): the omp extension runs
+  `check-private.py --staged` for BOTH `commit` and `push`, so a `--no-verify` commit followed by a push is audited
+  against an empty index. Reproduced in a scratch clone. There is no `pre-push` hook. Fix: `.githooks/pre-push` running
+  `--all`, and branch the extension on the verb. Also: the extension header advertises a CI layer that was deliberately
+  removed in `7c97431` and does not exist.
 
 ## Recently landed
 - **Task hub is live.** prescient owns tasks (SQLite store + enforced state machine + HTTP + CLI); bro is a client behind `TASK_HUB=prescient`; Trello is the async audit log. bro's old store is frozen and archived.
@@ -27,6 +35,8 @@ Updated: 2026-11-03 16:00 (Europe/Berlin)
 - **Listening mode is live.** Enter by voice, thoughts are held unanswered, one closing phrase hands the whole stretch over as one turn, 10 quiet minutes ends it. Verified on the owner's own mic: three thoughts held (1/2/3), 23.0 s in LISTENING, one 11-word turn, **zero effects**. The life view shows it in light blue — never grey, never "on".
 - **Unattributed task writes are refused** (both docks). Not an incident — the owner's own clicks — but a default that said "the owner" would have made a future anonymous write indistinguishable from a real one in the audit log.
 - **Stale doorbell lines are swept** (only when herdr has no such agent; every prune logged and archived, unknown ≠ dead), and a bell addressed by pane id now actually delivers.
+- **The claim-without-effect class is closed** (`3c483b0` + `4a056ff`): a `route` action alone released nothing, so bro could say "I'll get that to the bro agent" with no effect. Now `Held.holds = True` keeps the hub branch out of the decision, `claims_have_effects` rebuilds the Effect from the action's destination at both decide and commit (spec hits included), consent to an offer becomes that offer's Effect, and `bro/hubguard.py` trips on the three pre-fix runs. The duplicate factory behind it (four identical rows from one utterance) is explained: the in-decision branch ran once per used speculative prefix.
+- **The privacy guard was audited, and has one hole** — see Blocked.
 - **Three hub bugs found by smoke-testing**, not by assuming: a dropped hub dispatch in the plugin's auto-task path, env-only switches invisible to the herdr-launched daemon, and a self-referential auto-task loop.
 - **Auto-task re-enabled** with a rule: coordinators are never auto-tasked; pattern matching is only a second guard.
 
