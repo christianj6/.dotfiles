@@ -73,16 +73,6 @@ SETTLE_S = float(os.environ.get("LIFEVIEW_SETTLE_S", "60"))
 # when its transcript agrees (see stale_override()).
 STALE_OVERRIDE_S = float(os.environ.get("LIFEVIEW_STALE_OVERRIDE_S", "300"))
 TAIL_RECENT_S = 900          # a transcript entry older than this proves nothing (omp-watch's WORKING_STALE_SECONDS)
-AUTO_READY = os.environ.get("LIFEVIEW_AUTO_READY", "1") != "0"
-# A task the agent itself `bro task start`-ed: it knows the protocol, so its
-# silence on `ready` is likely deliberate (e.g. idle while a background bench
-# runs - seen live). Off by default; 1 lets auto-ready mark those too.
-AUTO_READY_STARTED = os.environ.get("LIFEVIEW_AUTO_READY_STARTED", "0") == "1"
-BRO_URL = os.environ.get("BRO_URL", "http://127.0.0.1:8766")
-PRESCIENT_URL = os.environ.get("PRESCIENT_URL", "http://127.0.0.1:8765")
-# Task hub cut-over switch (docs/go-task-hub.md wave 3): "bro" keeps today's
-# behaviour; "prescient" routes create/list/ready through the hub service.
-# Default bro so an older service is never required.
 PLUGIN_CONFIG = Path.home() / ".config" / "herdr" / "plugins" / "config" / "dotfiles.lifeview-fallback" / "lifeview.env"
 
 
@@ -102,12 +92,21 @@ def _plugin_env(key: str, default: str = "") -> str:
         pass
     return default
 
-
+AUTO_READY = _plugin_env("AUTO_READY", "1") != "0"
+# A task the agent itself `bro task start`-ed: it knows the protocol, so its
+# silence on `ready` is likely deliberate (e.g. idle while a background bench
+# runs - seen live). Off by default; 1 lets auto-ready mark those too.
+AUTO_READY_STARTED = _plugin_env("AUTO_READY_STARTED", "0") == "1"
+BRO_URL = os.environ.get("BRO_URL", "http://127.0.0.1:8766")
+PRESCIENT_URL = os.environ.get("PRESCIENT_URL", "http://127.0.0.1:8765")
+# Task hub cut-over switch (docs/go-task-hub.md wave 3): "bro" keeps today's
+# behaviour; "prescient" routes create/list/ready through the hub service.
+# Default bro so an older service is never required.
 TASK_HUB = _plugin_env("TASK_HUB", "bro")
 HUB_URL = PRESCIENT_URL
 OPEN_TASK = ("open", "sent", "working")
 # Auto-task: the harness opens a bro task for real work no task covers.
-AUTO_TASK = os.environ.get("LIFEVIEW_AUTO_TASK", "1") != "0"
+AUTO_TASK = _plugin_env("AUTO_TASK", "1") != "0"   # env or the plugin config file (the daemon has no env)
 WORK_MIN_TOOL_CALLS = int(os.environ.get("LIFEVIEW_WORK_MIN_TOOL_CALLS", "2"))
 WORK_MIN_SPAN_S = 90         # ... or one tool call and a turn running this long
 JUST_DONE_S = 120            # a turn that ended this recently still gets its task (short sessions end between ticks)

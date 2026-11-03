@@ -364,6 +364,15 @@ def turn(calls=2, span=30, said="Refactoring the parser.", key="2026-11-02T12:00
 class AutoTask(unittest.TestCase):
     SHOWN = {"claude-v2-wxp1"}
 
+    def setUp(self):
+        # The machine's lifeview.env may disable auto-task after cut-over; these
+        # tests pin the LOGIC, so force it on for their duration.
+        self._old_auto = lv.AUTO_TASK
+        lv.AUTO_TASK = True
+
+    def tearDown(self):
+        lv.AUTO_TASK = self._old_auto
+
     def chk(self, a=None, tasks=None, t=None, shown=SHOWN, created=frozenset()):
         return lv.autotask_check(a or agent("working"), tasks or [], t or turn(), shown, time.time(), created)
 
