@@ -1,0 +1,46 @@
+# `omp-peer` delivery contract (v1)
+
+Owned by **dotfiles** (`config/herdr/skills/herdr-workstreams/peer.py`, installed as `~/.local/bin/omp-peer`). Both prescient's task hub and bro's client call it; this file is the contract they code against. If the behaviour changes, bump the version here and tell both coordinators.
+
+`omp-peer send <target> "<text>" [--wait-reply] [--confirm-timeout S] [--reply-timeout S] [--no-guard]`
+
+## Exit codes
+
+| Code | Meaning | Sender should |
+|---|---|---|
+| **0** | **Delivered** — the text was seen as a `user` entry in the peer's transcript (with `--wait-reply`, a reply was also printed to stdout) | treat as delivered |
+| **1** | herdr/target error — the agent isn't addressable, or `pane send-text` failed | treat as **failed**; do not retry blindly |
+| **2** | Fired but **not confirmed** within `--confirm-timeout` | treat as **pending**, not failed — it very often landed |
+| **3** | Delivered, but no reply within `--reply-timeout` (usually the peer is on an approval dialog) | the message IS delivered; escalate if a reply was required |
+| **4** | The peer's REPL could not be brought into view (nvim-nested) and **nothing was typed** | treat as **failed and safe to retry** |
+
+stdout on success: `delivered <session-file>`. All progress and diagnostics go to **stderr**.
+
+## What "delivered" actually means, and its limits
+
+- Confirmation is **transcript-based**: `omp-peer` fires `herdr agent prompt`, then polls the peer's newest session file until the sent text appears as a `user` entry (needle = first ~24 chars, whitespace-normalised).
+- **It only reads omp session files** (`~/.omp/agent/sessions/<cwd-key>/`). Targeting a **claude** pane therefore exits **2 even when the message landed** — claude transcripts live elsewhere. Callers must not treat 2 as "not delivered" for claude targets, and must not resend (that duplicates the work). For claude targets, prefer `herdr agent prompt` + `herdr agent read` for confirmation.
+- Session-file lookup is keyed by **cwd**, and covers `$HOME`-relative paths; a peer whose cwd is outside `$HOME` (e.g. `/tmp/...`) can exit 2 after delivering, because omp files that session under a key `candidate_keys()` doesn't produce.
+- Nested peers (omp inside nvim) are handled: `herdr agent prompt` refuses with `agent_not_ready`, and `omp-peer` falls back to raw pane delivery **only after** the REPL visibility guard passes (ctrl+a toggle, bounded at two attempts). If the REPL never becomes visible it exits 4 **without typing anything**.
+- A paste block can drop the first Enter; `omp-peer` retries the Enter once before judging (only on the raw path).
+
+## Rules for callers (the hub and bro)
+
+1. **One attempt, no client-side retry loop.** Retry semantics belong to the caller's own state machine (`undelivered` in the hub; bro's pending queue). Callers map codes to states.
+2. **2 is ambiguous, not failure.** For omp targets: likely delivered. For claude targets: always ambiguous. Never resend on 2 without checking the target's pane.
+3. **4 is the only "safe to retry" failure** (nothing was typed).
+4. **3 means it landed.** Do not resend; escalate the missing reply if one was required.
+5. **Keep the text short.** Pane delivery truncates long messages; anything over ~2 sentences belongs in a file with the path sent as the message (see `rule://agent-pane-messaging`).
+6. **Resolve the target at send time.** Agent names encode version + pane (`omp-v31-wdp7`) and change on roll; resolve from `herdr agent list` by cwd/role immediately before sending.
+
+## Suggested mapping (for the hub's `nudged` field)
+
+| omp-peer exit | `nudged` |
+|---|---|
+| 0 | `ok` |
+| 2 | `pending` |
+| 3 | `ok` (delivered; no reply) |
+| 1 | `failed` |
+| 4 | `failed` (safe to retry) |
+
+For a **claude** target, `ok` cannot be proven from exit 0/2 — confirm with `herdr agent read` before reporting `ok`, else report `pending`.
