@@ -17,7 +17,8 @@ const tier = word === 'on' ? ['standby', 'rest', ...]
   : word === 'muted' ? ['unmute', ...] : ['wake', 'wake', 'bro listens to everything again'];
 ```
 `LISTENING` must **not** fall into the `else` branch's `wake` (it is not asleep, and there is nothing to wake). And its own toggle should not be "standby" either — the honest exit from listening is whatever bro already accepts. Choose deliberately:
-- `word === 'listening'` → toggle sends `stop` for the tier if bro supports it, else `standby`; label it plainly ("listening · pause"). **Confirm which action bro's `/api/voice` accepts before wiring it** — do not invent an action name that bro will 400. If bro has no listening-exit action, the row should be *informational only* (a disabled row saying bro is holding your thoughts, closed by "I'm done" or a mute), which is truthful and needs no new endpoint.
+- **Answer, verified:** bro has **no UI action that closes listening.** `"stop listening"` is a *mute* phrase (`tier.go:46`), and the close phrases (`ListenClose`, `tier.go:223`) are all spoken — "I'm done", "that's it", "your turn", "exit listening mode". So do **not** add an endpoint or invent an action name.
+- Therefore the LISTENING row is **informational**: a row saying bro is holding your thoughts, with the exit written in plain words (say "I am done" and bro answers all of it). Make it `disabled` like the self-play row already is, so it cannot be clicked into a 400. The tray tag does the always-visible work.
 
 ### 2. `broVoiceTag` — line ~4994
 ```js
