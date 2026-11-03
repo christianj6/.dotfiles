@@ -60,3 +60,32 @@ This is **not** the which-slot work and should not be bundled with it. That spec
 ## Still open, deliberately
 
 The mic observation after `3c483b0` — "yes" to an offer → exactly one `task_hub_effect` — is **deferred by the owner ("we can ignore the mic observation for now")**. It stays recorded as unproven rather than being quietly dropped.
+
+---
+
+## Acceptance #5, pinned with a baseline (measured before the build)
+
+The coordinator is right that this is the failure mode to guard: **"coordinator first" must not become "everything is work".** I measured the current behaviour so the build has something to regress against, rather than a sentence to interpret.
+
+Complaints and filler — none may produce a hand-over:
+
+| utterance | `dev_request` | `implied_task` | `explicit_filing` | `which_kind` |
+|---|---|---|---|---|
+| "that's annoying" | False | False | False | `None` |
+| "that is so annoying" | False | False | False | — |
+| "this is useless" | False | False | False | `None` |
+| "that's a shame" | False | False | False | `None` |
+| "hmm" / "okay" / "nice" / "wow" | False | False | False | `None` |
+
+**The harder case, and the one that would actually bite** — a complaint that *names a project*, because that is the shape where "coordinator first" could leak into "everything is work":
+
+| utterance | `which_kind` |
+|---|---|
+| "dotfiles is annoying" | `None` |
+| "the heinzel sync is useless" | `None` |
+| "bro's buffer is terrible" | `None` |
+| "heinzel is slow today" | `None` |
+
+All four already classify as `None`. **Keep them that way.** The rule for the build: a project name plus a complaint is still a complaint — `named_project` finding something must never be sufficient to construct an Effect. If any of these starts returning `task`, the change is wrong regardless of how well it works for "fix it".
+
+Explicit work, for contrast, must keep firing: `"fix it"` and `"fix it and restart"` → `dev_request=True`, `implied_task=True`.
