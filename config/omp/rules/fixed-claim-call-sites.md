@@ -30,6 +30,17 @@ Each fix was real. Each report was narrower than the truth.
 
 Fixing is local and satisfying; boundary-finding is diffuse and feels like re-doing the work. And a function-level claim reads as complete because it is *precise* — precision creates confidence that coverage doesn't earn. The tell is a claim with no call sites in it.
 
+## Fourth instance (same day): absence of a name is not evidence about a behaviour
+
+Reporting on `delegate_to`, I checked that `dev_id()` did **not** appear at the call site and concluded bro's coordinator was bypassed. Wrong: the function present was `dev_agent()`, and `is_dev()` accepts `agent == "omp"` in bro's repo — it *is* the coordinator's pane. I inferred from a **name** and never read the **predicate**.
+
+Grep for absence is a weak test. Before claiming "X is bypassed", read what the thing that *is* called actually returns:
+
+- "`dev_id()` is not called here" → not a finding.
+- "`dev_agent()` returns `omp-v34-wdp5`, which is `dev_id()`" → the finding, and it refutes the claim.
+
+The stronger form of the check is a **value**, not a name: print what the call returns on the real data.
+
 ## The one-line version
 
 > Any "X is fixed" claim has to name the call sites it covers, or it is a claim about a function, not a system.
