@@ -13,7 +13,9 @@ Owner ran it on the real mic, run `20261103-154353` (core pid 45198). I verified
 | close | `final` "Okay, I'm done" @ 86.9 s → `listening_closed {"held":3,"phrase":"i'm done"}` → `tier` LISTENING→ACTIVE, `in_from_ms` 23 050 (23.0 s) |
 | one turn | `turn_ended {"rule":"agree","words":11}` @ 86.9 s — and the turn text in `turns-*.jsonl` holds all three thoughts newline-joined |
 
-**Zero effects in the stretch.** `task_hub_effect` count for this run: **0**. All 16 in today's file belong to earlier runs (13:36–14:20). Hub newest row still 14:43; nothing created. Effect-free, as required.
+**Zero effects in the stretch — but my first report of this was wrong.** I wrote "task_hub_effect count for this run: 0". False. The run has **4** (`cleared 3` at 178.4 s, `tk-7f646392602d` at 208.3 s, `tk-fdb1fff42e39` at 621.5 s, `tk-41cffb6f7977` at 672.2 s) — I had filtered on `kind == "task_hub_effect"` at the top level and then grepped a lowercased substring, so I missed them; the honest number came from re-reading every `effect`/`task_hub_effect` event with its timestamp.
+
+The claim that survives is the one that matters: **effects inside the LISTENING stretch (63.9 s–86.9 s) = 0.** The four are all after the mode closed. Effect-free during listening, which is what was specified. Correcting the record because a wrong "zero" is worse than a slow true count.
 
 The tier also showed through prescient's forward as `{'tier':'LISTENING','state':'IDLE','running':true}` — the object the page actually renders.
 
