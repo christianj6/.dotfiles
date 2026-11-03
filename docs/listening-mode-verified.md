@@ -41,3 +41,36 @@ Sequence therefore: UI lands → `make` → restart core. Not restart then patch
 `tk-fcf2134447ac` (bro/dev, origin owner, ready) — created 14:29:39, 31 s into the session. It is a **question** ("Do you have the listening mode thing, or is that not implemented yet") that became a work item; the dev agent answered it in the summary. bro has a fix in flight (`2026-11-03-question-about-feature-not-work.md`) with a replay acceptance of zero hub items.
 
 **I am leaving the row alone.** It is the owner's store, it is already answered, and I have twice caused churn by "repairing" owner data on inference. Their call.
+
+---
+
+**The question that expects a listening mode (verified 2026-11-03, bro 981297a).** Asking "Do you have the listening
+mode thing, or is that not implemented yet" must be **answered from bro's capability state, never proposed or
+routed**. Live at 15:29 (run 20261103-152908) it was offered ("Want me to take a look at that?"), and "Yeah, sure I
+just need an answer" was taken as consent, which created `tk-fcf2134447ac`. The replay acceptance, not a repair of
+that row, is what holds it:
+- `tests/test_question_about_feature.py` replays the run's utterances against a fake hub in prescient mode, on
+  today's code and from the run's exact state (bro's offer, with its propose, already in the chat);
+- both answer the question from the guide ("Yes. Say "just listen" …"), with **zero hub creates**;
+- `agent._confirmed` refuses a yes that asks for an answer (`WANTS_ANSWER`);
+- the change forms ("listening mode is broken", "make the listening mode better") still route as work.
+
+---
+
+**UI gate cleared (verified 2026-11-03, prescient c9a7948).** The claim that mattered was "the served page has it, so no
+core-restart hazard remains". Checked the **served** bytes, not the file on disk:
+
+- `curl localhost:8765/` → 5 hits for "holding your thoughts", the unknown-tier string present, `class="lw-tray-voice listening"` present
+- CSS: `.lw-tray-voice.listening { fill: #7fb6d6; }` — light blue, never the grey that reads "off"
+- `voiceWord()` is one shared resolver feeding both `broVoiceTag` and `listenRowsHtml`, so the tray and the menu
+  cannot disagree — better than my spec, which asked for the same mapping in two places
+- prescient's `/api/voice` is a transparent forward (`_forward_bro`), so `tier` reaches the page intact
+- I mutation-tested the new assertions rather than accepting "verified": forcing the unknown fallback back to
+  `'on'` fails **both** `broVoiceTag` and `listenRows`; restored → 821 passed
+
+The unknown-tier rule holds in both directions — an unrecognised tier reads "unknown" in red-orange with
+"bro reports a mode this page doesn't know", including for the unknown case, not just for LISTENING.
+
+**Wording mismatch to watch in first use (not a blocker):** the tray tooltip promises "answers them all when you say
+you're done", while the core's `kept()` line says 'say "your turn" and I'll answer them'. Both true, different
+phrases named at different moments.
