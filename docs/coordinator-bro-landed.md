@@ -136,3 +136,38 @@ return (agent_destination(claude), True) if claude is not None else (None, False
 A genuine three-tier fallback — hub destination, then pane, then Claude — and it returns **whether it fell back**, which is what lets bro say honestly who it went to. I proposed a two-tier helper and would have collapsed the distinction between "the coordinator took it" and "the Claude is covering".
 
 The `_needs_task` tail rewrite is gone, so an implied task can no longer be rewritten back to a Claude after the fact. And the which-slot fix means "it's for you" hands on only for `task`/`filing` — a status or question intent can no longer be converted into a hand-over by the clarification. 653 green.
+
+---
+
+## `own_work_dest` — the four return paths, verified by driving the real method
+
+Not inferred from the source. I constructed the four states and called it:
+
+| State | Returns | `fell_back` |
+|---|---|---|
+| `coordinator:bro` available | `coordinator:bro` | **False** |
+| `coordinator:bro` unavailable, omp pane running | `agent:omp-v34-wdp5` | **False** |
+| no coordinator, no omp pane, bro's Claude running | `agent:claude-v2-wdp6` | **True** |
+| nothing running | `None` | **False** |
+
+Exactly the contract the docstring claims, and the flag is correct in the only place it should be: the Claude case. So bro's honest line can distinguish *"the coordinator took it"* from *"the Claude is covering"* — which was the design point the two-tier proposal would have lost.
+
+## The correction is now consistent across all four records
+
+My wrong version existed in three places; all three now carry the corrected account rather than a silent rewrite:
+
+- `docs/coordinator-bro-landed.md` (mine) — the correction, with how I made the error
+- `config/omp/rules/fixed-claim-call-sites.md` (mine) — added as the rule's fourth instance
+- bro's spec `3a14784` (the coordinator's) — rewritten with the same reasoning
+
+The coordinator rewrote its spec rather than leaving the wrong version for the next reader, which is the right instinct: a corrected conclusion with an intact wrong rationale is how the same mistake gets repeated.
+
+## Where this leaves the day
+
+**Landed and verified:** privacy guard push-time hole closed (push blocked on a leak, clean push passes, mid-history leak caught); `coordinator:bro` live and served; the flip reaching the omp pane; `own_work_dest` with its four paths; listening mode proven on the real mic; the claim-without-effect class pinned by regression tests.
+
+**Routed, open with prescient:** receipt wording ("that one's yours"), the phrase assertion ("the bro coordinator" → `coordinator:bro`, never `agent:claude-*`).
+
+**Deferred by the owner:** the mic observation after `3c483b0`.
+
+**Still unbuilt, in flight:** the which-slot/none-reachable/classifier-reorder build.
