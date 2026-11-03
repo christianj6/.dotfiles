@@ -21,7 +21,11 @@ rev=  7  used=True  utt=35  system=1  effects=0
 rev= 14  used=True  utt=35  system=1  effects=0
 ```
 
-Four separate speculative decisions for **one** utterance, each marked `used: true`, arriving 736.2 / 736.8 / 737.1 / 738.7 s — i.e. before that turn committed at 738.8 s. Each release produced an Effect with `dest = agent:omp-v34-wdp5`, and each Effect creates a hub item. Hence four.
+Four separate speculative decisions for **one** utterance, each marked `used: true`, arriving 736.2 / 736.8 / 737.1 / 738.7 s — before that turn committed at 738.8 s.
+
+**Corrected mechanism (my first write-up was wrong).** I said each release produced an Effect and each Effect created a row. Not so. Those in-decision creates happened with **no Effect at all**: `Task_agent._deliver`'s hub branch ran *inside* the decision, on each used speculative prefix, and because the turn's `effects` stayed empty the release had nothing to release and created nothing of its own. So the row count is **N (the number of used speculations)**, not 1+N — the rows the owner saw *are* exactly the speculative ones.
+
+**Root cause, one line** (`agent.py:387/514/587`): the in-decision hub branch is guarded by `not getattr(stack, "holds", False)`, and before `3c483b0` the object delivered into — `Held` (`voicebridge.py:1596`), not `VoiceStack` — had no `holds` attribute. `getattr` returned `False`, the guard always passed, and the hub branch ran on every speculative prefix. `3c483b0` adds `Held.holds = True` (`:1604`), which makes that branch inert so **the release is the only creator**. Verified in the code: `agent.turn(..., Held(stack, effects, fixed, asked), ...)` at `voicebridge.py:2340` — `Held` is what arrives as `stack`.
 
 It was not a single utterance: counted across the whole run, **10 utterances** had more than one `used: true` speculation:
 
