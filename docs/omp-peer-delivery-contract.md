@@ -64,3 +64,7 @@ The **vocabulary stays shared**, which is what matters for callers: both paths r
 For **claude** targets `_deliver`'s existing read-back decides: `ok` only when it passes, otherwise `pending`.
 
 This document remains the contract for `omp-peer` itself (bro's client and any other caller), and the source of truth for *why* exit 2 must never be treated as failure.
+
+## Correction (2026-11-03, from prescient's wave-1 report)
+
+**A claude target is ALWAYS `pending`, never `ok`.** This document said "confirm with `herdr agent read` before reporting ok" — but `agent._deliver` only reads the pane back on the **nested-omp** path; a claude target always takes the fast `agent prompt` path, where nothing is read back. So under this contract's own rule a claude delivery can never be *proven*, and the hub reports `pending` for every claude nudge. That is correct behaviour (a pending nudge is not evidence either way; the reaper judges on "still queued AND target idle"), not a bug.
