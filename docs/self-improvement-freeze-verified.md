@@ -35,9 +35,17 @@ But my internal note "use `--by 'demo'`" is **wrong as written** and would have 
 
 Where the gate genuinely helps: it refuses a review that doesn't exist, refuses one on changed content, and refuses the sleep path. It does not know who you are.
 
-## What I did not verify
+## Both gaps I named are now closed — by calling the code
 
-The 730-test count and the golden's byte-level content digest beyond `541583f0` — the latter I confirmed is keyed and present, but I did not recompute the digest from the scenario bodies. If it matters before a re-key, that is the check: recompute `content` from the 78 scenarios and compare.
+**The digest, recomputed.** I re-derived it myself: `golden.content_hash(golden.scenarios())` over the 78 bodies gives **541583f0**, exactly the frozen value. So the freeze is genuinely *content*-keyed, not merely a recorded string.
+
+**The drift detector fires.** Tampering with a single field of one scenario gives **92a2955f** — a different digest. Verified with a `dataclasses.replace`, so the check is: if a body moves, `Drifted` can no longer pass. A recorded hash that nothing recomputes is a comment; this one is a lock, and I checked the lock turns.
+
+**The 730.** Run by the coordinator: `730 passed`.
+
+## The gate count — corrected upward
+
+Seven refusals, not two: in the pool, has a review, not a rejection, **digest match**, not an **automatic actor**, the gates, and **`judged_on`**. Points 4 and 7 are what make "4 bugs found by reading replies" **auditable** rather than a claim about diligence.
 
 ## Standing at the freeze
 
