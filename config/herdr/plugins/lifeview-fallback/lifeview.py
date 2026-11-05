@@ -556,7 +556,7 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
         return None, "a task was already opened for this session"
     if task_system_turn(turn):
         return None, "this turn is about the task system itself (hub/CLI/tray) - auto-task would loop on its own output"
-    if is_coordinator(tasks):
+    if is_coordinator(agent, tasks):
         return None, "this agent coordinates; its work is other agents' tasks, not its own card"
     calls = turn.get("calls", 0)
     span = (turn.get("end") if herdr in ("idle", "done") and turn.get("end") else now) - (turn.get("start") or now)
@@ -666,20 +666,24 @@ def project_icon(row_status: str, project: Optional[str], tasks: list) -> str:
     return icon_state(row_status, [hub_state(t) for t in project_items(project, tasks) if hub_open(t)])
 
 
-def is_coordinator(tasks: list) -> bool:
-    """True when this agent is a project coordinator rather than a workhorse.
+def is_coordinator(agent: Dict, tasks: list) -> bool:
+    """True when THIS agent is its project's coordinator rather than a workhorse.
 
-    Evidence, in order: it already holds an item whose target is `coordinator`
-    (the hub's role for a project's omp), or it has coordinated before (any item
-    it was nudged with). A coordinator's turns are coordination -- reading specs,
-    dispatching, clearing queues -- and auto-tasking them is what produced the
-    self-referential loop (2026-11-03). Workhorses and claude panes have no such
-    items, so they keep the automatic green.
+    Judged by the agent's own role and its own project, never by the list as a
+    whole: the previous version asked "is any item anywhere coordinator-targeted",
+    which is true for every agent as soon as one project has one coordinator item
+    (69 of 100 here), so auto-task was silently disabled workspace-wide and
+    nothing the owner said was ever tracked (2026-11-03).
+
+    Evidence: the agent is its project's omp (the coordinator is always an omp,
+    the workhorse is its Claude), or it already holds a coordinator item in its
+    own project. A Claude pane is a workhorse and keeps the automatic green.
     """
-    for t in tasks:
-        if str(t.get("target") or "") == "coordinator":
-            return True
-    return False
+    # role decides, and only role: the owner always runs one omp per project and it IS the coordinator,
+    # its Claude is the workhorse. Item history is not evidence about a *different* agent -- a Claude
+    # shares its project with its omp, so "a coordinator item exists in my project" is true of both and
+    # disabled auto-task for the workhorse too, which is exactly the bug.
+    return (agent.get("agent") or agent.get("kind")) == "omp"
 
 
 def tasks_of(agent: Dict, tasks: list) -> list:

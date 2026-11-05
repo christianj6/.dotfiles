@@ -564,22 +564,51 @@ class TaskSystemTurns(unittest.TestCase):
 
 class CoordinatorExemption(unittest.TestCase):
     """A coordinator's turns ARE coordination; auto-tasking them loops on the
-    cards it is creating (2026-11-03). Workhorses keep the automatic green."""
+    cards it is creating (2026-11-03). Workhorses keep the automatic green.
 
-    def test_coordinator_detected_by_target(self):
-        self.assertTrue(lv.is_coordinator([{"target": "coordinator"}]))
-        self.assertFalse(lv.is_coordinator([{"target": "dev"}]))
-        self.assertFalse(lv.is_coordinator([]))
+    The judgement is per AGENT and by ROLE. It used to scan the whole list, so one
+    coordinator item anywhere marked every agent a coordinator (69 of 100 items
+    here) and auto-task was silently dead workspace-wide: nothing the owner said
+    was tracked, from bro or from any chat (2026-11-03)."""
+
+    def test_the_omp_is_the_coordinator_and_its_claude_is_not(self):
+        self.assertTrue(lv.is_coordinator({"agent": "omp", "project": "proj"}, []))
+        self.assertFalse(lv.is_coordinator({"agent": "claude", "project": "proj"}, []))
+
+    def test_another_projects_coordinator_items_do_not_mark_this_agent(self):
+        tasks = [{"target": "coordinator", "project": "other"}]
+        self.assertFalse(lv.is_coordinator({"agent": "claude", "project": "proj"}, tasks))
+        self.assertFalse(lv.is_coordinator({"agent": "claude", "project": "other"}, tasks))
+
+    def test_a_coordinator_item_in_the_same_project_does_not_mark_the_claude(self):
+        """The omp shares the project with its Claude, so item history is not
+        evidence about a different agent."""
+        tasks = [{"target": "coordinator", "project": "proj"}]
+        self.assertFalse(lv.is_coordinator({"agent": "claude", "project": "proj"}, tasks))
+        self.assertTrue(lv.is_coordinator({"agent": "omp", "project": "proj"}, tasks))
 
     def test_coordinator_turns_never_open_cards(self):
         title, why = lv.autotask_check(
-            {"name": "omp-v34-wdp5", "pane_id": "wD:p5", "agent_status": "working"},
-            [{"id": "tk-1", "target": "coordinator", "state": "done"}],
+            {"name": "omp-v34-wdp5", "pane_id": "wD:p5", "agent": "omp", "project": "bro", "agent_status": "working"},
+            [{"id": "tk-1", "target": "coordinator", "state": "done", "project": "bro"}],
             {"key": "2026-11-03T12:00:00.000+01:00", "start": 0, "calls": 10, "said": "reading the design doc"},
             {"omp-v34-wdp5"}, time.time() + 10 ** 6,
         )
         self.assertIsNone(title)
         self.assertIn("coordinates", why)
+
+    def test_a_workhorses_work_IS_tracked(self):
+        """The owner's rule: things are tracked wherever they came in. A Claude
+        doing real work with nothing covering it must open a card."""
+        title, why = lv.autotask_check(
+            {"name": "claude-v2-w5p1a", "pane_id": "w5:p1A", "agent": "claude", "project": "heinzel",
+             "agent_status": "working"},
+            [{"id": "tk-1", "target": "coordinator", "state": "done", "project": "heinzel"}],
+            {"key": "2026-11-03T17:00:00.000+01:00", "start": 0, "calls": 10, "said": "fixing the z-fighting edge"},
+            {"claude-v2-w5p1a"}, time.time() + 10 ** 6,
+        )
+        self.assertIsNotNone(title, why)
+        self.assertIn("work session", why)
 
 
 def hub_item(state="queued", target="coordinator", project="proj", moved_ago=600, by="owner", iid="tk-h1", **kw):
