@@ -64,3 +64,28 @@ Two further hardening points, because "one stale top matched" is the actual trap
 ## Note on scope
 
 This is prescient's file (`prescient/gantt/agent.py`), so it is the coordinator's to fix, not mine. Filed with the reproduction because "the box looks submitted" is a claim that needs a screen to argue with.
+
+---
+
+## FIXED and verified (2026-11-03, prescient `698c8b3`)
+
+The fix landed as `_box(screen)`: the last titled top that has a bottom border *before any other top*, else `None`. `_waiting` returns `None` when no box is on screen — never `False`. Borders are nesting-tolerant (`(?:│\s*)?`).
+
+Verified on my own pane (`wD:p9`, omp inside nvim), which is the failing layout:
+
+```
+in the box (matching squash) -> True
+absent                       -> False
+no box on screen             -> None
+```
+
+And the real path, end to end:
+
+```
+deliver_verdict('omp-v34-wdp7', ...)
+  -> {'nudged': 'ok', 'retryable': False, 'detail': "omp-v34-wdp7's transcript shows it"}
+```
+
+**No human Enter.** A nudge now proves itself from the transcript, which is what the contract always said it should do.
+
+One note for whoever reads this later: my first verification attempt reported `False` for text that *was* in the box. That was my test, not the code — I compared a squashed needle against unsquashed screen text. The code was right; the probe was wrong. Worth writing down because a false negative from the verifier is the same class of bug being fixed here, one level up.
