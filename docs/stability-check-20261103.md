@@ -49,10 +49,28 @@ This was the blocker: every nudge into an nvim-nested omp pane needed a human En
 
 Both were found by driving the real code, not reading the diff.
 
-## What is NOT verified
+## The live transition — watched, with its caveat
 
-1. **The live auto-ready write path.** I watched it *refuse* for real reasons ("herdr says working, not settled") and saw the candidate visible where it was previously invisible. I have not yet watched a live item go `queued → ready` end to end, because the settler has been busy the whole time. That needs one quiet minute with an idle omp.
-2. **prescient's `multiple`-item ranking under a mixed set.** I confirmed the invariant on today's data; I have not constructed a project holding both a `ready` and a `working` item and checked which one the icon names.
+On `marketing` (idle omp, zero items, nothing in flight):
+
+```
+15:16:16  created -> queued   by owner
+15:16:23  queued  -> working  by agent
+15:16:24  working -> ready    by agent
+/api/tasks/status?project=marketing -> omp-v35-wgp3 | ready | "a task is ready for your verdict"
+```
+
+**queued → ready in 8 seconds, and the icon went green.** But the events say `by=agent`, and the harness writes `by=lifeview-harness` — so this was the **coordinator marking its own work ready**, not auto-ready. I am not counting it as proof of the harness path.
+
+**What that taught me:** the coordinator does this well on its own, which is exactly why the asymmetry was invisible on prescient and visible elsewhere. On a project whose agent marks its own work, auto-ready is a backup, not the mechanism.
+
+**Auto-ready itself, verified in isolation:** with one `queued` item, an idle settler and a finished answer, `ready_check` returns `MARK`. So the code path works. In the live workspace it is currently blocked on `bro` by `started-by-the-agent` — a correct guard, not a bug.
+
+**Still not watched live:** the harness's own write. It needs a project whose agent does *not* mark its own work, with an idle settler — and on this board every active project either self-marks or is mid-flight. I will not manufacture that by disabling a safety guard.
+
+## What is still not verified
+
+prescient's ranking under a **mixed** set: a project holding both a `ready` and a `working` item, to check which one the icon names. The invariant held on today's data across all five projects; the mixed case is untested.
 
 ## Unpushed
 
