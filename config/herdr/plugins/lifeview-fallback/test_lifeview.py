@@ -593,12 +593,16 @@ def hub_item(state="queued", target="coordinator", project="proj", moved_ago=600
 class HubPredicate(unittest.TestCase):
     """Break 3, explicitly: the predicate's verdict for EVERY hub state."""
     EXPECT = {  # state: (hub_open, ready_candidate, harness route to ready)
-        "created": (True, True, None),
+        # candidate == READY_ROUTE is not empty: an item the harness CANNOT drive
+        # to ready must not count as "another open item", or it makes every
+        # project with one ambiguous and green never happens (created/parked/
+        # undelivered had no route yet were candidates - a permanent veto).
+        "created": (True, False, None),
         "queued": (True, True, ("start", "ready")),
         "working": (True, True, ("ready",)),
         "ready": (True, False, None),
-        "parked": (True, True, None),
-        "undelivered": (True, True, None),
+        "parked": (True, False, None),
+        "undelivered": (True, False, None),
         "done": (False, False, None),
     }
 
@@ -614,6 +618,21 @@ class HubPredicate(unittest.TestCase):
             self.assertEqual(got_t is not None, s in ("queued", "working"), (s, why))
         self.assertEqual(set(lv.HUB_STATES), set(self.EXPECT))
         print("\n" + "\n".join(rows))
+
+    def test_an_unmarkable_item_does_not_veto_the_one_it_can_mark(self):
+        """The veto this exists to prevent: 'two candidates is ambiguous' meant a
+        parked item sitting beside working work blocked green for ever - the same
+        complaint as the original bug, one layer down."""
+        working = hub_item(state="working")
+        for blocker in ("parked", "created", "undelivered", "ready"):
+            tasks = [working, hub_item(id="b", state=blocker)]
+            got, why = lv.ready_check(omp(), tasks, [], answered(), time.time())
+            self.assertIsNotNone(got, (blocker, why))
+            self.assertEqual(got["id"], working["id"], blocker)
+        # two items the harness CAN mark stay ambiguous: the agent decides
+        got, why = lv.ready_check(omp(), [working, hub_item(id="c", state="working")], [], answered(), time.time())
+        self.assertIsNone(got)
+        self.assertIn("ambiguous", why)
 
     def test_dropped_is_done_and_never_a_candidate(self):
         self.assertFalse(lv.ready_candidate(hub_item(state="done", resolution="dropped")))

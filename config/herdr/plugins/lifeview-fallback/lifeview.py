@@ -638,9 +638,15 @@ def hub_open(t: Dict) -> bool:
 
 
 def ready_candidate(t: Dict) -> bool:
-    """Auto-ready's set, NOT the same as hub_open: open and not yet ready. A
-    ready item is already green and must never be re-marked."""
-    return hub_open(t) and hub_state(t) != "ready"
+    """Auto-ready's set: a state the harness can actually DRIVE to ready, and not
+    already ready. A ready item is already green and must never be re-marked.
+
+    Deliberately not `hub_open and not ready`: parked/created/undelivered are
+    open for display but the harness has no route to ready from them, so counting
+    them as candidates makes them permanently "another open item" - two
+    candidates is ambiguity, which silently blocks green for good. An item the
+    harness cannot mark must not veto the one it can."""
+    return hub_state(t) in READY_ROUTE
 
 
 def project_items(project: Optional[str], tasks: list) -> list:
@@ -1202,7 +1208,7 @@ def explain() -> None:
         root = w.root.get(a["pane_id"])
         entries = read_entries(Path(root) / STATUS_FILE)[1] if root else {}
         e = entries.get(a.get("name") or "") or entries.get(a["pane_id"])
-        mine = tasks_of(a, tasks or [])
+        mine = project_items(a.get("project"), tasks or [])   # the project's items: readiness is not the agent's
         row = rows.get(name) or {}
         status = row.get("status") or (e.get("state") if isinstance(e, dict) else None) or herdr
         relevant = [t["state"] for t in mine if t.get("state") not in ("done", "dropped")]
