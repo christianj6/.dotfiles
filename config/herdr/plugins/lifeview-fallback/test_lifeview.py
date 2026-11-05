@@ -396,11 +396,32 @@ class AutoTask(unittest.TestCase):
         title, _ = self.chk(t=turn(said="x" * 500))
         self.assertLessEqual(len(title), 6 + 114)
 
+    def unattributed(self):
+        """A provenance class that is neither owner nor agent: the threshold
+        still applies to it in full (today no such class reaches the gate;
+        this pins that the threshold itself is intact)."""
+        old = lv.prompt_provenance
+        lv.prompt_provenance = lambda turn: "other"
+        self.addCleanup(setattr, lv, "prompt_provenance", old)
+
     def test_threshold_blocks_trivial_turns(self):
         self.assertIsNone(self.chk(t=turn(calls=0, span=600))[0])          # an answer, no tool call
+        self.unattributed()
         self.assertIsNone(self.chk(t=turn(calls=1, span=30))[0])           # one quick lookup
         self.assertIsNotNone(self.chk(t=turn(calls=1, span=lv.WORK_MIN_SPAN_S + 5))[0])   # one long tool run
         self.assertIsNotNone(self.chk(t=turn(calls=lv.WORK_MIN_TOOL_CALLS, span=1))[0])
+
+    def test_owner_or_agent_one_call_request_is_work(self):
+        """docs/task-autotask-owner-lifecycle.md: the threshold filters incidental
+        activity, it does not decide whether the owner asked for something."""
+        for prompt in ("Can you check the current git branch in the bro repo and tell me what it is?",
+                       "Round 7: docs/specs/x.md - one check"):
+            title, why = self.chk(t=turn(calls=1, span=6, prompt=prompt))
+            self.assertIsNotNone(title, (prompt, why))
+        title, why = self.chk(t=turn(calls=0, span=6, prompt="what branch are we on?"))   # acceptance 5
+        self.assertIsNone(title)
+        self.assertIn("trivial", why)
+        self.assertEqual(lv.WORK_MIN_TOOL_CALLS, 2)                          # not lowered globally
 
     def test_never_duplicates(self):
         for state in lv.COVERING:                                          # any covering task, handed or auto
@@ -432,6 +453,7 @@ class AutoTask(unittest.TestCase):
         old_turn = dict(turn(calls=3, span=40), end=time.time() - lv.JUST_DONE_S - 30)
         self.assertIsNone(self.chk(a=agent("done"), t=old_turn)[0])           # no tasks for old turns at daemon start
         short = dict(turn(calls=1, span=200), start=time.time() - 60, end=time.time() - 30)
+        self.unattributed()                                                    # owner/agent one-call turns are work now
         self.assertIsNone(self.chk(a=agent("idle"), t=short)[0])              # a finished turn's span is start..end
 
     def test_task_opened_after_the_answer_still_greens(self):
@@ -920,6 +942,142 @@ class Provenance(unittest.TestCase):
         self.assertEqual(lv.project_icon("idle", "p", [own, agt]), "ready")   # his work still wins
         # and the item keeps its real state: only the RING is demoted
         self.assertEqual(lv.hub_state(agt), "ready")
+
+
+class LifecycleHub:
+    """The hub's create/start/ready/list routes and the life view's board, with
+    the real rules (create -> queued at once, start only from queued, ready only
+    from working, by is a role) and the event log as each item's history."""
+
+    def __init__(self, shown):
+        self.items, self.events, self.calls, self.shown = {}, {}, [], shown
+
+    def __call__(self, url, body=None, timeout=3):
+        if url.endswith("/api/agent-board"):
+            return {"agents": [{"name": n} for n in self.shown]}
+        if body is None:
+            return {"items": self.list()}
+        self.calls.append(body)
+        if body["op"] == "create":
+            iid = "tk-c%d" % (len(self.items) + 1)
+            self.items[iid] = {"id": iid, "text": body["text"], "project": body["project"],
+                               "target": body["target"], "origin": body["origin"], "state": "queued"}
+            self.events[iid] = [("created", body["origin"]), ("queued", body["origin"])]
+            return {**self.items[iid], "item": dict(self.items[iid])}
+        it = self.items[body["id"]]
+        frm, to = {"start": ("queued", "working"), "ready": ("working", "ready")}[body["op"]]
+        if body.get("by") not in ("owner", "agent", "harness", "bro") or it["state"] != frm:
+            return None
+        it["state"] = to
+        if body["op"] == "ready":
+            it["summary"] = body["summary"]
+        self.events[it["id"]].append((to, body["by"]))
+        return {**it, "item": dict(it)}
+
+    def list(self):
+        """A fresh read, as each tick does: no state carried in the dicts."""
+        return [dict(i, history=[{"at": at(1), "state": s, "by": b} for s, b in self.events[i["id"]]])
+                for i in self.items.values()]
+
+
+class Clock:
+    def __init__(self):
+        self.now = time.time()
+
+    def time(self):
+        return self.now
+
+    def strftime(self, *a):
+        return time.strftime(*a)
+
+
+class OwnerLifecycle(unittest.TestCase):
+    """docs/task-autotask-owner-lifecycle.md: a full lifecycle with nothing
+    pre-created in prescient, telling the owner's requests from agent comms."""
+    REQUEST = "Can you check the current git branch in the bro repo and tell me what it is? Just run the command."
+
+    def setUp(self):
+        saved = {k: getattr(lv, k) for k in ("http_json", "TASK_HUB", "hub_available", "transcript_of",
+                                             "AUTO_READY", "AUTO_TASK", "time")}
+        self.addCleanup(lambda: [setattr(lv, k, v) for k, v in saved.items()])
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.c, self.o = claude(), omp()
+        self.files = {}
+        self.hub = LifecycleHub({self.c["name"], self.o["name"]})
+        self.clock = Clock()
+        lv.http_json, lv.TASK_HUB, lv.hub_available = self.hub, "prescient", (lambda: True)
+        lv.AUTO_READY = lv.AUTO_TASK = True
+        lv.transcript_of = lambda a, agents: self.files.get(a["pane_id"])
+        lv.time = self.clock
+
+    def pane_turn(self, a, prompt, calls=1, answer="On main.", ended_ago=20):
+        """One turn in the agent's own pane: prompt, `calls` tool calls, answer."""
+        # a session header first, as real transcripts have (scan_turn never reads a file's first line)
+        entries = [{"type": "session", "timestamp": ts(ended_ago + 60)},
+                   {"type": "user", "message": {"role": "user", "content": prompt}, "timestamp": ts(ended_ago + 10)}]
+        for i in range(calls):
+            entries += [{"type": "assistant", "message": {"role": "assistant", "content": [
+                            {"type": "tool_use", "name": "Bash", "input": {"command": "git branch --show-current"}}]},
+                         "timestamp": ts(ended_ago + 8 - i)},
+                        {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "main"}]},
+                         "timestamp": ts(ended_ago + 6 - i)}]
+        entries.append({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]},
+                        "timestamp": ts(ended_ago)})
+        p = Path(self.dir.name) / (a["pane_id"].replace(":", "_") + ".jsonl")
+        p.write_bytes(b"\n".join(line(e) for e in entries) + b"\n")
+        self.files[a["pane_id"]] = p
+
+    def tick(self, h):
+        """Tick's own order (auto-task, then auto-ready) on a fresh hub read."""
+        w = lv.World(agents=[self.c, self.o], root_of=lambda cwd: cwd)
+        tasks = self.hub.list()
+        h.annotate(tasks)
+        h.auto_task(w, tasks)
+        h.auto_ready(w, tasks, lv.Harness.ready_plans(w, tasks, {}))
+        return lv.project_icon("idle", "proj", self.hub.list())
+
+    def test_1_2_owner_one_call_request_runs_the_whole_lifecycle(self):
+        self.assertEqual(self.hub.items, {})                     # nothing pre-created in prescient
+        self.c["agent_status"] = self.o["agent_status"] = "idle"
+        self.pane_turn(self.c, self.REQUEST, calls=1)            # a 10 s turn that ended before the tick saw it
+        h = lv.Harness()
+        rings = [self.tick(h)]                                    # tick 1: the card opens, 20 s after the answer
+        self.clock.now += 70                                      # past the settle window
+        rings.append(self.tick(h))                                # tick 2: auto-ready
+        self.assertEqual([(c["op"], c.get("origin") or c.get("by")) for c in self.hub.calls],
+                         [("create", "owner"), ("start", "harness"), ("ready", "harness")])
+        (iid, item), = self.hub.items.items()
+        self.assertEqual([s for s, _ in self.hub.events[iid]], ["created", "queued", "working", "ready"])
+        self.assertEqual(rings, ["queued", "ready"])              # amber, then green
+        self.assertEqual(item["origin"], "owner")
+        self.assertEqual(item["text"], "auto: " + lv.snippet(self.REQUEST, 114))
+        self.assertEqual(item["summary"], "auto: On main.")
+        print("\nlifecycle (auto-created only): " + " -> ".join(f"{s} (by {b})" for s, b in self.hub.events[iid])
+              + f"; rings per tick: {rings}")
+
+    def test_3_a_coordinators_round_spec_is_an_agent_card_and_never_green(self):
+        self.c["agent_status"] = self.o["agent_status"] = "idle"
+        self.pane_turn(self.c, "Round 7: docs/specs/round-7.md - fix the parser", calls=1, answer="Round 7 done.")
+        h = lv.Harness()
+        self.tick(h)
+        self.clock.now += 70
+        ring = self.tick(h)
+        (item,) = self.hub.items.values()
+        self.assertEqual((item["origin"], item["state"]), ("agent", "ready"))
+        self.assertEqual(ring, "working")                         # comms progress, not the owner's verdict
+
+    def test_4_a_task_notification_opens_no_card(self):
+        self.c["agent_status"] = self.o["agent_status"] = "idle"
+        self.pane_turn(self.c, "<task-notification> <task-id>b1</task-id> completed", calls=3)
+        self.tick(lv.Harness())
+        self.assertEqual((self.hub.items, self.hub.calls), ({}, []))
+
+    def test_5_a_conversational_turn_opens_no_card(self):
+        self.c["agent_status"] = self.o["agent_status"] = "idle"
+        self.pane_turn(self.c, "what branch are we on, roughly?", calls=0, answer="Probably main.")
+        self.assertEqual(self.tick(lv.Harness()), "idle")
+        self.assertEqual((self.hub.items, self.hub.calls), ({}, []))
 
 
 if __name__ == "__main__":

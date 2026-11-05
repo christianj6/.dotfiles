@@ -602,7 +602,13 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
         return None, "not work: a harness notification, a resumed session or a pasted image (never a card)"
     calls = turn.get("calls", 0)
     span = (turn.get("end") if herdr in ("idle", "done") and turn.get("end") else now) - (turn.get("start") or now)
-    if not (calls >= WORK_MIN_TOOL_CALLS or (calls >= 1 and span > WORK_MIN_SPAN_S)):
+    # The threshold filters INCIDENTAL activity (a lookup while chatting); it
+    # does not decide whether someone asked for something. An attributed owner
+    # or agent turn that used a tool did work, however short: one-call owner
+    # requests ("check the branch") must still get their lifecycle (task ->
+    # ready -> green). Machinery and unattributed turns were refused above.
+    trivial = not (calls >= WORK_MIN_TOOL_CALLS or (calls >= 1 and span > WORK_MIN_SPAN_S))
+    if trivial and not (origin in ("owner", "agent") and calls >= 1):
         return None, f"trivial so far: {calls} tool call(s), {span:.0f}s (needs {WORK_MIN_TOOL_CALLS}, or 1 and >{WORK_MIN_SPAN_S}s)"
     what = turn.get("said") or turn.get("prompt") or (f"running {turn['tool']}" if turn.get("tool") else "work")
     return "auto: " + snippet(what, 114), f"work session: {calls} tool calls, {span:.0f}s, no task covering it"
@@ -765,6 +771,11 @@ def task_at(t: Dict) -> Optional[float]:
     m = SESSION_RE.search(str(last.get("note") or "")) if last.get("by") == HARNESS_BY else None
     if m and epoch(m.group(1)) is not None:
         return epoch(m.group(1))
+    # The hub keeps no create note, so the marker above never reaches a hub
+    # item; the harness remembers the session it opened the card for instead
+    # (Harness.opened). Same rule: only while nobody has moved it since.
+    if t.get("session_at") is not None and hub_state(t) == "queued":
+        return float(t["session_at"])
     return epoch(last.get("at") or t.get("created"))
 
 
@@ -913,7 +924,7 @@ _HUB_OK: tuple = (0.0, False)
 def hub_open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
     """Harness create through the hub (wave 3): project is REQUIRED and comes
     from the git toplevel, never derived from a dest string."""
-    project = project_name(agent)
+    project = agent.get("project") or project_name(agent)    # World stamps it by the same rule
     if not project:
         return None
     who = agent.get("name") or agent["pane_id"]
@@ -926,6 +937,9 @@ def hub_open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
     origin = prompt_provenance(turn) or "harness"
     if origin == "machinery":
         return None                      # belt and braces: autotask_check already refuses this
+    # the card says what was ASKED (the requester's words), not the agent's reply
+    if origin in ("owner", "agent") and str(turn.get("prompt") or "").strip():
+        title = "auto: " + snippet(turn["prompt"], 114)
     got = http_json(HUB_URL + "/api/tasks", {"op": "create", "text": title, "project": project,
                                              "target": "coordinator", "origin": origin, "note": note})
     item = (got or {}).get("item") or {}
@@ -1125,10 +1139,12 @@ class Harness:
         self.last_why: Dict[str, str] = {}    # pane -> last auto-ready verdict worth logging
         self.seen_roots: set = set()          # repos written to: still swept once their agents are gone
         self.created: set = set()             # session markers opened this run (bro's list is the durable record)
+        self.opened: Dict[str, float] = {}    # card id -> start of the session it was opened for (see task_at)
 
     def tick(self) -> None:
         w = World()
         tasks = bro_tasks() if (AUTO_READY or AUTO_TASK) else None
+        self.annotate(tasks)
         self.auto_task(w, tasks)
         tails: Dict[str, Dict] = {}       # pane -> its OWN transcript tail (also the status lines' source)
         plans = self.ready_plans(w, tasks, tails)
@@ -1166,6 +1182,13 @@ class Harness:
                     self.failed[root] = str(exc)
                     log(f"{root}: {exc}")
 
+    def annotate(self, tasks: Optional[list]) -> None:
+        """Re-attach what the hub doesn't keep: the session each card this
+        run opened was opened for (task_at counts that session's answer)."""
+        for t in tasks or []:
+            if t.get("id") in self.opened:
+                t["session_at"] = self.opened[t["id"]]
+
     def auto_task(self, w: World, tasks: Optional[list]) -> None:
         """Open a task for each agent starting real work no task covers; it
         joins `tasks` at once, so this tick's auto-ready and hold see it."""
@@ -1195,8 +1218,11 @@ class Harness:
             who = a.get("name") or a["pane_id"]
             if tid:
                 log(f"bro {tid} opened (auto) for {who}: {why}")
+                if turn.get("start") is not None:
+                    self.opened[tid] = float(turn["start"])
                 tasks.append({"id": tid, "state": "sent", "agent": who, "dest": f"agent:{who}",
                               "hub_state": "queued", "project": a.get("project"), "target": "coordinator",
+                              "origin": prompt_provenance(turn), "session_at": self.opened.get(tid),
                               "history": [{"at": datetime.now().astimezone().isoformat(timespec="seconds"),
                                            "state": "sent", "by": HARNESS_BY, "note": marker}]})
             else:
