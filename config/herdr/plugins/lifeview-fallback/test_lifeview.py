@@ -792,6 +792,30 @@ class ProjectAutoReady(unittest.TestCase):
         self.assertEqual((plans, hub.calls), ({}, []))
         self.assertEqual(self.read, [])                                                  # no transcript read
 
+class ResolverAttribution(unittest.TestCase):
+    """--explain draws ONE icon per agent, but prescient's answer is PER PROJECT.
+    Showing a project's answer on every row made an idle omp read "working"
+    because its project's Claude was busy (heinzel, 2026-11-03). The rule: only
+    the row the resolver names may claim its answer."""
+
+    @staticmethod
+    def attributed(name, resolved):
+        return bool(resolved and not resolved.get("stale_table")
+                    and resolved.get("status") and resolved.get("agent") == name)
+
+    def test_the_named_row_claims_it(self):
+        r = {"agent": "omp-x", "status": "working"}
+        self.assertTrue(self.attributed("omp-x", r))
+
+    def test_another_row_in_the_same_project_does_not(self):
+        r = {"agent": "omp-x", "status": "working"}
+        self.assertFalse(self.attributed("claude-y", r))     # the busy project must not paint an idle agent
+
+    def test_a_stale_table_claims_nothing(self):
+        self.assertFalse(self.attributed("omp-x", {"agent": "omp-x", "status": "working", "stale_table": True}))
+
+    def test_no_resolver_answer_claims_nothing(self):
+        self.assertFalse(self.attributed("omp-x", None))
 
 if __name__ == "__main__":
     unittest.main()

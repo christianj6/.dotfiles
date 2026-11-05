@@ -1212,13 +1212,20 @@ def explain() -> None:
         row = rows.get(name) or {}
         status = row.get("status") or (e.get("state") if isinstance(e, dict) else None) or herdr
         relevant = [t["state"] for t in mine if t.get("state") not in ("done", "dropped")]
+        # prescient's answer is PER PROJECT, and this loop draws a per-AGENT icon: showing it on every
+        # row made an idle omp read "working" because its project's Claude was busy. Only the row the
+        # resolver actually named may claim it; every other row keeps its own state.
         resolved = resolver_status(root.rsplit("/", 1)[-1].lstrip(".")) if root else None
-        if resolved and not resolved.get("stale_table") and resolved.get("status"):
+        if (resolved and not resolved.get("stale_table") and resolved.get("status")
+                and resolved.get("agent") == name):
             icon = resolved["status"]
+            resolved_from = f"prescient, for {resolved.get('agent')}"
         else:
             icon = icon_state(status, relevant + [hub_state(t) for t in project_items(a.get("project"), tasks or [])
                                                   if hub_open(t)])
-        print(f"\n{name} [{a['pane_id']}, {a.get('agent')}] -> icon: {icon}")
+            resolved_from = None
+        print(f"\n{name} [{a['pane_id']}, {a.get('agent')}] -> icon: {icon}"
+              + (f"  (from {resolved_from})" if resolved_from else ""))
         print(f"  herdr: {herdr}")
         if path:
             age = f"{now - tail['at']:.0f}s ago" if tail.get("at") else "no timestamp"
