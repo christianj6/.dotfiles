@@ -518,6 +518,43 @@ TASK_SYSTEM_ARG = re.compile(
     r"|lifeview|taskhub|\bhub\.py\b)", re.I)
 
 
+# ---- provenance: whose words started this turn (docs/design-task-provenance.md) ----
+
+# Machinery is not work. These arrive through the same chat input as the owner's
+# sentences but nobody asked for anything: the harness notifying about a
+# background task, omp resuming a context-exhausted session, an image pasted on
+# its own. They must never become a tracked card (22 of heinzel's 65 turns were
+# these, all of them previously eligible).
+MACHINERY_PROMPT = re.compile(
+    r"^\s*(?:<task-notification>|<task-|<local-command|This session is being continued from a previous"
+    r"|\[Image:[^\]]*\]\s*$|\[Request interrupted)", re.I)
+
+# An agent handing work to its worker, rather than the owner asking: this project's
+# own convention is a round spec ("Round 25: ...") or a spec path. Evidence in the
+# text, never guessed.
+AGENT_PROMPT = re.compile(r"^\s*(?:Round \d+|Spec:|Notes:|Discussion, no code)"
+                          r"|^\s*\S*(?:docs|specs|release/docs)/\S+\.md\b", re.I)
+
+
+def prompt_provenance(turn: Dict) -> Optional[str]:
+    """'machinery' | 'agent' | 'owner', from the prompt's SHAPE.
+
+    Whole-classification of the turn's prompt, done once, at the place the card is
+    created. Never re-derived downstream: a consumer guessing provenance from text
+    is the same bug as the agent-keyed auto-ready. Returns None when there is no
+    prompt to judge, and the caller then opens nothing (a turn that cannot be
+    attributed must not be invented as the owner's).
+    """
+    prompt = str(turn.get("prompt") or "").strip()
+    if not prompt:
+        return None
+    if MACHINERY_PROMPT.match(prompt):
+        return "machinery"
+    if AGENT_PROMPT.match(prompt):
+        return "agent"
+    return "owner"
+
+
 def task_system_turn(turn: Dict) -> bool:
     """True when this turn's own commands/prompt are about the task system."""
     blob = " ".join(str(x or "") for x in (
@@ -558,6 +595,11 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
         return None, "this turn is about the task system itself (hub/CLI/tray) - auto-task would loop on its own output"
     if is_coordinator(agent, tasks):
         return None, "this agent coordinates; its work is other agents' tasks, not its own card"
+    origin = prompt_provenance(turn)
+    if origin is None:
+        return None, "no prompt to attribute: nothing is opened for work nobody can be shown to have asked for"
+    if origin == "machinery":
+        return None, "not work: a harness notification, a resumed session or a pasted image (never a card)"
     calls = turn.get("calls", 0)
     span = (turn.get("end") if herdr in ("idle", "done") and turn.get("end") else now) - (turn.get("start") or now)
     if not (calls >= WORK_MIN_TOOL_CALLS or (calls >= 1 and span > WORK_MIN_SPAN_S)):
@@ -661,9 +703,24 @@ def ready_candidates(project: Optional[str], tasks: list) -> list:
     return [t for t in project_items(project, tasks) if ready_candidate(t)]
 
 
+def item_for_icon(t: Dict) -> Optional[str]:
+    """The state an item contributes to the ring.
+
+    An `owner` item that is ready is the thing that earns green: the owner asked
+    for it and it is waiting on him. An `agent` item that is ready is progress on
+    work nobody asked him about, so it sits BELOW working - visible in the column
+    as ready, never turning the ring green. Without this, an agent working on its
+    own initiative floods the owner with "ready for your verdict" for work he
+    never requested (docs/design-task-provenance.md)."""
+    s = hub_state(t)
+    if s == "ready" and str(t.get("origin") or "") == "agent":
+        return "working"
+    return s
+
+
 def project_icon(row_status: str, project: Optional[str], tasks: list) -> str:
-    """The project's ring from its open items: any ready item makes it ready."""
-    return icon_state(row_status, [hub_state(t) for t in project_items(project, tasks) if hub_open(t)])
+    """The project's ring from its open items: any OWNER-ready item makes it ready."""
+    return icon_state(row_status, [item_for_icon(t) for t in project_items(project, tasks) if hub_open(t)])
 
 
 def is_coordinator(agent: Dict, tasks: list) -> bool:
@@ -862,8 +919,15 @@ def hub_open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
     who = agent.get("name") or agent["pane_id"]
     note = (f"opened by the lifeview harness: {who} began work with no task covering it "
             f"(LIFEVIEW_AUTO_TASK=0 disables this) {session_marker(agent, turn)}")
+    # origin is WHOSE WORDS started this, not who pressed the button. It was always
+    # "harness", so the owner could not tell his own work from an agent's (docs/
+    # design-task-provenance.md). The classifier decides once, here; nothing
+    # downstream re-derives it.
+    origin = prompt_provenance(turn) or "harness"
+    if origin == "machinery":
+        return None                      # belt and braces: autotask_check already refuses this
     got = http_json(HUB_URL + "/api/tasks", {"op": "create", "text": title, "project": project,
-                                             "target": "coordinator", "origin": "harness", "note": note})
+                                             "target": "coordinator", "origin": origin, "note": note})
     item = (got or {}).get("item") or {}
     return item.get("id") if item.get("id") else None
 

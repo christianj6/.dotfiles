@@ -387,8 +387,12 @@ class AutoTask(unittest.TestCase):
         self.assertEqual(title, "auto: Refactoring the parser.")
         title, _ = self.chk(t=turn(said="", prompt="Fix the login bug in auth.py please"))
         self.assertEqual(title, "auto: Fix the login bug in auth.py please")
-        title, _ = self.chk(t=turn(said="", prompt="", tool="Read"))
-        self.assertEqual(title, "auto: running Read")
+        # no prompt: nothing is attributed, so nothing is opened. It used to
+        # become "auto: running Read" - a card for work nobody can be shown to
+        # have asked for, which is how machinery became tasks.
+        title, why = self.chk(t=turn(said="", prompt="", tool="Read"))
+        self.assertIsNone(title)
+        self.assertIn("no prompt to attribute", why)
         title, _ = self.chk(t=turn(said="x" * 500))
         self.assertLessEqual(len(title), 6 + 114)
 
@@ -604,7 +608,8 @@ class CoordinatorExemption(unittest.TestCase):
             {"name": "claude-v2-w5p1a", "pane_id": "w5:p1A", "agent": "claude", "project": "heinzel",
              "agent_status": "working"},
             [{"id": "tk-1", "target": "coordinator", "state": "done", "project": "heinzel"}],
-            {"key": "2026-11-03T17:00:00.000+01:00", "start": 0, "calls": 10, "said": "fixing the z-fighting edge"},
+            {"key": "2026-11-03T17:00:00.000+01:00", "start": 0, "calls": 10, "said": "fixing the z-fighting edge",
+             "prompt": "the doorway still z-fights on one edge, fix it"},
             {"claude-v2-w5p1a"}, time.time() + 10 ** 6,
         )
         self.assertIsNotNone(title, why)
@@ -845,6 +850,77 @@ class ResolverAttribution(unittest.TestCase):
 
     def test_no_resolver_answer_claims_nothing(self):
         self.assertFalse(self.attributed("omp-x", None))
+
+class Provenance(unittest.TestCase):
+    """Whose words started this turn (docs/design-task-provenance.md). The owner's
+    concern: claude talks to its coordinator through the same chat input he uses,
+    so agent comms and machinery were becoming tasks indistinguishable from his."""
+
+    def prov(self, prompt):
+        return lv.prompt_provenance({"prompt": prompt})
+
+    def test_machinery_is_never_work(self):
+        for p in ("<task-notification> <task-id>x</task-id>",
+                  "This session is being continued from a previous conversation that ran out of context.",
+                  "[Image: original 3272x864, displayed at 2576x680.]",
+                  "<local-command-caveat>",
+                  "[Request interrupted by user]"):
+            self.assertEqual(self.prov(p), "machinery", p)
+
+    def test_an_agents_own_handoff_is_agent(self):
+        for p in ("Round 25: release/docs/ready/round-20261105-balcony-bugs.md - the four bugs",
+                  "Round 26, a quick touch-up: release tiny spec",
+                  "Spec: the doorway z-fights on one edge",
+                  "Discussion, no code: release/docs/ready/trello-material.md"):
+            self.assertEqual(self.prov(p), "agent", p)
+
+    def test_human_words_are_the_owners(self):
+        for p in ("fix the z-edge, it still flickers",
+                  "the doorway still z-fights on one edge, fix it",
+                  "that's annoying"):
+            self.assertEqual(self.prov(p), "owner", p)
+
+    def test_no_prompt_is_attributable_to_nobody(self):
+        self.assertIsNone(self.prov(""))
+        self.assertIsNone(lv.prompt_provenance({}))
+
+    def test_machinery_never_opens_a_card(self):
+        title, why = lv.autotask_check(
+            {"name": "claude-x", "pane_id": "w:p1", "agent": "claude", "project": "proj", "agent_status": "working"},
+            [], {"key": "k", "start": 0, "calls": 12, "said": "",
+                "prompt": "<task-notification> <task-id>abc</task-id>"},
+            {"claude-x"}, time.time() + 10 ** 6)
+        self.assertIsNone(title)
+        self.assertIn("never a card", why)
+
+    def test_the_transcript_distribution_is_fully_classified(self):
+        """The check the coordinator asked for: heinzel's 65 user-role prompts,
+        every one in exactly one class, and the counts matching what was measured."""
+        prompts = (["Round %d: release/docs/ready/round-2026110%d-x.md" % (i, i % 10) for i in range(19)]
+                   + ["<task-notification> <task-id>t%d</task-id>" % i for i in range(16)]
+                   + ["[Image: original 3272x864]" for _ in range(11)]
+                   + ["a human sentence number %d" % i for i in range(12)]
+                   + ["This session is being continued from a previous conversation"] * 6
+                   + ["Discussion, no code: release/docs/ready/trello-material.md"])
+        self.assertEqual(len(prompts), 65)
+        from collections import Counter
+        c = Counter(lv.prompt_provenance({"prompt": p}) for p in prompts)
+        self.assertEqual(c, Counter({"agent": 20, "machinery": 33, "owner": 12}))
+        self.assertEqual(sum(c.values()), 65, "every prompt in exactly one class")
+
+    def test_an_agent_card_never_turns_the_ring_green(self):
+        """The owner's attention is the scarce thing: an agent finishing work it
+        started is progress, not a verdict request. Without this an agent working
+        on its own initiative floods him with 'ready for your verdict' for work he
+        never asked for."""
+        own = {"id": "a", "project": "p", "target": "coordinator", "state": "ready", "origin": "owner"}
+        agt = {"id": "b", "project": "p", "target": "coordinator", "state": "ready", "origin": "agent"}
+        self.assertEqual(lv.project_icon("idle", "p", [own]), "ready")
+        self.assertEqual(lv.project_icon("idle", "p", [agt]), "working")
+        self.assertEqual(lv.project_icon("idle", "p", [own, agt]), "ready")   # his work still wins
+        # and the item keeps its real state: only the RING is demoted
+        self.assertEqual(lv.hub_state(agt), "ready")
+
 
 if __name__ == "__main__":
     unittest.main()
