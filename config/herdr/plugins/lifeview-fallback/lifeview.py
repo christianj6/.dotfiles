@@ -8,11 +8,14 @@ both, so no agent has to remember a CLI:
    own agent_status is written there for every agent that hasn't spoken for
    itself. omp's herdr status is already transcript-backed (omp-watch), and
    claude's comes from its hooks.
-2. The ring is green when a bro task is `ready`. When an agent settles after
-   working on its one open bro task, the plugin marks that task ready through
-   bro's HTTP API, with its last message as the summary and the provenance in
-   the note ("auto: " summary prefix). See ready_check() for every
-   condition; LIFEVIEW_AUTO_READY=0 turns it off.
+2. The ring is green when a hub item is `ready`. Readiness is the PROJECT's:
+   items match on project + target (the hub sets no agent/dest). When the
+   project's omp settles after an answer, with one open item awaiting ready,
+   the plugin marks it ready (by: harness), the summary being the last
+   answer of whoever did the work - the project's claude when it did,
+   else the omp ("auto: " summary prefix). See ready_check() for every
+   condition and ready_candidate() for the state predicate;
+   LIFEVIEW_AUTO_READY=0 turns it off.
 
 Status-file rules (the agent's own word always wins):
 - Entries are keyed by pane id, as `prescient status` keys them, so an
@@ -105,7 +108,16 @@ PRESCIENT_URL = os.environ.get("PRESCIENT_URL", "http://127.0.0.1:8765")
 # Default bro so an older service is never required.
 TASK_HUB = _plugin_env("TASK_HUB", "bro")
 HUB_URL = PRESCIENT_URL
-OPEN_TASK = ("open", "sent", "working")
+# The hub's own vocabulary (prescient/tasks/store.py STATES). Auto-ready reads
+# these and nothing else: see hub_open() and ready_candidate().
+HUB_STATES = ("created", "queued", "working", "ready", "parked", "undelivered", "done")
+HUB_CLOSED = ("done",)            # a dropped item arrives as done + resolution=dropped
+HUB_TARGETS = ("coordinator", "dev")
+# How the harness brings a candidate to ready, per the hub's TRANSITIONS: ready
+# is reachable only from working, and queued -> working is a plain start.
+# created/parked/undelivered have no harness route (create queues at once;
+# unpark and retry are someone else's call), so they are reported, not marked.
+READY_ROUTE = {"working": ("ready",), "queued": ("start", "ready")}
 # Auto-task: the harness opens a bro task for real work no task covers.
 AUTO_TASK = _plugin_env("AUTO_TASK", "1") != "0"   # env or the plugin config file (the daemon has no env)
 WORK_MIN_TOOL_CALLS = int(os.environ.get("LIFEVIEW_WORK_MIN_TOOL_CALLS", "2"))
@@ -136,6 +148,7 @@ FROM_HERDR = {
 AG_RANK_VERSION = 2   # prescient's published rank table version
 AG_RANK = {"ready": 0, "failed": 1, "blocked": 2, "working": 3, "queued": 4, "noted": 5,
            "done": 6, "dropped": 7, "idle": 8}
+# DISPLAY ONLY: bro-local states -> the ring's vocabulary. Never a filter for auto-ready (that is hub_open/ready_candidate).
 BRO_STATES = {"open": "queued", "sent": "queued", "reopened": "queued", "noted": "noted", "working": "working",
               "ready": "ready", "done": "done", "dropped": "dropped", "failed": "failed"}
 
@@ -612,9 +625,39 @@ def summary_of(text: str, limit: int = 240) -> str:
     return "auto: " + (one if len(one) <= limit else one[: limit - 1].rstrip() + "…")
 
 
-def tasks_for(agent: Dict, tasks: list) -> list:
-    """Open bro tasks whose agent is this one (by herdr name or pane id)."""
-    return [t for t in tasks_of(agent, tasks) if t.get("state") in OPEN_TASK]
+def hub_state(t: Dict) -> Optional[str]:
+    """The item's hub state: bro's list carries it as hub_state beside its own
+    vocabulary; the hub's list calls it state."""
+    return t.get("hub_state") or t.get("state")
+
+
+def hub_open(t: Dict) -> bool:
+    """Open, for display and the invariant: any hub state but done."""
+    s = hub_state(t)
+    return s in HUB_STATES and s not in HUB_CLOSED
+
+
+def ready_candidate(t: Dict) -> bool:
+    """Auto-ready's set, NOT the same as hub_open: open and not yet ready. A
+    ready item is already green and must never be re-marked."""
+    return hub_open(t) and hub_state(t) != "ready"
+
+
+def project_items(project: Optional[str], tasks: list) -> list:
+    """Readiness is a property of the PROJECT: items match on project + target,
+    never on agent or dest (the hub sets neither)."""
+    if not project:
+        return []
+    return [t for t in tasks if t.get("project") == project and t.get("target") in HUB_TARGETS]
+
+
+def ready_candidates(project: Optional[str], tasks: list) -> list:
+    return [t for t in project_items(project, tasks) if ready_candidate(t)]
+
+
+def project_icon(row_status: str, project: Optional[str], tasks: list) -> str:
+    """The project's ring from its open items: any ready item makes it ready."""
+    return icon_state(row_status, [hub_state(t) for t in project_items(project, tasks) if hub_open(t)])
 
 
 def is_coordinator(tasks: list) -> bool:
@@ -658,20 +701,31 @@ def task_at(t: Dict) -> Optional[float]:
     return epoch(last.get("at") or t.get("created"))
 
 
-def ready_check(agent: Dict, tasks: list, project_busy: List[str], tail: Dict, now: float) -> Tuple[Optional[Dict], str]:
-    """(task to mark ready, why) - or (None, why not). Every condition must
-    hold; each guards a way auto-ready could show a false green."""
+def ready_check(agent: Dict, tasks: list, project_busy: List[str], tail: Dict, now: float,
+                worker: Optional[Dict] = None) -> Tuple[Optional[Dict], str]:
+    """(task to mark ready, why) - or (None, why not). agent is the project's
+    settler (its omp, see settler_of); tail is the transcript of whoever did
+    the work (worker, see evidence_of). Every condition must hold; each
+    guards a way auto-ready could show a false green."""
     if not AUTO_READY:
         return None, "auto-ready off (LIFEVIEW_AUTO_READY=0)"
-    mine = tasks_for(agent, tasks)
+    project = agent.get("project")
+    mine = ready_candidates(project, tasks)
     if not mine:
-        return None, "no open bro task for it"
+        return None, f"nothing open in {project or '(no project)'} awaiting ready"
     if len(mine) > 1:
-        return None, f"{len(mine)} open bro tasks: ambiguous, left to the agent"
+        return None, f"{len(mine)} open items in {project}: ambiguous, left to the agent"
     t = mine[0]
-    keys = {agent.get("name"), agent.get("pane_id")}
+    # who counts as "the agent itself": the settler, the worker, and the hub's
+    # role for any agent (hub events carry a role, never a herdr name)
+    keys = {agent.get("name"), agent.get("pane_id"), "agent"}
+    if worker:
+        keys |= {worker.get("name"), worker.get("pane_id")}
+    keys -= {None, ""}
     if not AUTO_READY_STARTED and any(h.get("state") == "working" and h.get("by") in keys for h in t.get("history") or []):
         return None, f"{t['id']} was started by the agent itself: `ready` is its call (LIFEVIEW_AUTO_READY_STARTED=1 overrides)"
+    if hub_state(t) not in READY_ROUTE:
+        return None, f"{t['id']} is {hub_state(t)}: the hub has no harness route from there to ready"
     herdr = agent.get("agent_status") or "unknown"
     if herdr not in ("idle", "done"):
         return None, f"herdr says {herdr}, not settled"
@@ -692,14 +746,41 @@ def ready_check(agent: Dict, tasks: list, project_busy: List[str], tail: Dict, n
     return t, f"settled {quiet:.0f}s after answering; one open task {t['id']}"
 
 
-def pending(agent: Dict, tasks: list, project_busy: List[str], tail: Dict, now: float) -> bool:
+def pending(agent: Dict, tasks: list, project_busy: List[str], tail: Dict, now: float,
+            worker: Optional[Dict] = None) -> bool:
     """Settling toward auto-ready: not ready now, but would be once the settle
     window has passed with nothing else changing. Every other guard still
     applies, so an agent that won't go green (a question, a task it started,
     no task) is never held."""
-    if ready_check(agent, tasks, project_busy, tail, now)[0] is not None:
+    if ready_check(agent, tasks, project_busy, tail, now, worker)[0] is not None:
         return False
-    return ready_check(agent, tasks, project_busy, tail, now + SETTLE_S)[0] is not None
+    return ready_check(agent, tasks, project_busy, tail, now + SETTLE_S, worker)[0] is not None
+
+
+def settler_of(group: list) -> Optional[Dict]:
+    """The agent a project settles on: its omp (always present, per the owner).
+    A project with no omp falls back to its only claude, so it still works;
+    several omp (or several claude, no omp) is ambiguous: None."""
+    omps = [a for a in group if a.get("agent") == "omp"]
+    if omps:
+        return omps[0] if len(omps) == 1 else None
+    claudes = [a for a in group if a.get("agent") == "claude"]
+    return claudes[0] if len(claudes) == 1 else None
+
+
+def evidence_of(settler: Dict, group: list, t: Optional[Dict], tail_of) -> Dict:
+    """Whose transcript the tail check reads: the project's claude when it is
+    the one that did the work (the item targets dev, or its transcript moved
+    after the item was handed over - better evidence than the omp's), else the
+    settler's. A claude is never required."""
+    claudes = [a for a in group if a.get("agent") == "claude"]
+    if t is None or settler.get("agent") == "claude" or len(claudes) != 1:
+        return settler
+    c = claudes[0]
+    if t.get("target") == "dev":
+        return c
+    handed, at = task_at(t), tail_of(c).get("at")
+    return c if handed is not None and at is not None and at > handed else settler
 
 
 # ---- herdr, bro, filesystem ----
@@ -778,12 +859,22 @@ def hub_open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
 
 
 def hub_mark_ready(t: Dict, agent: Dict, tail: Dict, quiet: float) -> Optional[Dict]:
+    """`by` is the hub's ROLE (owner|agent|harness|bro), never a herdr name -
+    the hub refuses anything else. A queued item is started first (by the
+    harness, so the event log says so): the hub allows ready only from working."""
     who = agent.get("name") or agent.get("pane_id")
-    note = ("auto-marked ready by the lifeview harness: " + who +
+    note = ("auto-marked ready by the lifeview harness: " + str(who) +
             f" settled {quiet:.0f}s after its last answer with this as its one open task; "
             "summary is that answer. LIFEVIEW_AUTO_READY=0 disables this.")
-    return http_json(HUB_URL + "/api/tasks", {"op": "ready", "id": t["id"], "by": who,
-                                              "summary": summary_of(tail.get("text", "")), "note": note})
+    got: Optional[Dict] = None
+    for op in READY_ROUTE.get(hub_state(t) or "", ()):
+        body = {"op": op, "id": t["id"], "by": "harness", "note": note}
+        if op == "ready":
+            body["summary"] = summary_of(tail.get("text", ""))
+        got = http_json(HUB_URL + "/api/tasks", body)
+        if not got or "error" in got:
+            return got                    # refused or down: the caller logs it once
+    return got
 
 
 def resolver_status(project: str) -> Optional[dict]:
@@ -803,7 +894,15 @@ def bro_tasks_via_hub() -> Optional[list]:
     got = http_json(HUB_URL + "/api/tasks", timeout=3)
     if not isinstance(got, dict):
         return None
-    return [i for i in got.get("items") or [] if isinstance(i, dict) and i.get("id")]
+    items = [i for i in got.get("items") or [] if isinstance(i, dict) and i.get("id")]
+    for i in items:
+        if hub_open(i):
+            # the list has no history; auto-ready's guards need it (who started
+            # it, when it last moved), so open items get their event log
+            ev = http_json(HUB_URL + "/api/tasks/" + quote(i["id"], safe=""), timeout=3) or {}
+            i["history"] = [{"at": e.get("at"), "state": e.get("to_state"), "by": e.get("by"), "note": e.get("note")}
+                            for e in ev.get("events") or [] if isinstance(e, dict)]
+    return items
 
 
 def open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
@@ -840,13 +939,14 @@ def mark_ready(t: Dict, agent: Dict, tail: Dict, quiet: float) -> Optional[Dict]
 def project_name(agent: Dict) -> Optional[str]:
     """The hub's REQUIRED project: the git toplevel's basename (the same rule
     `prescient status` and the CLI use), never derived from a dest string."""
-    root = git_root(str(agent.get("cwd") or ""))
-    if not root:
-        return None
+    return project_of_root(git_root(str(agent.get("cwd") or "")))
+
+
+def project_of_root(root: Optional[str]) -> Optional[str]:
     # The board's rule (prescient's gantt.agent.project_of): the repo folder's
     # name with a leading dot dropped -- `.dotfiles` is "dotfiles". Matching it
     # is what keeps one project from splitting into two on the hub.
-    return os.path.basename(root).lstrip(".") or None
+    return (os.path.basename(root).lstrip(".") or None) if root else None
 
 
 def git_root(cwd: str) -> Optional[str]:
@@ -920,16 +1020,24 @@ def apply(root: str, agents: list, live_panes: set, holds: frozenset = frozenset
 class World:
     """One look at herdr: agents, their repos, and who in each project is busy."""
 
-    def __init__(self) -> None:
-        self.agents = [a for a in list_agents() if a.get("pane_id")]
+    def __init__(self, agents: Optional[list] = None, root_of=None) -> None:
+        self.agents = [a for a in (list_agents() if agents is None else agents) if a.get("pane_id")]
         self.live = {a["pane_id"] for a in self.agents}
         roots: Dict[str, Optional[str]] = {}
         self.root: Dict[str, Optional[str]] = {}
         for a in self.agents:
             cwd = a.get("cwd") or ""
             if cwd not in roots:
-                roots[cwd] = git_root(cwd)
+                roots[cwd] = (root_of or git_root)(cwd)
             self.root[a["pane_id"]] = roots[cwd]
+            a["project"] = project_of_root(roots[cwd])     # what auto-ready matches items on
+
+    def projects(self) -> Dict[str, list]:
+        out: Dict[str, list] = {}
+        for a in self.agents:
+            if a.get("project"):
+                out.setdefault(a["project"], []).append(a)
+        return out
 
     def project_busy(self, agent: Dict) -> List[str]:
         mine = self.root.get(agent["pane_id"])
@@ -948,13 +1056,14 @@ class Harness:
         w = World()
         tasks = bro_tasks() if (AUTO_READY or AUTO_TASK) else None
         self.auto_task(w, tasks)
-        tails = self.tails(w, tasks)
+        tails: Dict[str, Dict] = {}       # pane -> its OWN transcript tail (also the status lines' source)
+        plans = self.ready_plans(w, tasks, tails)
         # Mark ready BEFORE the status write: the hold is released only once
         # the task is green, so no board read can land between the two.
-        self.auto_ready(w, tasks, tails)
+        self.auto_ready(w, tasks, plans)
         now = time.time()
-        holds = frozenset(a["pane_id"] for a in w.agents if a["pane_id"] in tails
-                          and pending(a, tasks or [], w.project_busy(a), tails[a["pane_id"]], now))
+        holds = frozenset(p["settler"]["pane_id"] for p in plans.values()
+                          if pending(p["settler"], tasks or [], w.project_busy(p["settler"]), p["tail"], now, p["worker"]))
 
         def tail_of(a: Dict) -> Dict:          # read on demand: only override candidates ask
             if a["pane_id"] not in tails:
@@ -1013,37 +1122,54 @@ class Harness:
             if tid:
                 log(f"bro {tid} opened (auto) for {who}: {why}")
                 tasks.append({"id": tid, "state": "sent", "agent": who, "dest": f"agent:{who}",
+                              "hub_state": "queued", "project": a.get("project"), "target": "coordinator",
                               "history": [{"at": datetime.now().astimezone().isoformat(timespec="seconds"),
                                            "state": "sent", "by": HARNESS_BY, "note": marker}]})
             else:
                 log(f"auto-task for {who} failed (bro CLI: {bro_bin() or 'not found'})")
 
     @staticmethod
-    def tails(w: World, tasks: Optional[list]) -> Dict[str, Dict]:
-        """Transcript tails, read only for agents with an open bro task."""
+    def ready_plans(w: World, tasks: Optional[list], tails: Dict[str, Dict]) -> Dict[str, Dict]:
+        """Per project with something open: {settler, worker, path, tail}. The
+        project settles on its omp; the tail is read from the worker's
+        transcript (evidence_of). Transcripts are read only for projects with
+        a candidate; every read lands in tails, keyed by the reader's pane."""
         out: Dict[str, Dict] = {}
-        for a in w.agents:
-            if tasks and tasks_for(a, tasks):
-                path = transcript_of(a, w.agents)
-                out[a["pane_id"]] = scan_tail(path) if path else {"verdict": None, "at": None, "text": ""}
+        if not tasks:
+            return out
+        paths: Dict[str, Optional[Path]] = {}
+
+        def own_tail(a: Dict) -> Dict:
+            if a["pane_id"] not in tails:
+                paths[a["pane_id"]] = path = transcript_of(a, w.agents)
+                tails[a["pane_id"]] = scan_tail(path) if path else {"verdict": None, "at": None, "text": ""}
+            return tails[a["pane_id"]]
+
+        for project, group in w.projects().items():
+            cands = ready_candidates(project, tasks)
+            settler = settler_of(group) if cands else None
+            if not settler:
+                continue
+            worker = evidence_of(settler, group, cands[0] if len(cands) == 1 else None, own_tail)
+            tail = own_tail(worker)
+            out[project] = {"settler": settler, "worker": worker, "path": paths.get(worker["pane_id"]), "tail": tail}
         return out
 
-    def auto_ready(self, w: World, tasks: Optional[list], tails: Dict[str, Dict]) -> None:
+    def auto_ready(self, w: World, tasks: Optional[list], plans: Dict[str, Dict]) -> None:
         if not AUTO_READY or tasks is None:
             return                        # off, or bro down: nothing to mark
         now = time.time()
-        for a in w.agents:
-            tail = tails.get(a["pane_id"])
-            if tail is None:
-                continue
-            t, why = ready_check(a, tasks, w.project_busy(a), tail, now)
+        for p in plans.values():
+            a, tail = p["settler"], p["tail"]
+            t, why = ready_check(a, tasks, w.project_busy(a), tail, now, p["worker"])
             if t is None:
                 continue
             got = mark_ready(t, a, tail, now - tail["at"])
             who = a.get("name") or a["pane_id"]
-            if got and (got.get("task") or {}).get("state") == "ready":
-                log(f"bro {t['id']} -> ready (auto) for {who}: {why}")
+            if got and (got.get("task") or got.get("item") or {}).get("state") == "ready":   # bro answers task, the hub item
+                log(f"{t['id']} -> ready (auto) for {a.get('project')} via {who}: {why}")
                 t["state"] = "ready"          # this tick's copy: not again
+                t.pop("hub_state", None)
             elif self.last_why.get(a["pane_id"]) != "mark failed":
                 self.last_why[a["pane_id"]] = "mark failed"
                 log(f"bro {t['id']}: auto-ready for {who} failed: {got}")
@@ -1065,6 +1191,7 @@ def explain() -> None:
     board = http_json(PRESCIENT_URL + "/api/agent-board") or {}
     rows = {r.get("name"): r for r in board.get("agents") or []}
     now = time.time()
+    plans = Harness.ready_plans(w, tasks, {})
     print(f"bro: {'up' if tasks is not None else 'DOWN (no tasks, no auto-ready)'}; "
           f"prescient: {'up' if board else 'DOWN (icon state computed locally)'}; auto-ready {'on' if AUTO_READY else 'off'}")
     for a in w.agents:
@@ -1083,7 +1210,8 @@ def explain() -> None:
         if resolved and not resolved.get("stale_table") and resolved.get("status"):
             icon = resolved["status"]
         else:
-            icon = icon_state(status, relevant)
+            icon = icon_state(status, relevant + [hub_state(t) for t in project_items(a.get("project"), tasks or [])
+                                                  if hub_open(t)])
         print(f"\n{name} [{a['pane_id']}, {a.get('agent')}] -> icon: {icon}")
         print(f"  herdr: {herdr}")
         if path:
@@ -1100,7 +1228,16 @@ def explain() -> None:
             print(f"  dashboard row: status {row.get('status')}" + (f" (herdr {row['herdr']})" if row.get("herdr") else ""))
         print("  bro tasks: " + (", ".join(f"{t['id']} {t['state']}" for t in mine if t.get("state") not in ("done", "dropped")) or "none open"))
         if tasks is not None:
-            print("  auto-ready: " + ready_check(a, tasks, w.project_busy(a), tail, now)[1])
+            p = plans.get(a.get("project") or "")
+            if not p:
+                print("  auto-ready: " + ready_check(a, tasks, w.project_busy(a), tail, now)[1])
+            elif p["settler"] is a:
+                src = p["worker"].get("name") or p["worker"]["pane_id"]
+                print(f"  auto-ready ({a.get('project')}, tail from {src}"
+                      f"{': ' + p['path'].name if p['path'] else ''}): "
+                      + ready_check(a, tasks, w.project_busy(a), p["tail"], now, p["worker"])[1])
+            else:
+                print(f"  auto-ready: {a.get('project')} settles on {p['settler'].get('name') or p['settler']['pane_id']}")
             turn = scan_turn(path) if path else {}
             shown = set(rows) if board else None
             print("  auto-task: " + autotask_check(a, tasks, turn, shown, now)[1])
