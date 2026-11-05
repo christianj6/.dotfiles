@@ -46,6 +46,30 @@ Its row is the omp → `target = "coordinator"`. So its coordinator items rank. 
 
 That is "amber → grey" exactly: amber from the agent's own `working` (liveness), grey because nothing tracked is open once it finishes.
 
+## SECOND BUG, and it is the one that explains "doesn't always"
+
+Even when the role matches, `ready` may never be **set**. The life view's `auto_ready` calls `ready_check(agent, ...)`, and `ready_check` starts with:
+
+```python
+mine = tasks_for(agent, tasks)          # keyed on the AGENT's name or pane_id
+if not mine:
+    return None, "no open bro task for it"
+```
+
+`tasks_of` matches on `t["agent"]`, else a `dest` of `agent:<name>`. And hub items carry **`agent: None`** — verified across dotfiles and heinzel dev items, every one is `agent: None`:
+
+```
+tk-42e749d2f842  done  agent: None
+tk-ca5d827130b3  done  agent: None
+tk-735885816f18  done  agent: None
+```
+
+Their `dest` is a **role** (`coordinator:<project>` or `agent:<claude>`), and for role-targeted work there is no agent name at all. So `tasks_for(agent)` is empty for exactly the items that need marking, `ready_check` returns "no open bro task for it", and auto-ready never fires.
+
+**This is why heinzel — with both an omp and a Claude — still does not reliably go green.** It has nothing to do with which agents exist. When an item is created for a *role*, no agent owns it, so no agent's auto-ready can claim it.
+
+Owner's constraint, which simplifies the fix: **an omp pane is always present; Claude is an optional workhorse.** So the answer is not "match agents better" — it is **stop keying readiness on an agent at all**. A project-level ready state should be derived from the item and the project's settlement, with the agent name only used to decide *which* pane's transcript to read.
+
 ## Why prescient looks right
 
 prescient has **both** an omp and a Claude, and its work has been on the coordinator target, so the omp row it prefers happens to be ranking the items that go ready. The behaviour is correct **by coincidence of which role did the work**, not by design.
@@ -64,6 +88,15 @@ Invariant to test: **for any project, if any item is `ready`, the project's stat
 ## Second-order: the same gap in the board
 
 `ROLE_OF_KIND = {"omp": "coordinator"}` exists only so the icon's row matches the items it carries. Once ranking stops depending on the row's role, that mapping can be reduced to what it actually is: a label for which pane to name. Worth removing rather than widening.
+
+## The design the owner's constraint implies
+
+One rule, one place: **a project's icon is a function of its project, not of an agent.**
+
+- **READ**: rank every open item of the project, any target. `ready` anywhere ⇒ the project is green.
+- **SET**: a role-targeted item is settled when *the project's* agent settles — not when a specifically-addressed agent does. With an omp always present, the omp's own settlement is the signal that a chunk finished, and it is the pane whose transcript should be read to confirm the tail is a finished answer rather than a question.
+- **Claude optional**: when a Claude exists and did the work, its transcript is the better evidence — prefer it for the `tail` check. When it does not exist, the omp's is the evidence. Never require it.
+- Drop `ROLE_OF_KIND` from the ranking path entirely: a role is not a receiver.
 
 ## Verify
 
