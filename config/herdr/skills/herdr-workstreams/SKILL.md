@@ -100,7 +100,7 @@ and the same shape works for a second omp.
    started: `herdr agent rename <pane_id> <name>`.
 
        omp-peer send <name> "<instruction>" --wait-reply   # omp peers
-       herdr agent prompt <name> "<instruction>"           # claude panes
+       omp-peer send <name> "<path + one line>"            # claude panes
 
    A newly started claude pane gets a handshake prompt that tells it: specs
    arrive as file paths, reports go back as file paths (written to a file,
@@ -188,11 +188,22 @@ transcript instead:
     omp-peer send <name-or-pane> "<instruction>"                # fires + confirms delivery
     omp-peer send <name-or-pane> "<instruction>" --wait-reply   # then prints the peer's reply text
 
-omp-peer confirms against omp transcripts only. A claude target exits 2 even
-when the message landed, and resending duplicates the task: message claude
-panes with `herdr agent prompt <name> "<path + one line>"` and confirm with
-`herdr agent read`. Omp peers must also have a cwd under `$HOME`; elsewhere
-(e.g. `$TMPDIR`) it exits 2 the same way. See `docs/handoff-verification.md`.
+omp-peer confirms against the target's own transcript: omp session files
+for an omp, the claude session file (by the session id herdr reports) for a
+claude pane, where a message typed mid-turn shows as a queue entry. Omp peers
+must have a cwd under `$HOME`; elsewhere (e.g. `$TMPDIR`) it exits 2 even when
+the message landed. See `docs/handoff-verification.md`.
+
+**Sender tag, and the rule that goes with it.** omp-peer puts one first line
+on every message: `[from:<role> project:<project> id:<name>]` (role
+`coordinator` from an omp pane, `worker` from a claude pane, or
+`--from owner|coordinator|worker|harness|bro`). A pane transcript has no
+sender field, so the life view's harness reads this tag to tell the owner's
+requests from agent comms (`docs/design-message-tags.md`). So **never type
+into another agent's pane by hand, and never bare `herdr agent prompt`**:
+an untagged message is attributed by guessing at its wording. Text that
+already starts with `[from:` is sent unchanged; `--dry-run` prints what
+would be sent.
 
 - Big context goes by file: write it, then send "read /path/x.md and ..."
   — keep the typed prompt tiny.

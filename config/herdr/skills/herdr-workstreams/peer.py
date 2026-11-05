@@ -12,7 +12,7 @@ reply), the same needle-confirm pattern agent-discord's relay has used in
 production since 2026-09-05.
 
 Usage:
-  omp-peer send <target> "<text>" [--wait-reply]
+  omp-peer send <target> "<text>" [--wait-reply] [--from ROLE] [--dry-run]
                 [--confirm-timeout S] [--reply-timeout S]
 
   target  herdr agent name or pane id currently hosting an agent
@@ -21,6 +21,28 @@ Usage:
           confirms the text landed in the peer's transcript.
   --wait-reply  additionally polls for the peer's next text-bearing
           assistant entry and prints it to stdout.
+
+Sender tag (docs/design-message-tags.md): every message goes out with one
+first line naming its sender, because a pane transcript records no sender
+of its own (every entry is role "user"):
+
+  [from:<role> project:<project> id:<name>]
+
+  role     coordinator (the sender is an omp pane), worker (a claude pane),
+           or --from <owner|coordinator|worker|harness|bro>
+  project  the sender's repo folder name, leading dot dropped (the board's
+           rule: .dotfiles -> dotfiles)
+  id       the sender's herdr agent name
+
+The sender is the pane in $HERDR_PANE_ID, looked up in `herdr agent list`.
+Text that already starts with "[from:" goes out unchanged (never two tags).
+With no sender pane and no --from, the text goes out untagged, with a
+warning. --dry-run prints the final text and sends nothing.
+
+Targets: omp panes confirm against ~/.omp session files; claude panes
+against their own transcript (<session-id>.jsonl under CLAUDE_PROJECTS, the
+session id herdr reports), where a message typed mid-turn shows as a queue
+entry first.
   Exit codes: 0 delivered (and replied with --wait-reply); 1 herdr/target
   error; 2 delivery not confirmed in --confirm-timeout; 3 no reply within
   --reply-timeout (usually the peer is stuck on an approval dialog -- omp
@@ -49,6 +71,7 @@ from pathlib import Path
 
 HOME = Path.home()
 SESSIONS_DIR = HOME / ".omp" / "agent" / "sessions"
+CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 POLL_SECONDS = 2.0
 
 
@@ -57,18 +80,78 @@ def herdr(*args: str) -> tuple[int, str, str]:
     return p.returncode, p.stdout, p.stderr
 
 
-def agent_info(target: str) -> tuple[str, str]:
-    """Resolve (cwd, pane_id) herdr has for an agent (name or pane id)."""
+def agent_info(target: str) -> dict:
+    """The agent record herdr has for a target (name or pane id): cwd,
+    pane_id, agent kind, and agent_session for claude panes."""
     rc, out, err = herdr("agent", "get", target)
     if rc != 0:
         print(f"omp-peer: agent get {target!r} failed: {(err or out).strip()}", file=sys.stderr)
         sys.exit(1)
     try:
         a = json.loads(out)["result"]["agent"]
-        return a["cwd"], a["pane_id"]
-    except (json.JSONDecodeError, KeyError) as exc:
+        a["cwd"], a["pane_id"]  # required
+        return a
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
         print(f"omp-peer: unexpected agent get output: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+# ---- sender tag (docs/design-message-tags.md) --------------------------------
+
+ROLES = ("owner", "coordinator", "worker", "harness", "bro")
+ROLE_OF_KIND = {"omp": "coordinator", "claude": "worker"}
+# The receiver's check (lifeview's prompt_provenance) anchors on the same
+# prefix, so anything starting "[from:" is already tagged.
+ALREADY_TAGGED = re.compile(r"^\s*\[from:")
+
+
+def herdr_agents() -> list[dict]:
+    rc, out, _ = herdr("agent", "list")
+    if rc != 0:
+        return []
+    try:
+        return json.loads(out)["result"]["agents"] or []
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return []
+
+
+def project_of(cwd: str) -> str:
+    """The board's project name: the git toplevel's folder name with a
+    leading dot dropped (the same rule as lifeview's project_of_root and
+    prescient), falling back to the cwd's own folder name outside a repo."""
+    root = cwd
+    try:
+        p = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=5)
+        if p.returncode == 0 and p.stdout.strip():
+            root = p.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return os.path.basename(root.rstrip("/")).lstrip(".") or "-"
+
+
+def sender_tag(from_role: str | None, pane_id: str | None, agents: list[dict],
+               cwd: str | None = None, project=project_of) -> tuple[str | None, str]:
+    """(the tag line, or None to send untagged; why). The sender is the
+    pane this process runs in ($HERDR_PANE_ID), found in `herdr agent list`
+    the same way the target is."""
+    me = next((a for a in agents if pane_id and a.get("pane_id") == pane_id), None)
+    role = from_role or ROLE_OF_KIND.get((me or {}).get("agent") or "")
+    if not role:
+        if me is None:
+            return None, "no herdr agent in this pane ($HERDR_PANE_ID) and no --from"
+        return None, f"a {me.get('agent')!r} pane has no default role; pass --from"
+    where = (me or {}).get("cwd") or cwd or os.getcwd()
+    ident = (me or {}).get("name") or pane_id or "cli"
+    return f"[from:{role} project:{project(where)} id:{ident}]", "tagged"
+
+
+def tagged(text: str, tag: str | None) -> str:
+    """The text as sent: the tag on its own first line -- unless the caller
+    already supplied one (never double-tag) or there is no tag."""
+    if tag is None or ALREADY_TAGGED.match(text):
+        return text
+    return tag + "\n" + text
 
 
 # omp's input-frame header line: the frame's top border carrying the model /
@@ -236,6 +319,25 @@ def candidate_keys(cwd: str):
         yield "-" + cwd.replace("/", "-")
 
 
+def find_claude_transcript(session_id: str | None) -> Path | None:
+    """A claude pane's transcript: <dir>/<session-id>.jsonl under CLAUDE_PROJECTS,
+    found by the session id herdr reports (agent_session.value), so the
+    project-dir naming never has to be re-derived."""
+    if not session_id:
+        return None
+    hits = sorted(CLAUDE_PROJECTS.glob(f"*/{session_id}.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return hits[0] if hits else None
+
+
+def transcript_locator(target: dict):
+    """() -> Path | None for the target's live transcript."""
+    if target.get("agent") == "claude":
+        sid = (target.get("agent_session") or {}).get("value")
+        return lambda: find_claude_transcript(sid)
+    cwd = target["cwd"]
+    return lambda: find_session_file(cwd)
+
+
 def find_session_file(cwd: str) -> Path | None:
     """Newest top-level transcript for a cwd. Top-level only: omp also
     writes per-session sidecar subdirs (<session>/__advisor.jsonl) whose
@@ -268,8 +370,12 @@ def entries_of(path: Path) -> list[dict]:
 
 
 def entry_text(e: dict) -> str:
+    if e.get("type") == "queue-operation":   # claude: typed while it was busy
+        return str(e.get("content") or "")
     msg = e.get("message") or {}
     content = msg.get("content")
+    if isinstance(content, str):             # claude writes a plain prompt as a string
+        return content
     if not isinstance(content, list):
         return ""
     return " ".join(
@@ -279,7 +385,7 @@ def entry_text(e: dict) -> str:
 
 def wait_for(
     label: str,
-    cwd: str,
+    locate,  # () -> Path | None: the target's live transcript
     timeout: float,
     match,  # (entries, start_idx) -> int | None
     start: int | None = None,
@@ -288,11 +394,11 @@ def wait_for(
     (entries from index `start` on, default: those written after the call).
     Returns (file, matched_index)."""
     deadline = time.monotonic() + timeout
-    tracked: Path | None = find_session_file(cwd)
+    tracked: Path | None = locate()
     baseline = start if start is not None else (len(entries_of(tracked)) if tracked else 0)
     print(f"omp-peer: waiting for {label} (timeout {timeout:.0f}s) ...", file=sys.stderr)
     while time.monotonic() < deadline:
-        current = find_session_file(cwd)
+        current = locate()
         if current is not None:
             if tracked is None or current != tracked:
                 tracked, baseline = current, 0
@@ -320,11 +426,31 @@ def main() -> None:
     sp.add_argument("--reply-timeout", type=float, default=300.0)
     sp.add_argument("--no-guard", action="store_true",
                     help="skip the REPL visibility guard (standalone agent panes)")
+    sp.add_argument("--from", dest="from_role", choices=ROLES,
+                    help="sender role for the tag (default: coordinator from an omp pane, worker from a claude pane)")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="print the text as it would be sent (tag included) and send nothing")
     args = ap.parse_args()
 
-    cwd, pane_id = agent_info(args.target)
+    body = args.text
+    tag, why = sender_tag(args.from_role, os.environ.get("HERDR_PANE_ID"), herdr_agents())
+    if tag is None and not ALREADY_TAGGED.match(body):
+        print(f"omp-peer: sending UNTAGGED ({why}) -- the receiver will guess the sender from the text", file=sys.stderr)
+    text = tagged(body, tag)
+    if args.dry_run:
+        print(text)
+        return
 
-    rc, out, err = herdr("agent", "prompt", args.target, args.text)
+    target = agent_info(args.target)
+    pane_id = target["pane_id"]
+    locate = transcript_locator(target)
+    # The baseline is taken BEFORE sending: a claude pane writes its entry
+    # (a queue entry when busy) the instant it is typed, which a baseline
+    # taken after the send would count as old and never match.
+    before = locate()
+    baseline = len(entries_of(before)) if before else 0
+
+    rc, out, err = herdr("agent", "prompt", args.target, text)
     raw = False
     if rc != 0:
         if "agent_not_ready" in (err or "") + (out or ""):
@@ -334,7 +460,7 @@ def main() -> None:
             print("omp-peer: agent prompt refused (nested REPL) -- raw pane delivery", file=sys.stderr)
             if not args.no_guard:
                 ensure_repl_visible(pane_id)
-            payload = "\x1b[200~" + args.text + "\x1b[201~"
+            payload = "\x1b[200~" + text + "\x1b[201~"
             rc2, _, err2 = herdr("pane", "send-text", pane_id, payload)
             if rc2 != 0:
                 print(f"omp-peer: pane send-text failed: {(err2 or '').strip()}", file=sys.stderr)
@@ -345,13 +471,18 @@ def main() -> None:
             print(f"omp-peer: agent prompt failed: {(err or out).strip()}", file=sys.stderr)
             sys.exit(1)
 
-    needle = re.sub(r"\s+", " ", args.text.strip())[:24]
+    # From the body, never the tag: the tag is the same on every message
+    # this sender sends, so it would match an earlier one.
+    # (A caller-supplied tag is skipped the same way.)
+    needle_src = re.sub(r"^\s*\[from:[^\]]*\]\s*", "", body) or body
+    needle = re.sub(r"\s+", " ", needle_src.strip())[:24]
 
     def is_delivery(entries: list[dict], start: int) -> int | None:
         for i in range(start, len(entries)):
             e = entries[i]
             msg = e.get("message") or {}
-            if msg.get("role") == "user" and needle in re.sub(r"\s+", " ", entry_text(e)):
+            queued = e.get("type") == "queue-operation" and e.get("operation") == "enqueue"
+            if (msg.get("role") == "user" or queued) and needle in re.sub(r"\s+", " ", entry_text(e)):
                 return i
         return None
 
@@ -364,13 +495,13 @@ def main() -> None:
         return None
 
     try:
-        sfile, idx = wait_for("delivery", cwd, args.confirm_timeout, is_delivery)
+        sfile, idx = wait_for("delivery", locate, args.confirm_timeout, is_delivery, start=baseline)
     except SystemExit as exc:
         if exc.code == 2 and raw:
             # the first Enter can be dropped right after a paste block -- send one more, then judge
             print("omp-peer: retrying enter", file=sys.stderr)
             herdr("pane", "send-keys", pane_id, "enter")
-            sfile, idx = wait_for("delivery", cwd, args.confirm_timeout, is_delivery)
+            sfile, idx = wait_for("delivery", locate, args.confirm_timeout, is_delivery, start=baseline)
         else:
             raise
     print(f"delivered {sfile}", file=sys.stderr)
@@ -382,7 +513,7 @@ def main() -> None:
     # Scan from just after the delivered message, not from "now": a fast
     # reply is already in the file by the time this wait starts (seen
     # live 2026-10-26: answered 2.4s after delivery, skipped, exit 3).
-    rfile, ridx = wait_for("reply", cwd, args.reply_timeout, is_reply, start=idx + 1)
+    rfile, ridx = wait_for("reply", locate, args.reply_timeout, is_reply, start=idx + 1)
     entries = entries_of(rfile)
     print(entry_text(entries[ridx]).strip())
 

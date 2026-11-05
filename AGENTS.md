@@ -75,6 +75,22 @@ For claude panes; omp's side of this lives in its system prompt.
 Messaging another project's claude pane is off-limits; route it through omp
 (`rule://coordinator-network`). Details: `docs/handoff-verification.md`.
 
+## Agent-to-agent messages: always through `omp-peer send`
+
+**Never type into another agent's pane by hand** — no bare `herdr agent
+prompt`, `herdr pane send-text` or `tmux send-keys` to another agent.
+`omp-peer send <name> "<path + one line>"` puts the sender's tag on the
+first line (`[from:<role> project:<project> id:<name>]`, see
+`docs/design-message-tags.md`), and it confirms delivery on omp and claude
+targets alike.
+
+A pane transcript records no sender (every entry is role "user"), so the
+life view's harness reads that tag to tell the owner's requests from agent
+comms. An untagged message falls back to guessing from its wording, which
+records agent dispatches as the owner's. `--from owner` is for relaying
+the owner's own words by hand. Text that already starts with `[from:` is
+sent unchanged.
+
 ## Config model roles: never commit the churn
 
 The owner switches the `modelRoles:` values in `config/omp/config.yml`

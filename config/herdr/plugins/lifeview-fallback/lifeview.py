@@ -554,9 +554,29 @@ OMP_AGENT = re.compile(
     r"REPORT\b|WAVE \d|Card \d)", re.I)
 OWNER_MARKED = re.compile(r"^\s*From the owner", re.I)
 
+# The sender's tag (docs/design-message-tags.md): one first line written by the
+# sender, which KNOWS who it is -- `omp-peer send` puts it on every agent-to-agent
+# message, e.g. "[from:coordinator project:bro id:omp-v35-wdp5]". It is the answer,
+# not a guess, so it is read before every shape rule below.
+TAG = re.compile(r"^\s*\[from:(owner|coordinator|worker|harness|bro)\b([^\]]*)\]")
+TAG_ORIGIN = {
+    "owner": "owner",           # beats every shape: the owner's words can look like anything
+    "coordinator": "agent",
+    "worker": "agent",
+    "bro": "agent",
+    "harness": "machinery",     # never a card: what keeps the 2026-11-03 loop shut
+}
+
+
+def untagged(prompt: str) -> str:
+    """The prompt without its sender tag: the words that were asked, for a card."""
+    m = TAG.match(prompt)
+    return prompt[m.end():].strip() if m else prompt
+
 
 def prompt_provenance(turn: Dict) -> Optional[str]:
-    """'machinery' | 'agent' | 'owner', from the prompt's SHAPE.
+    """'machinery' | 'agent' | 'owner': from the sender's tag when there is one,
+    else from the prompt's SHAPE.
 
     Whole-classification of the turn's prompt, done once, at the place the card is
     created. Never re-derived downstream: a consumer guessing provenance from text
@@ -567,6 +587,11 @@ def prompt_provenance(turn: Dict) -> Optional[str]:
     prompt = str(turn.get("prompt") or "").strip()
     if not prompt:
         return None
+    tag = TAG.match(prompt)
+    if tag:
+        return TAG_ORIGIN[tag.group(1)]     # the sender said who it is: no shape rule applies
+    # Untagged: today's behaviour, unchanged -- machinery shapes, then the comms
+    # shapes, then the owner (untagged is overwhelmingly the owner typing).
     if MACHINERY_PROMPT.match(prompt):
         return "machinery"
     if OWNER_MARKED.match(prompt):
@@ -638,7 +663,7 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
     trivial = not (calls >= WORK_MIN_TOOL_CALLS or (calls >= 1 and span > WORK_MIN_SPAN_S))
     if trivial and not (origin in ("owner", "agent") and calls >= 1):
         return None, f"trivial so far: {calls} tool call(s), {span:.0f}s (needs {WORK_MIN_TOOL_CALLS}, or 1 and >{WORK_MIN_SPAN_S}s)"
-    what = turn.get("said") or turn.get("prompt") or (f"running {turn['tool']}" if turn.get("tool") else "work")
+    what = turn.get("said") or untagged(str(turn.get("prompt") or "")) or (f"running {turn['tool']}" if turn.get("tool") else "work")
     return "auto: " + snippet(what, 114), f"work session: {calls} tool calls, {span:.0f}s, no task covering it"
 
 
@@ -967,7 +992,7 @@ def hub_open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
         return None                      # belt and braces: autotask_check already refuses this
     # the card says what was ASKED (the requester's words), not the agent's reply
     if origin in ("owner", "agent") and str(turn.get("prompt") or "").strip():
-        title = "auto: " + snippet(turn["prompt"], 114)
+        title = "auto: " + snippet(untagged(str(turn["prompt"]).strip()) or turn["prompt"], 114)
     got = http_json(HUB_URL + "/api/tasks", {"op": "create", "text": title, "project": project,
                                              "target": "coordinator", "origin": origin, "note": note})
     item = (got or {}).get("item") or {}

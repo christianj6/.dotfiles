@@ -13,7 +13,8 @@ Two independent failure modes bite here, and they look identical from the outsid
 ## The rule
 
 - Anything longer than about two sentences goes in a **file**. The pane message is the **path plus one line of why**.
-- Always send the submit key (`enter`/`Return`) as a **separate call** after the text. Better: use `herdr agent prompt <target> <text>` for registered agents — it handles paste + submit as one ordered action.
+- **To another agent, always `omp-peer send <target> "<text>"`** — never type into another agent's pane by hand, and never bare `herdr agent prompt`. omp-peer puts the sender's tag on the first line (`[from:<role> project:<project> id:<name>]`, `docs/design-message-tags.md`), handles paste + submit, and confirms delivery on omp and claude targets. A pane transcript has no sender field, so an untagged message is attributed by guessing at its wording, and an agent's dispatch gets recorded as the owner's request. `--from owner` when relaying the owner's own words.
+- For a non-agent pane (a plain shell), send the submit key (`enter`/`Return`) as a **separate call** after `send-text`.
 
 ## Why a file, not a paste
 

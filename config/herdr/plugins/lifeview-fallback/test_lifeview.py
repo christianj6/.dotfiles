@@ -1104,5 +1104,101 @@ class OwnerLifecycle(unittest.TestCase):
             self.assertEqual(lv.prompt_provenance({"prompt": prompt}), "machinery", prompt)
 
 
+class MessageTags(unittest.TestCase):
+    """docs/task-message-tags.md (tk-b32624856c72): the sender writes who it is
+    into the text ("[from:<role> project:<p> id:<name>]", put on by omp-peer),
+    and the tag is read before every shape rule. Untagged is today's behaviour."""
+    BRO_OMP = "[from:coordinator project:bro id:omp-v35-wdp5]"
+    OWNER = "[from:owner project:bro id:omp-v35-wdp5]"
+    # every shape rule prompt_provenance has, one prompt each
+    SHAPES = ("Round 25: release/docs/ready/round-25.md - the four bugs",
+              "docs/specs/x.md - fix the parser",
+              "<task-notification> <task-id>t1</task-id>",
+              "This session is being continued from a previous conversation",
+              "prescient: task tk-abc is queued for bro's coordinator",
+              "bro request tr-1: hand over",
+              "From claude-prescient: done",
+              "REPORT round 3 landed",
+              "From the owner, via bro: fix it",
+              "fix the z-edge, it still flickers")
+
+    setUp, pane_turn, tick = OwnerLifecycle.setUp, OwnerLifecycle.pane_turn, OwnerLifecycle.tick
+    REQUEST = OwnerLifecycle.REQUEST
+
+    def prov(self, prompt):
+        return lv.prompt_provenance({"prompt": prompt})
+
+    def test_3_owner_tag_beats_every_shape(self):
+        self.assertEqual(self.prov(self.OWNER + "\nRound 25: release/docs/ready/round-25.md"), "owner")
+        self.assertEqual(self.prov("Round 25: release/docs/ready/round-25.md"), "agent")   # untagged: the shape
+        for body in self.SHAPES:
+            self.assertEqual(self.prov(self.OWNER + "\n" + body), "owner", body)
+            self.assertEqual(self.prov(self.OWNER + " " + body), "owner", body)          # same line works too
+
+    def test_4_harness_tag_is_machinery_and_opens_no_card(self):
+        for body in self.SHAPES:
+            self.assertEqual(self.prov("[from:harness project:bro id:prescient]\n" + body), "machinery", body)
+        title, why = lv.autotask_check(
+            {"name": "claude-x", "pane_id": "w:p1", "agent": "claude", "project": "proj", "agent_status": "working"},
+            [], {"key": "k", "start": 0, "calls": 12, "said": "",
+                 "prompt": "[from:harness project:proj id:prescient]\nCan you check the branch?"},
+            {"claude-x"}, time.time() + 10 ** 6)
+        self.assertIsNone(title)
+        self.assertIn("never a card", why)
+        self.c["agent_status"] = self.o["agent_status"] = "idle"
+        self.pane_turn(self.o, "[from:harness project:proj id:prescient]\nprescient: task tk-1 is queued", calls=3)
+        self.tick(lv.Harness())
+        self.assertEqual((self.hub.items, self.hub.calls), ({}, []))                   # the loop stays shut
+
+    def test_5_coordinator_worker_and_bro_tags_are_agent(self):
+        for role in ("coordinator", "worker", "bro"):
+            for body in self.SHAPES:
+                if body.startswith(("<task-notification>", "This session")):
+                    continue        # (a tag on harness output is not a real case; skip the noise)
+                self.assertEqual(self.prov(f"[from:{role} project:dotfiles id:x]\n{body}"), "agent", (role, body))
+
+    def test_only_a_leading_known_tag_counts(self):
+        self.assertEqual(self.prov("Round 25: see [from:owner] below"), "agent")       # not at the start
+        self.assertEqual(self.prov("fix it [from:harness]"), "owner")
+        self.assertEqual(self.prov("[from:alien project:x id:y]\nRound 2: go"), "owner")  # unknown role: untagged, today's rules
+        self.assertEqual(self.prov("[from:ownerx]\nfix it"), "owner")                  # \\b: no prefix match
+        self.assertEqual(self.prov("  [from:worker project:p id:i] done"), "agent")    # leading space ok
+        self.assertEqual(lv.untagged(self.OWNER + "\n  fix it "), "fix it")
+        self.assertEqual(lv.untagged("fix it"), "fix it")
+
+    def test_a_coordinator_dispatch_is_agent_not_owner(self):
+        """The tk-35a1ddfb2295 / tk-01591d8d2d41 case: the coordinator's dispatch
+        to its Claude was prose, so it was recorded origin owner. Tagged, it is agent."""
+        dispatch = "Read ~/proj/docs/task-message-tags.md and implement it. Commit locally, do not push."
+        self.assertEqual(self.prov(dispatch), "owner")                 # untagged: today's (wrong) answer, unchanged
+        self.c["agent_status"] = self.o["agent_status"] = "idle"
+        self.pane_turn(self.c, "[from:coordinator project:proj id:omp-x]\n" + dispatch, calls=1, answer="Done.")
+        h = lv.Harness()
+        self.tick(h)
+        self.clock.now += 70
+        ring = self.tick(h)
+        (item,) = self.hub.items.values()
+        self.assertEqual((item["origin"], item["state"]), ("agent", "ready"))
+        self.assertEqual(item["text"], "auto: " + lv.snippet(dispatch, 114))  # the card shows the words, not the tag
+        self.assertEqual(ring, "working")                                     # never green for agent comms
+
+    def test_a_tagged_owner_request_through_bros_omp_runs_the_lifecycle(self):
+        """Design acceptance 7: the owner relays by hand into the omp pane
+        (omp-peer --from owner); nothing is pre-created in prescient."""
+        self.c["agent_status"] = self.o["agent_status"] = "idle"
+        self.pane_turn(self.o, self.OWNER + "\n" + self.REQUEST, calls=1)
+        h = lv.Harness()
+        rings = [self.tick(h)]
+        self.clock.now += 70
+        rings.append(self.tick(h))
+        (iid, item), = self.hub.items.items()
+        self.assertEqual(item["origin"], "owner")
+        self.assertEqual(item["text"], "auto: " + lv.snippet(self.REQUEST, 114))
+        self.assertEqual([s for s, _ in self.hub.events[iid]], ["created", "queued", "working", "ready"])
+        self.assertEqual(rings, ["queued", "ready"])
+        print("\ntagged owner via omp: " + " -> ".join(f"{s} (by {b})" for s, b in self.hub.events[iid])
+              + f"; rings per tick: {rings}")
+
+
 if __name__ == "__main__":
     unittest.main()
