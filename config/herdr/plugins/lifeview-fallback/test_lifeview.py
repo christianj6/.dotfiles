@@ -617,11 +617,14 @@ class CoordinatorExemption(unittest.TestCase):
         title, why = lv.autotask_check(
             {"name": "omp-v34-wdp5", "pane_id": "wD:p5", "agent": "omp", "project": "bro", "agent_status": "working"},
             [{"id": "tk-1", "target": "coordinator", "state": "done", "project": "bro"}],
-            {"key": "2026-11-03T12:00:00.000+01:00", "start": 0, "calls": 10, "said": "reading the design doc"},
+            {"key": "2026-11-03T12:00:00.000+01:00", "start": 0, "calls": 10, "said": "reading the design doc",
+             "prompt": "prescient: task tk-abc is queued for bro's coordinator"},
             {"omp-v34-wdp5"}, time.time() + 10 ** 6,
         )
         self.assertIsNone(title)
-        self.assertIn("coordinates", why)
+        # a hub nudge is machinery now, refused before the coordinator gate -- the
+        # gate itself still applies to any non-owner turn that reaches it
+        self.assertTrue("never a card" in why or "coordinates" in why, why)
 
     def test_a_workhorses_work_IS_tracked(self):
         """The owner's rule: things are tracked wherever they came in. A Claude
@@ -1078,6 +1081,27 @@ class OwnerLifecycle(unittest.TestCase):
         self.pane_turn(self.c, "what branch are we on, roughly?", calls=0, answer="Probably main.")
         self.assertEqual(self.tick(lv.Harness()), "idle")
         self.assertEqual((self.hub.items, self.hub.calls), ({}, []))
+
+    def test_the_owners_own_request_in_an_omp_pane_still_cards(self):
+        """The lifecycle must work for the owner wherever he types. Before this,
+        his request typed into bro's omp pane produced no card, so the ring went
+        amber then straight back to idle."""
+        a = {"name": "omp-x", "pane_id": "w:p1", "agent": "omp", "project": "bro", "agent_status": "idle"}
+        title, why = lv.autotask_check(
+            a, [],
+            {"key": "k", "start": time.time() - 20, "calls": 1, "end": time.time() - 14, "said": "",
+             "prompt": "Can you check the current git branch in the bro repo and tell me what it is?"},
+            {"omp-x"}, time.time())
+        self.assertIsNotNone(title, why)
+        self.assertIn("work session", why)
+
+    def test_the_loop_stays_closed(self):
+        """The reason that gate existed: a hub nudge is machinery, so a card cannot
+        nudge the omp whose next turn cards the nudge (2026-11-03)."""
+        for prompt in ("prescient: task tk-abc is queued for bro's coordinator",
+                       "prescient: 1 tweak sent from the life view",
+                       "bro request tr-1: hand over to the bro coordinator"):
+            self.assertEqual(lv.prompt_provenance({"prompt": prompt}), "machinery", prompt)
 
 
 if __name__ == "__main__":

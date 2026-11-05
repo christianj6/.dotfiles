@@ -536,6 +536,25 @@ AGENT_PROMPT = re.compile(r"^\s*(?:Round \d+|Spec:|Notes:|Discussion, no code)"
                           r"|^\s*\S*(?:docs|specs|release/docs)/\S+\.md\b", re.I)
 
 
+# Known omp comms shapes. A coordinator's pane receives machinery, relays from
+# other agents, and free-form worker reports -- all through the same input box, with
+# no sender field in the transcript. Classifying them by SHAPE is the only signal
+# available (every entry carries attribution:"user"), and opening the owner gate
+# without it turned hub nudges into cards, which nudged the omp again: the
+# self-referential loop of 2026-11-03 (docs/design-delivery-provenance.md).
+#
+# A real fix records the sender at delivery (prescient's _deliver knows it); until
+# that lands these markers keep the gate honest. Free-form worker reports carry no
+# marker and stay unattributable -- the safe reading.
+OMP_MACHINERY = re.compile(
+    r"^\s*(?:prescient: |prescient task |\[lifeview|bro request tr-|"
+    r"\d+ tweaks? (?:sent|waiting)|a tweak was sent)", re.I)
+OMP_AGENT = re.compile(
+    r"^\s*(?:From claude-|From omp-|From [a-z0-9.-]+ \(prescient|Task from the |"
+    r"REPORT\b|WAVE \d|Card \d)", re.I)
+OWNER_MARKED = re.compile(r"^\s*From the owner", re.I)
+
+
 def prompt_provenance(turn: Dict) -> Optional[str]:
     """'machinery' | 'agent' | 'owner', from the prompt's SHAPE.
 
@@ -550,8 +569,12 @@ def prompt_provenance(turn: Dict) -> Optional[str]:
         return None
     if MACHINERY_PROMPT.match(prompt):
         return "machinery"
-    if AGENT_PROMPT.match(prompt):
-        return "agent"
+    if OWNER_MARKED.match(prompt):
+        return "owner"                      # explicitly from the owner (bro's relay marks it)
+    if OMP_MACHINERY.match(prompt):
+        return "machinery"                  # hub nudges, tweak notices, life view: never work
+    if OMP_AGENT.match(prompt) or AGENT_PROMPT.match(prompt):
+        return "agent"                      # a relay from another agent, a round spec
     return "owner"
 
 
@@ -593,13 +616,18 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
         return None, "a task was already opened for this session"
     if task_system_turn(turn):
         return None, "this turn is about the task system itself (hub/CLI/tray) - auto-task would loop on its own output"
-    if is_coordinator(agent, tasks):
-        return None, "this agent coordinates; its work is other agents' tasks, not its own card"
     origin = prompt_provenance(turn)
     if origin is None:
         return None, "no prompt to attribute: nothing is opened for work nobody can be shown to have asked for"
     if origin == "machinery":
         return None, "not work: a harness notification, a resumed session or a pasted image (never a card)"
+    # A coordinator's turns are coordination, and auto-tasking them looped on the
+    # cards it was creating (2026-11-03) -- BUT that must not swallow the owner's
+    # own request typed into its pane, which is how the lifecycle failed for bro
+    # (prompt_provenance now classifies the hub nudges and agent relays that caused
+    # the loop as machinery/agent, so an owner turn reaching here is really his).
+    if is_coordinator(agent, tasks) and origin != "owner":
+        return None, "this agent coordinates; its work is other agents' tasks, not its own card"
     calls = turn.get("calls", 0)
     span = (turn.get("end") if herdr in ("idle", "done") and turn.get("end") else now) - (turn.get("start") or now)
     # The threshold filters INCIDENTAL activity (a lookup while chatting); it
