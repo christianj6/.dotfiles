@@ -1166,21 +1166,23 @@ class MessageTags(unittest.TestCase):
         self.assertEqual(lv.untagged(self.OWNER + "\n  fix it "), "fix it")
         self.assertEqual(lv.untagged("fix it"), "fix it")
 
-    def test_a_coordinator_dispatch_is_agent_not_owner(self):
+    def test_a_coordinator_dispatch_is_agent_not_owner_and_opens_no_card(self):
         """The tk-35a1ddfb2295 / tk-01591d8d2d41 case: the coordinator's dispatch
-        to its Claude was prose, so it was recorded origin owner. Tagged, it is agent."""
+        to its Claude was prose, so it was recorded origin owner. Tagged, it is agent
+        -- and (docs/issue-task-echo.md, the owner's priority #1) agent-to-agent
+        comms open NO card at all: the dispatch already is the instruction."""
         dispatch = "Read ~/proj/docs/task-message-tags.md and implement it. Commit locally, do not push."
         self.assertEqual(self.prov(dispatch), "owner")                 # untagged: today's (wrong) answer, unchanged
+        tagged = "[from:coordinator project:proj id:omp-x]\n" + dispatch
+        self.assertEqual(self.prov(tagged), "agent")                   # provenance stays agent
         self.c["agent_status"] = self.o["agent_status"] = "idle"
-        self.pane_turn(self.c, "[from:coordinator project:proj id:omp-x]\n" + dispatch, calls=1, answer="Done.")
+        self.pane_turn(self.c, tagged, calls=4, answer="Done.")
         h = lv.Harness()
-        self.tick(h)
+        rings = [self.tick(h)]
         self.clock.now += 70
-        ring = self.tick(h)
-        (item,) = self.hub.items.values()
-        self.assertEqual((item["origin"], item["state"]), ("agent", "ready"))
-        self.assertEqual(item["text"], "auto: " + lv.snippet(dispatch, 114))  # the card shows the words, not the tag
-        self.assertEqual(ring, "working")                                     # never green for agent comms
+        rings.append(self.tick(h))
+        self.assertEqual((self.hub.items, self.hub.calls), ({}, []))
+        self.assertEqual(rings, ["idle", "idle"])
 
     def test_a_tagged_owner_request_through_bros_omp_runs_the_lifecycle(self):
         """Design acceptance 7: the owner relays by hand into the omp pane
@@ -1198,6 +1200,94 @@ class MessageTags(unittest.TestCase):
         self.assertEqual(rings, ["queued", "ready"])
         print("\ntagged owner via omp: " + " -> ".join(f"{s} (by {b})" for s, b in self.hub.events[iid])
               + f"; rings per tick: {rings}")
+
+
+class TaskEcho(unittest.TestCase):
+    """docs/issue-task-echo.md: every message arriving in a pane became a hub card.
+    Cause 2: coverage was agent-keyed (tasks_of) and hub items carry agent: null,
+    so nothing ever covered. Cause 3: agent-to-agent comms were carded at all."""
+    setUp, pane_turn, tick = OwnerLifecycle.setUp, OwnerLifecycle.pane_turn, OwnerLifecycle.tick
+    REQUEST = OwnerLifecycle.REQUEST
+
+    def hub_item(self, state="working", project="proj", target="coordinator", id="tk-open"):
+        # exactly what the hub returns: no agent, no agent:<name> dest
+        return {"id": id, "state": state, "agent": None, "dest": None, "project": project,
+                "target": target, "origin": "owner", "history": []}
+
+    def chk(self, a, tasks, prompt, calls=3):
+        now = time.time()
+        return lv.autotask_check(dict(a, agent_status="working"), tasks,
+                                 {"key": "k" + prompt[:6], "start": now - 60, "calls": calls, "said": "", "prompt": prompt},
+                                 {a["name"]}, now)
+
+    def test_2_an_open_project_item_covers_the_workers_next_turn(self):
+        item = self.hub_item()
+        self.assertEqual(lv.tasks_of(self.c, [item]), [])                 # the old key: can never match
+        self.assertEqual(lv.covering_items(self.c, [item]), [item])       # the new key: project
+        title, why = self.chk(self.c, [item], "Both landed, 998 tests OK")
+        self.assertIsNone(title)
+        self.assertEqual(why, "covered by tk-open (working)")
+        for target in ("coordinator", "dev"):                             # whatever its role target
+            for state in ("created", "queued", "working"):
+                self.assertIsNone(self.chk(self.c, [self.hub_item(state, target=target)], "next")[0], (target, state))
+
+    def test_coverage_stays_inside_the_project_and_in_progress(self):
+        for item in (self.hub_item(project="other"),                      # another project's work
+                     self.hub_item(state="done"),
+                     self.hub_item(state="parked"),
+                     self.hub_item(state="ready")):                       # awaiting the owner's verdict
+            self.assertEqual(lv.covering_items(self.c, [item]), [], item)
+            self.assertIsNotNone(self.chk(self.c, [item], self.REQUEST)[0], item)
+
+    def test_bro_list_items_still_cover_by_agent(self):
+        bro = {"id": "tk-b", "state": "sent", "agent": self.c["name"], "project": None, "target": None}
+        self.assertEqual(lv.covering_items(self.c, [bro]), [bro])
+
+    def test_2_the_echo_is_impossible_end_to_end(self):
+        """Owner request -> card; while it is open, more turns in the worker's
+        pane (a report, another instruction) open nothing: one card in total."""
+        self.c["agent_status"] = self.o["agent_status"] = "working"
+        self.pane_turn(self.c, self.REQUEST, calls=2, ended_ago=0)
+        h = lv.Harness()
+        self.tick(h)
+        self.assertEqual(len(self.hub.items), 1)
+        for i, prompt in enumerate(("Both landed, 998 tests OK", "docs/x.report.md - done", "and the follow-up")):
+            self.pane_turn(self.c, prompt, calls=3, ended_ago=30 - 10 * i)   # each its own session key
+            self.clock.now += 15
+            self.tick(h)
+        self.assertEqual(len(self.hub.items), 1, [i["text"] for i in self.hub.items.values()])
+        self.assertEqual([c["op"] for c in self.hub.calls], ["create"])
+
+    def test_3_tagged_comms_open_no_card_in_either_direction(self):
+        self.c["agent_status"] = self.o["agent_status"] = "idle"
+        self.pane_turn(self.c, "[from:coordinator project:proj id:omp-x]\nRead docs/task-x.md and implement it", calls=5)
+        self.pane_turn(self.o, "[from:worker project:proj id:claude-x]\ndocs/task-x.report.md - done, 95 tests OK", calls=2)
+        self.tick(lv.Harness())
+        self.assertEqual((self.hub.items, self.hub.calls), ({}, []))
+        title, why = self.chk(self.c, [], "[from:worker project:proj id:claude-y]\nreview this")
+        self.assertIsNone(title)
+        self.assertIn("comms, never a card", why)
+
+    def test_4_owner_requests_still_card_and_complete_one_after_another(self):
+        """The editorial guard: an owner request in a pane creates ONE card and
+        completes -- also the second one, while the first sits ready for review."""
+        self.c["agent_status"] = self.o["agent_status"] = "idle"
+        h = lv.Harness()
+        for n, request in enumerate((self.REQUEST, "[from:owner project:proj id:omp-x]\nNow check the tags too, please.")):
+            self.pane_turn(self.c, request, calls=1, ended_ago=20 - 15 * n)   # two turns, two session keys
+            self.tick(h)
+            self.clock.now += 70
+            self.assertEqual(self.tick(h), "ready")
+            self.assertEqual(len(self.hub.items), n + 1)
+        self.assertEqual(sorted((i["origin"], i["state"]) for i in self.hub.items.values()),
+                         [("owner", "ready"), ("owner", "ready")])
+
+    def test_5_untagged_shapes_are_unchanged(self):
+        for prompt, origin in (("Round 25: release/docs/ready/r.md", "agent"), ("fix it", "owner"),
+                               ("prescient: task tk-1 is queued", "machinery"),
+                               ("From claude-prescient: done", "agent")):
+            self.assertEqual(lv.prompt_provenance({"prompt": prompt}), origin, prompt)
+        self.assertIsNotNone(self.chk(self.c, [], "Round 25: release/docs/ready/r.md - go")[0])  # still a card
 
 
 if __name__ == "__main__":

@@ -97,15 +97,19 @@ class SendPath(unittest.TestCase):
 
     def run_main(self, argv, pane="wD:p9", transcript=None):
         sent = []
+        self.prompted = []
 
         def fake_herdr(*args):
             if args[:2] == ("agent", "list"):
                 return 0, json.dumps({"result": {"agents": AGENTS}}), ""
             if args[:2] == ("agent", "get"):
-                a = next(x for x in AGENTS if args[2] in (x["name"], x["pane_id"]))
+                a = next((x for x in AGENTS if args[2] in (x["name"], x["pane_id"])), None)
+                if a is None:
+                    return 1, json.dumps({"error": {"code": "agent_not_found"}}), ""
                 return 0, json.dumps({"result": {"agent": dict(a, agent_session={"value": "sid"})}}), ""
             if args[:2] == ("agent", "prompt"):
                 sent.append(args[3])
+                self.prompted.append(args[2])
                 if transcript is not None:
                     transcript.write_text(json.dumps({"type": "queue-operation", "operation": "enqueue",
                                                       "content": args[3]}) + "\n")
@@ -151,6 +155,49 @@ class SendPath(unittest.TestCase):
         self.assertEqual(peer.entry_text({"message": {"role": "user", "content": "plain"}}), "plain")
         self.assertEqual(peer.entry_text({"type": "queue-operation", "content": "queued"}), "queued")
         self.assertEqual(peer.entry_text({"message": {"content": [{"type": "text", "text": "omp"}]}}), "omp")
+
+
+class StaleNames(unittest.TestCase):
+    """docs/issue-task-echo.md: omp-v25-wdp9 failed once the pane rolled to
+    omp-v35-wdp9. A stale auto-name resolves to the pane's live agent."""
+
+    def test_6_a_stale_auto_name_resolves_to_the_live_agent(self):
+        self.assertEqual(peer.resolve_stale("omp-v25-wdp9", AGENTS)[0], "omp-v35-wdp9")
+        self.assertEqual(peer.resolve_stale("claude-v1-wdpa", AGENTS)[0], "claude-v2-wdpa")
+
+    def test_6_otherwise_it_refuses_naming_what_is_live(self):
+        live, why = peer.resolve_stale("omp-v25-wzz9", AGENTS)
+        self.assertIsNone(live)
+        self.assertIn("omp-v35-wdp9", why)                        # names the live agents
+        self.assertIn("omp-v35-wdp5", why)
+        self.assertIsNone(peer.resolve_stale("claude-v2-wdp9", AGENTS)[0])   # another kind on that pane: never
+        self.assertIsNone(peer.resolve_stale("bob", AGENTS)[0])
+        two = AGENTS + [{"agent": "omp", "name": "omp-v36-wdp9", "pane_id": "wD:p9b"}]
+        live, why = peer.resolve_stale("omp-v25-wdp9", two)
+        self.assertIsNone(live)
+        self.assertIn("ambiguous", why)
+
+    def test_6_send_to_a_stale_name_is_delivered_to_the_live_agent_and_tagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            proj = Path(d) / "-r--dotfiles"
+            proj.mkdir()
+            f = proj / "sid.jsonl"
+            f.write_text("")
+            t = SendPath()
+            with mock.patch.object(peer, "CLAUDE_PROJECTS", Path(d)), mock.patch.object(peer, "POLL_SECONDS", 0.01):
+                sent, out, err = t.run_main(["send", "claude-v1-wdpa", "docs/x.report.md - done",
+                                             "--confirm-timeout", "2"], transcript=f)
+        self.assertEqual(t.prompted, ["claude-v2-wdpa"])
+        self.assertEqual(sent, ["[from:coordinator project:dotfiles id:omp-v35-wdp9]\ndocs/x.report.md - done"])
+        self.assertIn("stale", err)
+        self.assertEqual(out.strip(), f"delivered {f}")
+
+    def test_6_an_unknown_target_sends_nothing(self):
+        t = SendPath()
+        with self.assertRaises(SystemExit) as cm:
+            t.run_main(["send", "omp-v25-wzz9", "hi"])
+        self.assertEqual(cm.exception.code, 1)
+        self.assertEqual(t.prompted, [])
 
 
 if __name__ == "__main__":

@@ -127,7 +127,11 @@ JUST_DONE_S = 120            # a turn that ended this recently still gets its ta
 # working (handed or taken), reopened (the owner's "not quite" rework),
 # noted (bro's list), ready (awaiting the owner's verdict - follow-up work
 # belongs to it).
-COVERING = ("open", "sent", "working", "reopened", "noted", "ready")
+# Work IN PROGRESS covers a new turn: the hub's own states (created/queued/working)
+# plus bro-local names for TASK_HUB=bro. `ready` no longer covers: a ready item
+# waits for the owner's verdict, possibly for hours, and covering with it would
+# swallow every request he makes meanwhile (no card, no amber, no green for it).
+COVERING = ("created", "queued", "working", "open", "sent", "reopened", "noted")
 HARNESS_BY = "lifeview-harness"
 BUSY = ("working", "blocked")
 
@@ -559,6 +563,7 @@ OWNER_MARKED = re.compile(r"^\s*From the owner", re.I)
 # message, e.g. "[from:coordinator project:bro id:omp-v35-wdp5]". It is the answer,
 # not a guess, so it is read before every shape rule below.
 TAG = re.compile(r"^\s*\[from:(owner|coordinator|worker|harness|bro)\b([^\]]*)\]")
+COMMS_TAGS = ("coordinator", "worker")   # agent-to-agent: never a card (autotask_check)
 TAG_ORIGIN = {
     "owner": "owner",           # beats every shape: the owner's words can look like anything
     "coordinator": "agent",
@@ -631,7 +636,7 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
         return None, f"herdr says {herdr}"
     if shown is None or (agent.get("name") or agent.get("pane_id")) not in shown:
         return None, "not on the life view (prescient down, or a project it doesn't show)"
-    covering = [t for t in tasks_of(agent, tasks) if t.get("state") in COVERING]
+    covering = covering_items(agent, tasks)
     if covering:
         return None, "covered by " + ", ".join(f"{t['id']} ({t['state']})" for t in covering)
     if not turn.get("key"):
@@ -646,6 +651,13 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
         return None, "no prompt to attribute: nothing is opened for work nobody can be shown to have asked for"
     if origin == "machinery":
         return None, "not work: a harness notification, a resumed session or a pasted image (never a card)"
+    # The owner's priority #1 (docs/issue-task-echo.md): an agent-to-agent message is
+    # comms, never a card. A coordinator's dispatch is already a work instruction;
+    # carding it made a card per instruction, then the worker's report got carded too
+    # (the echo). Shape-classified agent prompts (a round spec, untagged) still card.
+    tag = TAG.match(str(turn.get("prompt") or "").strip())
+    if tag and tag.group(1) in COMMS_TAGS:
+        return None, f"an agent-to-agent message ([from:{tag.group(1)}]): comms, never a card"
     # A coordinator's turns are coordination, and auto-tasking them looped on the
     # cards it was creating (2026-11-03) -- BUT that must not swallow the owner's
     # own request typed into its pane, which is how the lifecycle failed for bro
@@ -800,6 +812,26 @@ def is_coordinator(agent: Dict, tasks: list) -> bool:
     # shares its project with its omp, so "a coordinator item exists in my project" is true of both and
     # disabled auto-task for the workhorse too, which is exactly the bug.
     return (agent.get("agent") or agent.get("kind")) == "omp"
+
+
+def covering_items(agent: Dict, tasks: list) -> list:
+    """The open items that already cover this agent's work: keyed on PROJECT, like
+    ready_candidates. Hub items carry agent: null and a role target, so the old
+    agent-keyed match (tasks_of) was always empty and every turn of a worker with
+    an open item opened another card (docs/issue-task-echo.md, cause 2).
+
+    Choice: any in-progress item of the project covers, whatever its target. The
+    harness opens every card with target=coordinator whichever pane did the work,
+    so a role split would miss the harness's own cards - the echo again. A project
+    is one work stream (one omp + its Claude). tasks_of stays as a fallback for
+    bro's own list, whose items do name an agent."""
+    project = agent.get("project") or project_name(agent)
+    seen, out = set(), []
+    for t in project_items(project, tasks) + tasks_of(agent, tasks):
+        if hub_state(t) in COVERING and id(t) not in seen:
+            seen.add(id(t))
+            out.append(t)
+    return out
 
 
 def tasks_of(agent: Dict, tasks: list) -> list:
@@ -1252,7 +1284,7 @@ class Harness:
         now = time.time()
         for a in w.agents:
             herdr = a.get("agent_status")
-            if herdr not in ("working", "idle", "done") or any(t.get("state") in COVERING for t in tasks_of(a, tasks)):
+            if herdr not in ("working", "idle", "done") or covering_items(a, tasks):
                 continue                      # cheap checks first: no transcript read
             path = transcript_of(a, w.agents)
             if not path:

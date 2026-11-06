@@ -16,7 +16,9 @@ Usage:
                 [--confirm-timeout S] [--reply-timeout S]
 
   target  herdr agent name or pane id currently hosting an agent
-          (`herdr agent list` is the address book)
+          (`herdr agent list` is the address book). A stale auto-name
+          (omp-v25-wdp9 after the pane rolled to omp-v35-wdp9) resolves to
+          the pane's live agent; an unknown one refuses, naming what is live.
   send    fires `herdr agent prompt <target> <text>` (fire-only), then
           confirms the text landed in the peer's transcript.
   --wait-reply  additionally polls for the peer's next text-bearing
@@ -80,10 +82,45 @@ def herdr(*args: str) -> tuple[int, str, str]:
     return p.returncode, p.stdout, p.stderr
 
 
+# herdr's automatic names: omp-v<omp major>-<pane key>, claude-v<major>-<pane key>
+# (wD:p9 -> wdp9). The version part changes when a pane rolls to a new release,
+# so a name stored before the roll goes stale while the pane is the same one.
+AUTO_NAME = re.compile(r"^(?P<kind>[a-z]+)-v\d+-(?P<pane>[a-z0-9]+)$")
+
+
+def resolve_stale(target: str, agents: list[dict]) -> tuple[str | None, str]:
+    """(the live name, why) for a stale auto-name, or (None, a refusal naming
+    what is live). Only the version part may differ: same kind, same pane key."""
+    m = AUTO_NAME.match(target)
+    if not m:
+        return None, f"no agent named {target!r} (and it is not a herdr auto-name to resolve)"
+    live = [a.get("name") for a in agents
+            if (a.get("name") or "") != target and (am := AUTO_NAME.match(a.get("name") or ""))
+            and am["kind"] == m["kind"] and am["pane"] == m["pane"]]
+    if len(live) == 1:
+        return live[0], f"{target} is stale (the pane rolled); its live agent is {live[0]}"
+    if live:
+        return None, f"{target} is stale and ambiguous: live {', '.join(live)} -- pass one of them or a pane id"
+    same_kind = sorted(a.get("name") for a in agents
+                       if (am := AUTO_NAME.match(a.get("name") or "")) and am["kind"] == m["kind"])
+    return None, (f"no live agent for pane key {m['pane']!r}; live {m['kind']} agents: "
+                  + (", ".join(same_kind) or "none") + " (`herdr agent list`)")
+
+
 def agent_info(target: str) -> dict:
     """The agent record herdr has for a target (name or pane id): cwd,
-    pane_id, agent kind, and agent_session for claude panes."""
+    pane_id, agent kind, and agent_session for claude panes. A stale
+    auto-name (omp-v25-wdp9 after the pane rolled to omp-v35-wdp9) resolves
+    to the pane's live agent; anything else unknown refuses, naming what is
+    live."""
     rc, out, err = herdr("agent", "get", target)
+    if rc != 0 and "agent_not_found" in (err or "") + (out or ""):
+        live, why = resolve_stale(target, herdr_agents())
+        print(f"omp-peer: {why}", file=sys.stderr)
+        if live is None:
+            sys.exit(1)
+        target = live
+        rc, out, err = herdr("agent", "get", target)
     if rc != 0:
         print(f"omp-peer: agent get {target!r} failed: {(err or out).strip()}", file=sys.stderr)
         sys.exit(1)
@@ -450,7 +487,8 @@ def main() -> None:
     before = locate()
     baseline = len(entries_of(before)) if before else 0
 
-    rc, out, err = herdr("agent", "prompt", args.target, text)
+    # the resolved name (a stale one was mapped to the live agent), or its pane
+    rc, out, err = herdr("agent", "prompt", target.get("name") or pane_id, text)
     raw = False
     if rc != 0:
         if "agent_not_ready" in (err or "") + (out or ""):
