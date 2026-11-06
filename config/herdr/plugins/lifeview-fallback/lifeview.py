@@ -562,7 +562,18 @@ OWNER_MARKED = re.compile(r"^\s*From the owner", re.I)
 # sender, which KNOWS who it is -- `omp-peer send` puts it on every agent-to-agent
 # message, e.g. "[from:coordinator project:bro id:omp-v35-wdp5]". It is the answer,
 # not a guess, so it is read before every shape rule below.
-TAG = re.compile(r"^\s*\[from:(owner|coordinator|worker|harness|bro)\b([^\]]*)\]")
+#
+# SEARCHED in the first line, never anchored at offset 0 (docs/issue-tag-not-at-
+# start.md): the harness can put its own framing in front of our text -- a
+# '<pasted_content id="…"> ' wrapper, an 'auto: ' title prefix -- and the anchored
+# match then missed a correct tag and fell through to "owner" (the echo's third
+# cause). Bounded to the first line, capped, first match wins: a tag quoted deeper
+# in a pasted body (a log, a forwarded report) must never re-attribute the message.
+TAG = re.compile(r"\[from:(owner|coordinator|worker|harness|bro)\b([^\]]*)\]")
+TAG_HEAD_CHARS = 400
+# Framing that may precede the tag; untagged() drops it with the tag.
+TAG_FRAMING = re.compile(r"\s*(?:(?:auto:|<pasted_content\b[^>]*>)\s*)*")
+PASTE_CLOSE = re.compile(r"\s*</pasted_content\b[^>]*>\s*$")
 COMMS_TAGS = ("coordinator", "worker")   # agent-to-agent: never a card (autotask_check)
 TAG_ORIGIN = {
     "owner": "owner",           # beats every shape: the owner's words can look like anything
@@ -573,10 +584,56 @@ TAG_ORIGIN = {
 }
 
 
+_unparsed_seen: Dict[str, None] = {}      # tag_unparsed is reported once per prompt head, not every tick
+
+
+def event(kind: str, **fields) -> None:
+    """A model event: one parseable line in the daemon log. lifeview has no other
+    sink (and prescient no event API to post to), so the log is where it goes."""
+    log(f"event {kind} " + json.dumps(fields, ensure_ascii=False))
+
+
+def tag_match(prompt: str) -> Optional["re.Match"]:
+    """The sender tag: the FIRST [from:<role> …] in the prompt's first line (capped).
+    When the prompt contains "[from:" and nothing parsed, emits tag_unparsed: a
+    silent non-match is indistinguishable from there being nothing to match."""
+    text = str(prompt or "").lstrip()
+    head = text.split("\n", 1)[0][:TAG_HEAD_CHARS]
+    m = TAG.search(head)
+    if m is None and "[from:" in text:
+        where = "first line, malformed or unknown role" if "[from:" in head else "beyond the first line (treated as untagged)"
+        key = text[:120]
+        if key not in _unparsed_seen:
+            if len(_unparsed_seen) > 512:
+                _unparsed_seen.clear()
+            _unparsed_seen[key] = None
+            event("tag_unparsed", where=where, head=text[:120])
+    return m
+
+
+def tag_of(prompt: str) -> Optional[Tuple[str, str]]:
+    """(role, the rest of the tag's fields) or None."""
+    m = tag_match(prompt)
+    return (m.group(1), m.group(2)) if m else None
+
+
 def untagged(prompt: str) -> str:
-    """The prompt without its sender tag: the words that were asked, for a card."""
-    m = TAG.match(prompt)
-    return prompt[m.end():].strip() if m else prompt
+    """The prompt without its sender tag, wherever in the first line it was found:
+    the words that were asked, for a card. Framing in front of the tag (a paste
+    wrapper, an 'auto:' prefix) goes with it, and so does the wrapper's close; any
+    other words before the tag stay."""
+    text = str(prompt or "").lstrip()
+    m = tag_match(text)
+    if not m:
+        return prompt
+    before, after = text[:m.start()], text[m.end():]
+    if TAG_FRAMING.fullmatch(before):
+        out = after
+        if "<pasted_content" in before:
+            out = PASTE_CLOSE.sub("", out)
+    else:
+        out = before.rstrip() + " " + after.lstrip()
+    return out.strip()
 
 
 def prompt_provenance(turn: Dict) -> Optional[str]:
@@ -592,9 +649,9 @@ def prompt_provenance(turn: Dict) -> Optional[str]:
     prompt = str(turn.get("prompt") or "").strip()
     if not prompt:
         return None
-    tag = TAG.match(prompt)
+    tag = tag_of(prompt)
     if tag:
-        return TAG_ORIGIN[tag.group(1)]     # the sender said who it is: no shape rule applies
+        return TAG_ORIGIN[tag[0]]     # the sender said who it is: no shape rule applies
     # Untagged: today's behaviour, unchanged -- machinery shapes, then the comms
     # shapes, then the owner (untagged is overwhelmingly the owner typing).
     if MACHINERY_PROMPT.match(prompt):
@@ -655,9 +712,9 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
     # comms, never a card. A coordinator's dispatch is already a work instruction;
     # carding it made a card per instruction, then the worker's report got carded too
     # (the echo). Shape-classified agent prompts (a round spec, untagged) still card.
-    tag = TAG.match(str(turn.get("prompt") or "").strip())
-    if tag and tag.group(1) in COMMS_TAGS:
-        return None, f"an agent-to-agent message ([from:{tag.group(1)}]): comms, never a card"
+    tag = tag_of(str(turn.get("prompt") or ""))
+    if tag and tag[0] in COMMS_TAGS:
+        return None, f"an agent-to-agent message ([from:{tag[0]}]): comms, never a card"
     # A coordinator's turns are coordination, and auto-tasking them looped on the
     # cards it was creating (2026-11-03) -- BUT that must not swallow the owner's
     # own request typed into its pane, which is how the lifecycle failed for bro

@@ -1157,9 +1157,12 @@ class MessageTags(unittest.TestCase):
                     continue        # (a tag on harness output is not a real case; skip the noise)
                 self.assertEqual(self.prov(f"[from:{role} project:dotfiles id:x]\n{body}"), "agent", (role, body))
 
-    def test_only_a_leading_known_tag_counts(self):
-        self.assertEqual(self.prov("Round 25: see [from:owner] below"), "agent")       # not at the start
-        self.assertEqual(self.prov("fix it [from:harness]"), "owner")
+    def test_only_a_first_line_known_tag_counts(self):
+        # docs/issue-tag-not-at-start.md replaced the offset-0 anchor with a
+        # first-line search: a tag anywhere in line 1 counts, deeper never does.
+        self.assertEqual(self.prov("Round 25: see [from:owner] below"), "owner")      # line 1: the tag wins
+        self.assertEqual(self.prov("fix it [from:harness]"), "machinery")
+        self.assertEqual(self.prov("Round 25: go\n[from:owner] quoted"), "agent")      # line 2: untagged
         self.assertEqual(self.prov("[from:alien project:x id:y]\nRound 2: go"), "owner")  # unknown role: untagged, today's rules
         self.assertEqual(self.prov("[from:ownerx]\nfix it"), "owner")                  # \\b: no prefix match
         self.assertEqual(self.prov("  [from:worker project:p id:i] done"), "agent")    # leading space ok
@@ -1288,6 +1291,101 @@ class TaskEcho(unittest.TestCase):
                                ("From claude-prescient: done", "agent")):
             self.assertEqual(lv.prompt_provenance({"prompt": prompt}), origin, prompt)
         self.assertIsNotNone(self.chk(self.c, [], "Round 25: release/docs/ready/r.md - go")[0])  # still a card
+
+
+class TagNotAtStart(unittest.TestCase):
+    """docs/issue-tag-not-at-start.md: the harness can frame our text
+    ('<pasted_content id="…"> ', 'auto: '), so the tag is not at offset 0. The
+    anchored match missed it and the message fell through to owner (the echo's
+    third cause, tk-695297b6575d)."""
+    PASTED = '<pasted_content id="f3ce"> [from:coordinator project:prescient id:omp-v35-wdp7] The message'
+
+    def setUp(self):
+        lv._unparsed_seen.clear()
+        self.events = []
+        old = lv.log
+        lv.log = lambda msg: self.events.append(msg)
+        self.addCleanup(setattr, lv, "log", old)
+
+    def prov(self, prompt):
+        return lv.prompt_provenance({"prompt": prompt})
+
+    def chk(self, prompt):
+        a = {"name": "claude-x", "pane_id": "w:p1", "agent": "claude", "project": "proj", "agent_status": "working"}
+        now = time.time()
+        return lv.autotask_check(a, [], {"key": "k", "start": now - 60, "calls": 3, "said": "", "prompt": prompt},
+                                 {"claude-x"}, now)
+
+    def unparsed(self):
+        return [e for e in self.events if e.startswith("event tag_unparsed ")]
+
+    def test_1_a_pasted_wrapper_before_the_tag(self):
+        self.assertEqual(self.prov(self.PASTED), "agent")
+        for role in ("coordinator", "worker"):
+            title, why = self.chk(f'<pasted_content id="x"> [from:{role} project:p id:a] text')
+            self.assertIsNone(title)
+            self.assertIn("comms, never a card", why)
+        self.assertEqual(self.unparsed(), [])                       # it parsed: no event
+
+    def test_2_an_auto_prefix_before_an_owner_tag(self):
+        self.assertEqual(self.prov("auto: [from:owner project:p id:a] text"), "owner")
+        self.assertEqual(self.prov("auto: [from:owner project:p id:a] Round 25: docs/x.md"), "owner")
+
+    def test_3_a_plain_tag_at_the_start_still_works(self):
+        for role, origin in (("owner", "owner"), ("coordinator", "agent"), ("worker", "agent"),
+                             ("bro", "agent"), ("harness", "machinery")):
+            self.assertEqual(self.prov(f"[from:{role} project:p id:a]\nRound 25: x"), origin, role)
+
+    def test_4_a_tag_only_in_line_two_or_beyond_is_untagged(self):
+        quoted = "here is the log you asked for:\n[from:coordinator project:p id:a] Both landed"
+        self.assertEqual(self.prov(quoted), "owner")                 # today's untagged answer, not the quoted agent
+        self.assertEqual(self.prov("Round 3: docs/x.md\n\n[from:owner project:p id:a] quoted"), "agent")
+        self.assertEqual(self.prov("prescient: task tk-1 queued\n[from:owner] x"), "machinery")
+        self.assertIsNotNone(self.chk(quoted)[0])                    # the owner's request still cards
+        self.assertEqual(lv.untagged(quoted), quoted)                # nothing stripped
+        # the first line is capped: a tag past the cap does not count either
+        self.assertEqual(self.prov("x" * lv.TAG_HEAD_CHARS + " [from:worker project:p id:a]"), "owner")
+
+    def test_first_match_wins(self):
+        self.assertEqual(self.prov("[from:harness project:p id:a] [from:owner project:p id:b] x"), "machinery")
+        self.assertEqual(self.prov("[from:owner project:p id:b] [from:harness project:p id:a] x"), "owner")
+
+    def test_5_untagged_strips_the_tag_wherever_it_is(self):
+        self.assertEqual(lv.untagged(self.PASTED), "The message")
+        self.assertEqual(lv.untagged(self.PASTED + ' </pasted_content id="f3ce">'), "The message")
+        self.assertEqual(lv.untagged("auto: [from:owner project:p id:a] text"), "text")
+        self.assertEqual(lv.untagged("[from:owner project:p id:a]\nfix it"), "fix it")
+        self.assertEqual(lv.untagged("Round 25: see [from:owner project:p id:a] below"), "Round 25: see below")
+        # the card's text carries neither wrapper nor tag
+        self.assertEqual(lv.snippet(lv.untagged(self.PASTED), 114), "The message")
+
+    def test_6_a_contained_tag_that_does_not_parse_emits_tag_unparsed(self):
+        for prompt, where in (("[from:alien project:p id:a] hi", "first line"),
+                              ("[from:owner project:p id:a hi (no closing bracket)", "first line"),
+                              ("look:\n[from:worker project:p id:a] quoted", "beyond the first line")):
+            self.events.clear()
+            lv._unparsed_seen.clear()
+            self.prov(prompt)
+            (ev,) = self.unparsed()
+            body = json.loads(ev[len("event tag_unparsed "):])
+            self.assertIn(where, body["where"])
+            self.assertEqual(body["head"], prompt[:120])
+        self.events.clear()
+        for _ in range(5):                                           # every tick classifies again: one event, not five
+            self.prov("[from:alien] repeated")
+        self.assertEqual(len(self.unparsed()), 1)
+        self.events.clear()
+        for prompt in ("fix it", self.PASTED, "[from:owner project:p id:a] x"):
+            self.prov(prompt)
+        self.assertEqual(self.unparsed(), [])                        # no "[from:" or it parsed: silent
+
+    def test_7_untagged_cases_unchanged(self):
+        for prompt, origin in (("Round 25: release/docs/ready/r.md", "agent"), ("fix it", "owner"),
+                               ("<task-notification> <task-id>t</task-id>", "machinery"),
+                               ("prescient: task tk-1 is queued", "machinery"),
+                               ("From claude-prescient: done", "agent"), ("From the owner, via bro: x", "owner")):
+            self.assertEqual(self.prov(prompt), origin, prompt)
+        self.assertEqual(self.unparsed(), [])
 
 
 if __name__ == "__main__":
