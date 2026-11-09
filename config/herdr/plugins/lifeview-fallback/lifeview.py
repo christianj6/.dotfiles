@@ -563,16 +563,16 @@ OWNER_MARKED = re.compile(r"^\s*From the owner", re.I)
 # message, e.g. "[from:coordinator project:bro id:omp-v35-wdp5]". It is the answer,
 # not a guess, so it is read before every shape rule below.
 #
-# SEARCHED in the first line, never anchored at offset 0 (docs/issue-tag-not-at-
-# start.md): the harness can put its own framing in front of our text -- a
-# '<pasted_content id="…"> ' wrapper, an 'auto: ' title prefix -- and the anchored
-# match then missed a correct tag and fell through to "owner" (the echo's third
-# cause). Bounded to the first line, capped, first match wins: a tag quoted deeper
-# in a pasted body (a log, a forwarded report) must never re-attribute the message.
-TAG = re.compile(r"\[from:(owner|coordinator|worker|harness|bro)\b([^\]]*)\]")
-TAG_HEAD_CHARS = 400
-# Framing that may precede the tag; untagged() drops it with the tag.
-TAG_FRAMING = re.compile(r"\s*(?:(?:auto:|<pasted_content\b[^>]*>)\s*)*")
+# ANCHORED, after the harness's own wrappers (docs/issue-tag-line-two.md). The
+# harness can put framing in front of our text -- a '<pasted_content id="…">'
+# wrapper (on the same line OR its own line), an 'auto: ' title prefix -- so a
+# plain offset-0 anchor missed correct tags (the echo's third cause), and a
+# first-line search missed the wrapper-on-its-own-line form (the fourth). The
+# rule: strip leading WRAPPERs, then the tag must be what comes next. Only
+# harness framing may precede it: a tag after real prose is a QUOTED tag (a
+# pasted log, a forwarded report) and never re-attributes the message.
+WRAPPER = re.compile(r"^\s*(?:<pasted_content\b[^>]*>\s*|auto:\s*)+", re.I)
+TAG = re.compile(r"^\s*\[from:(owner|coordinator|worker|harness|bro)\b([^\]]*)\]")
 PASTE_CLOSE = re.compile(r"\s*</pasted_content\b[^>]*>\s*$")
 COMMS_TAGS = ("coordinator", "worker")   # agent-to-agent: never a card (autotask_check)
 TAG_ORIGIN = {
@@ -593,15 +593,26 @@ def event(kind: str, **fields) -> None:
     log(f"event {kind} " + json.dumps(fields, ensure_ascii=False))
 
 
+def unwrapped(prompt: str) -> Tuple[str, bool]:
+    """(the prompt with leading harness wrappers removed, whether a paste wrapper was one)."""
+    text = str(prompt or "")
+    w = WRAPPER.match(text)
+    if not w:
+        return text, False
+    return text[w.end():], "<pasted_content" in w.group(0).lower()
+
+
 def tag_match(prompt: str) -> Optional["re.Match"]:
-    """The sender tag: the FIRST [from:<role> …] in the prompt's first line (capped).
-    When the prompt contains "[from:" and nothing parsed, emits tag_unparsed: a
-    silent non-match is indistinguishable from there being nothing to match."""
-    text = str(prompt or "").lstrip()
-    head = text.split("\n", 1)[0][:TAG_HEAD_CHARS]
-    m = TAG.search(head)
-    if m is None and "[from:" in text:
-        where = "first line, malformed or unknown role" if "[from:" in head else "beyond the first line (treated as untagged)"
+    """The sender tag: [from:<role> …] right after any leading harness wrappers
+    (match against unwrapped(prompt)[0]). When the prompt contains "[from:" and
+    nothing was honoured, emits tag_unparsed: a silent non-match is
+    indistinguishable from there being nothing to match."""
+    rest, _ = unwrapped(prompt)
+    m = TAG.match(rest)
+    if m is None and "[from:" in str(prompt or ""):
+        text = str(prompt)
+        where = ("at the start, malformed or unknown role" if rest.lstrip().startswith("[from:")
+                 else "after other text: a quoted tag, not honoured")
         key = text[:120]
         if key not in _unparsed_seen:
             if len(_unparsed_seen) > 512:
@@ -618,21 +629,16 @@ def tag_of(prompt: str) -> Optional[Tuple[str, str]]:
 
 
 def untagged(prompt: str) -> str:
-    """The prompt without its sender tag, wherever in the first line it was found:
-    the words that were asked, for a card. Framing in front of the tag (a paste
-    wrapper, an 'auto:' prefix) goes with it, and so does the wrapper's close; any
-    other words before the tag stay."""
-    text = str(prompt or "").lstrip()
-    m = tag_match(text)
+    """The prompt without its harness wrappers and sender tag: the words that were
+    asked, for a card. A paste wrapper's close goes too. Untagged prompts are
+    returned unchanged."""
+    rest, pasted = unwrapped(prompt)
+    m = TAG.match(rest)
     if not m:
         return prompt
-    before, after = text[:m.start()], text[m.end():]
-    if TAG_FRAMING.fullmatch(before):
-        out = after
-        if "<pasted_content" in before:
-            out = PASTE_CLOSE.sub("", out)
-    else:
-        out = before.rstrip() + " " + after.lstrip()
+    out = rest[m.end():]
+    if pasted:
+        out = PASTE_CLOSE.sub("", out)
     return out.strip()
 
 

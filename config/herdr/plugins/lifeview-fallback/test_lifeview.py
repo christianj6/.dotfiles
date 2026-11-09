@@ -1157,11 +1157,11 @@ class MessageTags(unittest.TestCase):
                     continue        # (a tag on harness output is not a real case; skip the noise)
                 self.assertEqual(self.prov(f"[from:{role} project:dotfiles id:x]\n{body}"), "agent", (role, body))
 
-    def test_only_a_first_line_known_tag_counts(self):
-        # docs/issue-tag-not-at-start.md replaced the offset-0 anchor with a
-        # first-line search: a tag anywhere in line 1 counts, deeper never does.
-        self.assertEqual(self.prov("Round 25: see [from:owner] below"), "owner")      # line 1: the tag wins
-        self.assertEqual(self.prov("fix it [from:harness]"), "machinery")
+    def test_only_a_tag_after_harness_wrappers_counts(self):
+        # docs/issue-tag-line-two.md: strip the harness's wrappers, then anchor.
+        # A tag after real prose is quoted, never honoured -- on line 1 too.
+        self.assertEqual(self.prov("Round 25: see [from:owner] below"), "agent")      # after prose: quoted
+        self.assertEqual(self.prov("fix it [from:harness]"), "owner")
         self.assertEqual(self.prov("Round 25: go\n[from:owner] quoted"), "agent")      # line 2: untagged
         self.assertEqual(self.prov("[from:alien project:x id:y]\nRound 2: go"), "owner")  # unknown role: untagged, today's rules
         self.assertEqual(self.prov("[from:ownerx]\nfix it"), "owner")                  # \\b: no prefix match
@@ -1343,8 +1343,8 @@ class TagNotAtStart(unittest.TestCase):
         self.assertEqual(self.prov("prescient: task tk-1 queued\n[from:owner] x"), "machinery")
         self.assertIsNotNone(self.chk(quoted)[0])                    # the owner's request still cards
         self.assertEqual(lv.untagged(quoted), quoted)                # nothing stripped
-        # the first line is capped: a tag past the cap does not count either
-        self.assertEqual(self.prov("x" * lv.TAG_HEAD_CHARS + " [from:worker project:p id:a]"), "owner")
+        # after prose on the SAME line is quoted too (docs/issue-tag-line-two.md)
+        self.assertEqual(self.prov("the log says [from:worker project:p id:a] done"), "owner")
 
     def test_first_match_wins(self):
         self.assertEqual(self.prov("[from:harness project:p id:a] [from:owner project:p id:b] x"), "machinery")
@@ -1355,14 +1355,15 @@ class TagNotAtStart(unittest.TestCase):
         self.assertEqual(lv.untagged(self.PASTED + ' </pasted_content id="f3ce">'), "The message")
         self.assertEqual(lv.untagged("auto: [from:owner project:p id:a] text"), "text")
         self.assertEqual(lv.untagged("[from:owner project:p id:a]\nfix it"), "fix it")
-        self.assertEqual(lv.untagged("Round 25: see [from:owner project:p id:a] below"), "Round 25: see below")
+        q = "Round 25: see [from:owner project:p id:a] below"
+        self.assertEqual(lv.untagged(q), q)                         # quoted, not a tag: left alone
         # the card's text carries neither wrapper nor tag
         self.assertEqual(lv.snippet(lv.untagged(self.PASTED), 114), "The message")
 
     def test_6_a_contained_tag_that_does_not_parse_emits_tag_unparsed(self):
-        for prompt, where in (("[from:alien project:p id:a] hi", "first line"),
-                              ("[from:owner project:p id:a hi (no closing bracket)", "first line"),
-                              ("look:\n[from:worker project:p id:a] quoted", "beyond the first line")):
+        for prompt, where in (("[from:alien project:p id:a] hi", "at the start"),
+                              ("[from:owner project:p id:a hi (no closing bracket)", "at the start"),
+                              ("look:\n[from:worker project:p id:a] quoted", "quoted tag, not honoured")):
             self.events.clear()
             lv._unparsed_seen.clear()
             self.prov(prompt)
@@ -1386,6 +1387,62 @@ class TagNotAtStart(unittest.TestCase):
                                ("From claude-prescient: done", "agent"), ("From the owner, via bro: x", "owner")):
             self.assertEqual(self.prov(prompt), origin, prompt)
         self.assertEqual(self.unparsed(), [])
+
+
+class TagAfterWrapper(unittest.TestCase):
+    """docs/issue-tag-line-two.md, the echo's fourth cause: prescient's pane gets
+    '<pasted_content id="…">' on its OWN line, so the tag sat on line 2 and the
+    first-line search refused it. Rule now: strip harness wrappers, then anchor."""
+    T = "[from:coordinator project:prescient id:omp-v35-wdp7]"
+
+    setUp, prov, chk, unparsed = (TagNotAtStart.setUp, TagNotAtStart.prov,
+                                  TagNotAtStart.chk, TagNotAtStart.unparsed)
+
+    def test_1_wrapper_on_the_same_line(self):
+        p = f'<pasted_content id="x"> {self.T} text'
+        self.assertEqual(self.prov(p), "agent")
+        self.assertEqual(lv.untagged(p), "text")
+
+    def test_2_wrapper_on_its_own_line(self):
+        p = f'<pasted_content id="f3ce">\n{self.T} Real owner task'     # the reproduced prompt
+        self.assertEqual(self.prov(p), "agent")
+        self.assertEqual(lv.untagged(p), "Real owner task")
+        self.assertIsNone(self.chk(p)[0])                                # comms: no card
+        self.assertIsNone(self.chk(p.replace("coordinator", "worker", 1))[0])
+        self.assertEqual(lv.untagged(p + '\n</pasted_content id="f3ce">'), "Real owner task")
+        self.assertEqual(self.unparsed(), [])
+
+    def test_3_auto_prefix_then_owner(self):
+        self.assertEqual(self.prov("auto: [from:owner project:p id:a] text"), "owner")
+        self.assertEqual(lv.untagged("auto: [from:owner project:p id:a] text"), "text")
+
+    def test_4_a_tag_after_real_prose_is_not_honoured_and_logs(self):
+        for p in ("here is a log:\n[from:harness project:p id:a] x",
+                  "here is a log: [from:harness project:p id:a] x",
+                  '<pasted_content id="x">\nhere is a log:\n[from:coordinator project:p id:a] x'):
+            self.events.clear()
+            lv._unparsed_seen.clear()
+            self.assertEqual(self.prov(p), "owner", p)                  # today's untagged answer
+            self.assertIsNotNone(self.chk(p)[0], p)                     # the owner's message still cards
+            (ev,) = self.unparsed()
+            self.assertIn("quoted tag, not honoured", ev)
+
+    def test_5_several_wrappers_in_a_row(self):
+        for p in (f'<pasted_content id="a">\n<pasted_content id="b">\n{self.T} x',
+                  f'auto: <pasted_content id="a">\n{self.T} x',
+                  f'  <PASTED_CONTENT id="a"> auto:\n\n {self.T} x'):
+            self.assertEqual(self.prov(p), "agent", p)
+            self.assertEqual(lv.untagged(p), "x", p)
+
+    def test_6_a_plain_tag_at_the_start(self):
+        self.assertEqual(self.prov("[from:owner project:p id:a]\nRound 25: x"), "owner")
+        self.assertEqual(self.prov("[from:harness project:p id:a] fix it"), "machinery")
+
+    def test_7_untagged_cases_unchanged(self):
+        TagNotAtStart.test_7_untagged_cases_unchanged(self)
+        # a wrapper alone is not a tag: an untagged wrapped message is today's answer
+        self.assertEqual(self.prov('<pasted_content id="x">\nfix the parser'), "owner")
+        self.assertEqual(lv.untagged('<pasted_content id="x">\nfix it'), '<pasted_content id="x">\nfix it')
 
 
 if __name__ == "__main__":
