@@ -1445,5 +1445,82 @@ class TagAfterWrapper(unittest.TestCase):
         self.assertEqual(lv.untagged('<pasted_content id="x">\nfix it'), '<pasted_content id="x">\nfix it')
 
 
+class NudgeLiterals(unittest.TestCase):
+    """docs/task-nudge-loop-verify.md: the LITERAL user-role strings prescient's
+    deliveries leave in a transcript (copied from real omp and claude transcripts,
+    every distinct shape found) must stay machinery -- plain, tagged, and behind
+    harness framing -- and never open a card. The reverse: an owner line that only
+    starts with "prescient:" is not silently machinery."""
+    NUDGE = "prescient: task tk-521d85e1842a is queued for dotfiles's coordinator - `prescient task list --mine` has it."
+    NUDGE_DEV = "prescient: task tk-0f3a9c2e7b14 is queued for bro's dev - `prescient task list --mine` has it."
+    TWEAK = ("prescient: 1 tweak sent from the life view - run `.venv/bin/prescient tweak list`, "
+             "then follow the tweak routine in AGENTS.md.")
+    TWEAKS = ("prescient: 2 tweaks sent from the life view - run `.venv/bin/prescient tweak list`, "
+              "then follow the tweak routine in AGENTS.md.")
+    NUDGE_TAG = "[from:harness project:prescient id:prescient-task-nudge]\n"
+    TWEAK_TAG = "[from:harness project:prescient id:prescient-tweak-doorbell]\n"
+    LITERALS = (NUDGE, NUDGE_DEV, TWEAK, TWEAKS, NUDGE_TAG + NUDGE, TWEAK_TAG + TWEAK,
+                (TWEAK_TAG + TWEAK) * 3)      # the doorbell delivered three times into one entry
+    FRAMINGS = ('<pasted_content id="x">', '<pasted_content id="x"> ', '<pasted_content id="x">\n',
+                "auto: ", 'auto: <pasted_content id="x"> ', NUDGE_TAG)
+
+    def setUp(self):
+        lv._unparsed_seen.clear()
+        self.events = []
+        old = lv.log
+        lv.log = lambda msg: self.events.append(msg)
+        self.addCleanup(setattr, lv, "log", old)
+
+    def prov(self, prompt):
+        return lv.prompt_provenance({"prompt": prompt})
+
+    def chk(self, prompt, coordinator=False):
+        a = {"name": "omp-x" if coordinator else "claude-x", "pane_id": "w:p1",
+             "agent": "omp" if coordinator else "claude", "project": "proj", "agent_status": "working"}
+        now = time.time()
+        return lv.autotask_check(a, [], {"key": "k", "start": now - 60, "calls": 3, "said": "", "prompt": prompt},
+                                 {a["name"]}, now)
+
+    def unrecognized(self):
+        return [e for e in self.events if e.startswith("event machinery_unrecognized ")]
+
+    def test_literals_are_machinery_and_never_card(self):
+        for lit in self.LITERALS:
+            with self.subTest(lit=lit[:60]):
+                self.assertEqual(self.prov(lit), "machinery")
+                for coord in (False, True):
+                    title, why = self.chk(lit, coord)
+                    self.assertIsNone(title, why)
+        self.assertEqual(self.unrecognized(), [])     # known shapes are not reported
+
+    def test_literals_behind_framing_are_machinery(self):
+        for lit in (self.NUDGE, self.TWEAK):
+            for fr in self.FRAMINGS:
+                for close in ("", '</pasted_content id="x">') if "pasted" in fr else ("",):
+                    p = fr + lit + close
+                    with self.subTest(p=p[:80]):
+                        self.assertEqual(self.prov(p), "machinery")
+                        self.assertIsNone(self.chk(p)[0])
+
+    def test_a_paste_with_the_senders_own_words_after_it_is_theirs(self):
+        p = f'<pasted_content id="x">{self.NUDGE}</pasted_content id="x"> why does this keep coming back?'
+        self.assertEqual(self.prov(p), "owner")
+
+    def test_reverse_owner_text_starting_prescient_is_not_silently_machinery(self):
+        # Explicitly the owner's: owner, whatever follows.
+        self.assertEqual(self.prov("[from:owner project:dotfiles id:owner]\nprescient: why did bro show twice?"), "owner")
+        self.assertEqual(self.prov("From the owner (prescient): prescient: why did bro show twice?"), "owner")
+        # Unmarked: still machinery (the "prescient: " rule is not weakened) but REPORTED, once.
+        for _ in range(3):
+            self.assertEqual(self.prov("prescient: why did the life view show bro twice?"), "machinery")
+        self.assertEqual(len(self.unrecognized()), 1)
+        self.assertIn("tag it [from:owner]", self.unrecognized()[0])
+
+    def test_a_delivery_spliced_into_the_owners_typing_is_the_owners(self):
+        # One real entry: the doorbell landed while the owner was typing.
+        p = "i had to ma" + self.TWEAK + "nu"
+        self.assertEqual(self.prov(p), "owner")
+
+
 if __name__ == "__main__":
     unittest.main()

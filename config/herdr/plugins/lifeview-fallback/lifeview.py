@@ -553,6 +553,14 @@ AGENT_PROMPT = re.compile(r"^\s*(?:Round \d+|Spec:|Notes:|Discussion, no code)"
 OMP_MACHINERY = re.compile(
     r"^\s*(?:prescient: |prescient task |\[lifeview|bro request tr-|"
     r"\d+ tweaks? (?:sent|waiting)|a tweak was sent)", re.I)
+# prescient's own pane deliveries, the shapes the "prescient: " branch above
+# exists for: tasks/store.py NUDGE and gantt/agent.py's tweak doorbell (every
+# "prescient: " user entry across all omp and claude transcripts is one of these,
+# docs/task-nudge-loop-verify.report.md). A "prescient: " line that is NOT one of
+# them is someone addressing prescient by name -- still machinery (the rule is not
+# weakened), but reported, never silent.
+PRESCIENT_DELIVERY = re.compile(r"^\s*prescient: (?:task tk-[\w-]+ |\d+ tweaks? |a tweak )", re.I)
+PRESCIENT_ADDRESS = re.compile(r"^\s*prescient: ", re.I)
 OMP_AGENT = re.compile(
     r"^\s*(?:From claude-|From omp-|From [a-z0-9.-]+ \(prescient|Task from the |"
     r"REPORT\b|WAVE \d|Card \d)", re.I)
@@ -628,6 +636,30 @@ def tag_of(prompt: str) -> Optional[Tuple[str, str]]:
     return (m.group(1), m.group(2)) if m else None
 
 
+def framed_body(prompt: str) -> str:
+    """The prompt without leading harness wrappers, for OMP_MACHINERY: a hub nudge
+    behind '<pasted_content …>' or 'auto: ' is still the nudge. A paste the sender
+    then wrote their own words after is NOT framing -- those words are the request
+    -- so such a prompt is returned unchanged and judged as it stands."""
+    rest, pasted = unwrapped(prompt)
+    if pasted:
+        close = re.search(r"</pasted_content\b[^>]*>", rest, re.I)
+        if close and rest[close.end():].strip():
+            return prompt
+        rest = PASTE_CLOSE.sub("", rest)
+    return rest
+
+
+def report_once(kind: str, head: str, **fields) -> None:
+    """event(kind) once per prompt head: the classifier runs every tick."""
+    key = f"{kind}:{head[:120]}"
+    if key not in _unparsed_seen:
+        if len(_unparsed_seen) > 512:
+            _unparsed_seen.clear()
+        _unparsed_seen[key] = None
+        event(kind, head=head[:120], **fields)
+
+
 def untagged(prompt: str) -> str:
     """The prompt without its harness wrappers and sender tag: the words that were
     asked, for a card. A paste wrapper's close goes too. Untagged prompts are
@@ -664,7 +696,12 @@ def prompt_provenance(turn: Dict) -> Optional[str]:
         return "machinery"
     if OWNER_MARKED.match(prompt):
         return "owner"                      # explicitly from the owner (bro's relay marks it)
-    if OMP_MACHINERY.match(prompt):
+    body = framed_body(prompt)              # == prompt when no harness wrapper leads it
+    if OMP_MACHINERY.match(body):
+        if PRESCIENT_ADDRESS.match(body) and not PRESCIENT_DELIVERY.match(body):
+            report_once("machinery_unrecognized", prompt,
+                        why="starts 'prescient: ' but is no prescient delivery shape; "
+                            "classified machinery (no card) - if it was a request, tag it [from:owner]")
         return "machinery"                  # hub nudges, tweak notices, life view: never work
     if OMP_AGENT.match(prompt) or AGENT_PROMPT.match(prompt):
         return "agent"                      # a relay from another agent, a round spec
