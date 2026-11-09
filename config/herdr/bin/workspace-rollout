@@ -28,8 +28,11 @@
 # After an omp restart, a 60s watch of omp-watch's daemon log flags a herdr
 # registry wedge as ROLLOUT-WEDGED (state display frozen; restart succeeded).
 #
-# claude has no per-process marker; its version is inferred from process start
-# time vs VERSION's mtime ("~N" = started after the bump, "<N" = before).
+# claude's marker is /tmp/claude-config-versions/<pid>, written once per
+# process by its SessionStart hook (config/claude/hooks/claude-config-version.sh)
+# with the same config/omp/VERSION, so both kinds read one scale. A claude
+# with no marker (started before the hook existed) shows "-": unknowable, never
+# inferred. --list also shows the claude CLI version as a detail.
 set -uo pipefail
 
 usage() {
@@ -90,9 +93,9 @@ DOTFILES="${DOTFILES:-$HOME/.dotfiles}"
 VERSION_FILE="$DOTFILES/config/omp/VERSION"
 CUR="$(tr -dc '0-9' < "$VERSION_FILE" 2>/dev/null)"
 [ -n "$CUR" ] || { echo "workspace-rollout: cannot read $VERSION_FILE" >&2; exit 1; }
-VERSION_MTIME="$(stat -f %m "$VERSION_FILE" 2>/dev/null || stat -c %Y "$VERSION_FILE")"
 OMP_SESSIONS="$HOME/.omp/agent/sessions"
 MARKERS=/tmp/omp-config-versions
+CLAUDE_MARKERS="${CLAUDE_CONFIG_MARKERS:-/tmp/claude-config-versions}"
 SELF_PANE="${HERDR_PANE_ID:-}"
 VERIFY_SECS=30
 # Wedge watch (omp panes): omp-watch's daemon log, same override it honours.
@@ -213,11 +216,9 @@ omp_marker() {
 }
 
 claude_marker() {
-    local start
-    start="$(proc_start "$1")"
-    if [ -z "$start" ]; then echo "?"
-    elif [ "$start" -ge "$VERSION_MTIME" ]; then echo "~$CUR"
-    else echo "<$CUR"; fi
+    local v
+    v="$({ tr -dc '0-9' < "$CLAUDE_MARKERS/$1"; } 2>/dev/null)"
+    echo "${v:--}"
 }
 
 proc_start() {
@@ -433,7 +434,7 @@ plan_pane() {
     if [ "$pane" = "$SELF_PANE" ]; then PLAN_ACTION="skip"; PLAN_WHY="this pane runs the rollout"; return; fi
     if ! is_selected "$pane" "$name"; then PLAN_ACTION="skip"; PLAN_WHY="not in --only"; return; fi
     if is_skipped "$pane"; then PLAN_ACTION="skip"; PLAN_WHY="--skip"; return; fi
-    if [ "$PLAN_OLD" = "$CUR" ] || [ "$PLAN_OLD" = "~$CUR" ]; then PLAN_ACTION="up-to-date"; return; fi
+    if [ "$PLAN_OLD" = "$CUR" ]; then PLAN_ACTION="up-to-date"; return; fi
     [ "$hagent" = "$k" ] && PLAN_HAGENT="$hagent"
     if [ -z "$PLAN_HAGENT" ] && [ "$k" = omp ]; then
         PLAN_ACTION="NEEDS-MANUAL"; PLAN_WHY="not registered in herdr as omp (idle state unknowable)"; return
@@ -702,14 +703,14 @@ restart_pane() {
                 elif [ "$(omp_session_file "$pid")" = "$PLAN_SID" ]; then R_RESUMED="y"; fi
                 [ "$R_NEW" = "$CUR" ] && [ "$R_RESUMED" != n ] && break
             else
-                R_NEW="$(claude_marker "$pid")"
+                R_NEW="$(claude_marker "$pid")"   # its SessionStart hook writes it just after start
                 if ps -o command= -p "$pid" | grep -q -- "--resume $PLAN_SID"; then R_RESUMED="y"; fi
-                [ "$R_RESUMED" = y ] && break
+                [ "$R_RESUMED" = y ] && [ "$R_NEW" = "$CUR" ] && break
             fi
         fi
         sleep_s 0.5
     done
-    if [ "$R_NEW" = "$CUR" ] || [ "$R_NEW" = "~$CUR" ]; then
+    if [ "$R_NEW" = "$CUR" ]; then
         if [ "$R_RESUMED" != n ]; then R_RESULT="RESTARTED"; else R_RESULT="RESTARTED-NO-RESUME"; R_NOTE="new session; old one: $PLAN_SID"; fi
         # The restart itself succeeded; what can still wedge is herdr's state
         # display. omp-watch only drives omp panes, so claude is not watched.
@@ -732,7 +733,7 @@ restart_pane() {
 # Spaces (herdr workspaces) > tabs > agent panes, with kind, version marker and
 # cwd. Reads herdr, ps and the marker files only; never sends anything.
 list_mode() {
-    local spaces ws label tab tlabel row pane name hagent status ptab cwd sp agents k pid nvpid chain kind ver
+    local spaces ws label tab tlabel row pane name hagent status ptab cwd sp agents k pid nvpid chain kind ver detail cli
     spaces="$(herdr workspace list | python3 -c '
 import json, sys
 want = sys.argv[1]
@@ -756,9 +757,15 @@ for t in json.load(sys.stdin)["result"]["tabs"]:
                 [ -n "$agents" ] || continue
                 while IFS=$'\t' read -r k pid nvpid chain; do
                     kind="$k"; [ "$nvpid" = "-" ] || kind="$k-in-nvim"
-                    if [ "$k" = omp ]; then ver="$(omp_marker "$pid" "$name")"; else ver="$(claude_marker "$pid")"; fi
-                    [ "$ver" = "$CUR" ] || [ "$ver" = "~$CUR" ] || ver="$ver*"
-                    printf '    %-8s %-15s v%-6s %-8s %-18s %s\n' "$pane" "$kind" "$ver" "$status" "${name:--}" "$cwd"
+                    detail=""
+                    if [ "$k" = omp ]; then ver="v$(omp_marker "$pid" "$name")"
+                    else
+                        ver="$(claude_marker "$pid")"; [ "$ver" = - ] || ver="v$ver"
+                        cli="$(claude_field "$pid" version)"; [ -n "$cli" ] && detail="  (claude CLI $cli)"
+                    fi
+                    # stale = a read version that is not the current one; "-" (no marker) is unknowable, not starred
+                    [ "$ver" = "v$CUR" ] || [ "$ver" = - ] || ver="$ver*"
+                    printf '    %-8s %-15s %-7s %-8s %-18s %s%s\n' "$pane" "$kind" "$ver" "$status" "${name:--}" "$cwd" "$detail"
                 done <<< "$agents"
             done <<< "$ROWS"
         done

@@ -2,7 +2,7 @@ id = "dotfiles.claude-name"
 name = "claude pane names"
 version = "0.1.0"
 min_herdr_version = "0.9.5"
-description = "Gives every claude pane a unique, stable roster name: claude-v<major>-<pane>."
+description = "Gives every claude pane a unique, stable roster name: claude-v<config version>-<pane>, from the SessionStart marker; claude-v<CLI major>-<pane> without one."
 platforms = ["linux", "macos"]
 
 # [[startup]] fires only at server start and does not supervise (see

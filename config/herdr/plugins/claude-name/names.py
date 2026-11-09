@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Keep every claude pane's roster name at claude-v<major>-<pane>.
+"""Keep every claude pane's roster name at claude-v<N>-<pane>.
+
+N is the harness config version the claude PROCESS started with
+(config/omp/VERSION, one number for omp and claude panes alike), read from the
+marker /tmp/claude-config-versions/<claude pid> that the SessionStart hook
+config/claude/hooks/claude-config-version.sh writes once per process -- the
+counterpart of omp's omp-config-version.ts marker. So claude-v36-wdpa sits
+beside omp-v36-wdp9, and a pane started before a bump keeps its old number.
+
+No marker (a claude started before the hook existed, or one the hook could not
+see) falls back to the old claude-v<CLI major>-<pane>, e.g. claude-v2-wdpa: a
+visibly different scale, never a guessed config version. The CLI major is
+otherwise only logged; herdr has no per-agent detail field to put it in.
 
 The pane suffix matches omp-watch's omp-v<N>-<pane>, and doubles as the
 uniqueness guarantee herdr requires of live agent names. Unlike omp-watch, this
@@ -33,6 +45,7 @@ UNSETTLED = {"working", "blocked"}
 HERDR_BIN = os.environ.get("HERDR_BIN_PATH", "herdr")
 LOCK_PATH = Path("/tmp/claude-name.lock")
 LOG_PATH = "/tmp/claude-name-daemon.log"
+MARKERS = Path(os.environ.get("CLAUDE_CONFIG_MARKERS", "/tmp/claude-config-versions"))
 # Module-level on purpose: a local would be collected, closing the fd and
 # releasing the flock straight after acquiring it.
 _lock_handle: Optional[object] = None
@@ -65,17 +78,74 @@ def pane_suffix(pane_id: str) -> str:
     return pane_id.replace(":", "").lower()
 
 
-def target_name(pane_id: str, major: Optional[str]) -> str:
+def target_name(pane_id: str, major: Optional[str], config: Optional[str] = None) -> str:
+    """claude-v<config>-<pane> from the marker; else the CLI-major fallback;
+    else the bare claude-<pane>."""
     suffix = pane_suffix(pane_id)
-    return f"claude-v{major}-{suffix}" if major else f"claude-{suffix}"
+    v = config or major
+    return f"claude-v{v}-{suffix}" if v else f"claude-{suffix}"
 
 
-def rename_needed(agent: Dict, major: Optional[str]) -> Optional[str]:
+def rename_needed(agent: Dict, major: Optional[str], config: Optional[str] = None) -> Optional[str]:
     """The name this agent should be given now, or None to leave it alone."""
     if agent.get("agent") != "claude" or agent.get("agent_status") in UNSETTLED:
         return None
-    target = target_name(agent["pane_id"], major)
+    target = target_name(agent["pane_id"], major, config)
     return None if agent.get("name") == target else target
+
+
+def marker_version(pid: Optional[int], markers: Path = None) -> Optional[str]:
+    """The config version a claude process started with, from its marker."""
+    if not pid:
+        return None
+    try:
+        raw = ((markers or MARKERS) / str(pid)).read_text().strip()
+    except OSError:
+        return None
+    return raw if raw.isdigit() and int(raw) > 0 else None
+
+
+def process_table() -> Dict[int, tuple]:
+    """{pid: (ppid, command basename, args)} from one ps call."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    table = {}
+    for line in out.splitlines():
+        f = line.split(None, 2)
+        if len(f) == 3 and f[0].isdigit() and f[1].isdigit():
+            table[int(f[0])] = (int(f[1]), os.path.basename(f[2].strip()))
+    return table
+
+
+def claude_pid_under(shell_pid: Optional[int], table: Dict[int, tuple]) -> Optional[int]:
+    """The top-most claude process below a pane's shell (directly, or inside
+    nvim's :terminal). None when there is none or more than one: the marker
+    must belong to THE pane's claude, never a guess."""
+    if not shell_pid:
+        return None
+    children: Dict[int, list] = {}
+    for pid, (ppid, _comm) in table.items():
+        children.setdefault(ppid, []).append(pid)
+    found, todo = [], [shell_pid]
+    while todo:
+        for pid in children.get(todo.pop(), []):
+            if table[pid][1] == "claude":
+                found.append(pid)          # don't descend: its own children are not panes' claudes
+            else:
+                todo.append(pid)
+    return found[0] if len(found) == 1 else None
+
+
+def shell_pid(pane_id: str) -> Optional[int]:
+    try:
+        proc = subprocess.run([HERDR_BIN, "pane", "process-info", "--pane", pane_id],
+                              capture_output=True, text=True, timeout=10)
+        return int(json.loads(proc.stdout)["result"]["process_info"]["shell_pid"])
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return None
 
 
 def claude_env() -> Dict[str, str]:
@@ -137,15 +207,22 @@ class Naming:
 
     def tick(self) -> None:
         self.refresh_major()
+        table = None
         for agent in list_agents():
-            target = rename_needed(agent, self.major)
+            if agent.get("agent") != "claude" or agent.get("agent_status") in UNSETTLED:
+                continue
+            if table is None:
+                table = process_table()
+            config = marker_version(claude_pid_under(shell_pid(agent["pane_id"]), table))
+            target = rename_needed(agent, self.major, config)
             if not target:
                 continue
             pane_id = agent["pane_id"]
             error = rename(pane_id, target)
             if error is None:
                 self.failed.pop(pane_id, None)
-                log(f"{pane_id}: {agent.get('name')!r} -> {target!r}")
+                log(f"{pane_id}: {agent.get('name')!r} -> {target!r}"
+                    f" (config {'v' + config if config else 'unknown: no marker'}, claude CLI major {self.major or '?'})")
             elif self.failed.get(pane_id) != target:
                 self.failed[pane_id] = target
                 log(f"{pane_id}: rename to {target!r} failed: {error}")
