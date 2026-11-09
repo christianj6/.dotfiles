@@ -107,3 +107,56 @@ behaviour.
 
 **Log.** 2026-11-03: rule written after the third instance, extended the same
 day by my own gap-3 error.
+
+### Provenance: whose words started this
+
+**Goal.** Work is tracked wherever it comes from — the owner typing, bro, a
+coordinator's dispatch — and the harness can tell the owner's requests from agent
+comms without guessing.
+
+**Design decisions.**
+- **The sender is written into the message, not inferred from it.** A pane delivery
+  is `{content, role}` with no sender, so provenance is recorded at delivery:
+  `[from:<role> project:<p> id:<name>]` (`docs/design-message-tags.md`). `omp-peer`
+  adds it; prescient's `_deliver` adds it.
+- **`[from:owner]` beats every shape rule** — the owner's words can look like anything.
+- **`[from:hamess]`/`[from:coordinator]`/`[from:worker]` never card.** Agent-to-agent
+  messages are comms by definition; that is what stopped the echo.
+- **Only harness wrappers may precede a tag.** Wrap-strip then anchor, so a tag pasted
+  mid-text never re-attributes a message (`docs/issue-tag-line-two.md`).
+- **A shape classifier is the fallback, not the rule**, and an unrecognised
+  `prescient:` line is reported rather than swallowed silently.
+
+**Work items.**
+- `omp-peer` tags every relay; the plugin parses tag → machinery shapes → owner.
+- auto-task is per-agent by role (omp coordinates, Claude is the workhorse); coverage
+  is project-keyed (`covering_items`) — the agent-keyed check kept the echo alive.
+- `prescient project status --project|--all`: a peer's status is a command, not a turn
+  (no model).
+
+**Log.**
+- 2026-11-06 → 11-09: the echo had **four** independent causes (agent-keyed coverage, a
+  daemon older than the parser, an anchored tag, a wrapper on its own line). Each alone
+  reproduced it; that is why fixing them one at a time kept it alive.
+- 2026-11-09: verified the nudge/tweak literals are all machinery and the loop is not
+  reproducing; five literal regression tests added.
+
+### Harness versioning and rollout
+
+**Goal.** One glance tells the owner every pane is on the current instructions.
+
+**Design decisions.**
+- **`config/omp/VERSION` is the single number for the whole harness** — omp and claude
+  panes both report it, so the columns are comparable.
+- **A version is read, never guessed.** omp writes its marker at extension load; claude
+  writes one at SessionStart. No marker → `-`, not an approximation.
+- **The claude pane name carries the harness version**, not the CLI's major; the CLI
+  version is demoted to a note.
+- **Rollout keys on VERSION**, so a stale VERSION silently rolls nothing — the bump is
+  part of shipping an instruction change, not an afterthought.
+
+**Log.**
+- 2026-11-09: VERSION sat at 35 across 52 commits; the dry run said `up-to-date` for
+  every pane and would have restarted none. Bumped to 36 and rolled everything.
+- 2026-11-09: claude panes went from `claude-v2-wdpa` (CLI major) to `v36` read from a
+  marker, matching the omp panes.
