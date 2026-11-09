@@ -81,3 +81,50 @@ Adopt the owner's brief as the compaction artifact, and compact **before** 90%.
 
 These are two independent changes; land them as two commits. #1 is instructions only;
 #2 needs the mechanism question answered first.
+
+---
+
+## Verified in omp's own schema (not the report)
+
+The worker claimed `compaction.thresholdPercent` is real. I checked the installed
+package rather than accepting it — and it is, plus something better:
+
+```
+settings-schema.d.ts (@oh-my-pi/pi-coding-agent@17.3.4):
+  compaction.strategy   enum ["context-full", "handoff", "shake", "snapcompact", "off"]
+                        default "snapcompact"
+  compaction.thresholdPercent   number, default -1
+```
+
+**And omp already ships a handoff prompt** — the exact artifact the owner described:
+
+> "You MUST summarize the conversation above into a structured handoff summary for
+> another LLM to resume the task. […] ## Goal / ## Constraints & Preferences /
+> ## Progress (Done, In Progress, Blocked) / ## Key Decisions / ## Next Steps /
+> ## Critical Context … preserve exact file paths, function names, error messages"
+
+That is the owner's five-item brief, already built in, more detailed, and **the
+default strategy is not using it.** `snapcompact` archives history as images and
+writes no summary at all — so the brief has nothing to shape.
+
+## The decision this leaves
+
+| | writes a handoff brief | token cost |
+|---|---|---|
+| `snapcompact` (default) | **no** — archives images | cheap |
+| `handoff` | **yes**, omp's own structured prompt | costs a summarisation call |
+| `context-full` | yes | costs more |
+
+We set `thresholdPercent: 66` and added a hook that appends the owner's brief to the
+summarisation prompt. **That is correct but incomplete**: at 66% with `snapcompact`
+the hook never fires, because snapcompact does not summarise.
+
+**So the real choice is `strategy: "handoff"` plus `thresholdPercent: 66`** — omp's
+handoff prompt is already better than the five-item brief, and the hook then appends
+the owner's specifics on top. That combination is what the owner asked for: compact
+earlier, and produce a handoff rather than a history.
+
+I am not making that call unilaterally: `handoff` costs a model call at every
+compaction, whereas snapcompact is cheap and keeps full fidelity as images. That is a
+cost/quality trade the owner should pick. The recommendation is `handoff` at 66%,
+because "atomic context" was the stated goal and an image archive is not a brief.
