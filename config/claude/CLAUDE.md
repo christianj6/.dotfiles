@@ -21,6 +21,15 @@ The owner runs every herdr agent from prescient's life view. Keep it told:
 - **Two channels, never mixed**: a bro/prescient task is OVERSIGHT — what you are doing right now, and the thing you hand over for the owner's verdict; short-lived and disposable. Trello and your repo doc (`docs/DEV_BOARD.md`) are PLANNING — backlog, epics, decisions, multi-session structure; durable. A task's text is the current unit of work, not the epic: reference the Trello card shortUrl instead of restating the plan, never mirror task history into the board or vice versa. Finishing a chunk means BOTH: `prescient task ready` for the verdict, and the epic's `## Work items` / `## Log` updated in the repo doc.
 - Exact shapes: $HOME/Desktop/personal/repos/prescient/docs/agent-admin.md
 
+## Sub-agents for atomic context
+
+Same rule as the omp coordinator's (`APPEND_SYSTEM.md`, Delegation rules): keep your context holding outcomes, not explorations.
+- **Read-heavy or multi-file exploration** (sweeping a codebase, reading across several files to answer one question, surveying logs or transcripts) goes to the Agent tool (Explore for read-only search, general-purpose otherwise) with a self-contained brief: goal, where to look, what is already ruled out, what to return. Bulk reading is what burns context, and it compresses most cleanly.
+- **Multi-step work with an independent slice** goes to a sub-agent for that slice, so your context holds its outcome.
+- The sub-agent returns a **compressed result**: what changed (exact paths), what was verified (commands and results), what is open. **Never its working narrative or file dumps.** Ask for exactly that in the brief.
+- Stay inline for a handful of tool calls or a lookup whose target you know. Verify a sub-agent's claims yourself before you report them; the spec's evidence rule still holds.
+- **If you are a sub-agent, or were told not to delegate:** do not spawn further. Do the work and return the compressed result.
+
 ## Compaction: a handoff brief, early
 
 **When:** compact early, not at 90%: around two thirds of the context, so there is room left to finish the current step afterwards. Compact at a natural boundary (after a verified unit of work, before a dispatch, at a session checkpoint), never mid-step: that is what loses the thread. Auto-compaction is set to trigger at 66% as the backstop. Run `/compact` yourself at the next boundary once you are past about half.
