@@ -208,6 +208,7 @@ ln -sf ~/.dotfiles/config/omp/extensions/omp-scope-filter.ts ~/.omp/agent/extens
 ln -sf ~/.dotfiles/config/omp/extensions/omp-config-version.ts ~/.omp/agent/extensions/omp-config-version.ts
 ln -sf ~/.dotfiles/config/omp/VERSION ~/.omp/agent/VERSION
 ln -sf ~/.dotfiles/config/omp/extensions/omp-privacy-guard.ts ~/.omp/agent/extensions/omp-privacy-guard.ts
+ln -sf ~/.dotfiles/config/omp/extensions/omp-compaction-brief.ts ~/.omp/agent/extensions/omp-compaction-brief.ts
 
 # Pre-commit privacy guard: the repo is public; .githooks runs
 # scripts/check-private.py --staged on every local commit (see AGENTS.md).

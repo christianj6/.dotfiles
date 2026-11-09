@@ -58,3 +58,9 @@ dev:
   autoqaConsent: denied
 browser: 
   enabled: false
+# Context compaction (omp settings compaction.*, read by omp 17.3.4: see
+# docs/task-subagents-and-compaction.report.md). Maintenance at two thirds of
+# the window instead of the legacy reserve-based point near full. The strategy
+# stays omp's default (snapcompact).
+compaction: 
+  thresholdPercent: 66

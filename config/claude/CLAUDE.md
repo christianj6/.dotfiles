@@ -20,3 +20,18 @@ The owner runs every herdr agent from prescient's life view. Keep it told:
 - A line typed into your pane starting `From the owner (prescient` is the owner pressing a button: act on it in the pane, don't answer it in bro's chat. `not quite - …` reopens the task and is binding feedback.
 - **Two channels, never mixed**: a bro/prescient task is OVERSIGHT — what you are doing right now, and the thing you hand over for the owner's verdict; short-lived and disposable. Trello and your repo doc (`docs/DEV_BOARD.md`) are PLANNING — backlog, epics, decisions, multi-session structure; durable. A task's text is the current unit of work, not the epic: reference the Trello card shortUrl instead of restating the plan, never mirror task history into the board or vice versa. Finishing a chunk means BOTH: `prescient task ready` for the verdict, and the epic's `## Work items` / `## Log` updated in the repo doc.
 - Exact shapes: $HOME/Desktop/personal/repos/prescient/docs/agent-admin.md
+
+## Compaction: a handoff brief, early
+
+**When:** compact early, not at 90%: around two thirds of the context, so there is room left to finish the current step afterwards. Compact at a natural boundary (after a verified unit of work, before a dispatch, at a session checkpoint), never mid-step: that is what loses the thread. Auto-compaction is set to trigger at 66% as the backstop. Run `/compact` yourself at the next boundary once you are past about half.
+
+**What** (the owner's spec; the `PreCompact` hook also hands it to the summarizer, from `config/agents/compaction-brief.md`):
+
+### Compact Instructions
+
+Write a handoff brief for the remaining work, not a history. Include:
+1. The original task, near-verbatim.
+2. Current step and the immediate next action.
+3. Remaining plan in order, and the "done" criteria.
+4. Changed files with exact paths and whether each change is verified.
+5. Failed approaches not to repeat.
