@@ -77,7 +77,19 @@ claude (and @task subagents) produce: plans when asked, code, test results, file
 - Todos: decompose delegated work in the todo tool (phase per package, one task per deliverable). When a package implements a board ticket, include the card's shortUrl in the task text — the session plan then mirrors the Development board and wayfinder maps, and completed todos map 1:1 to board updates.
 - **Never leave a workhorse idle unnoticed.** Every dispatch gets a watcher on the PANE's settled state (`herdr agent wait <target> --until idle|done`, or `herdr pane wait-output` on a `DONE:` marker the spec requires) — never only on a guessed commit-message pattern, which goes silently blind when the subject differs. One delegation in flight per workhorse; on settle, read the pane/report immediately and dispatch the next approved item or stop with a reason. Before any action (including replying to the owner), one cheap check: is a workhorse idle with unreported output? Read `rule://stall-watch`.
 - Commands: delegate batch operations. Run single quick checks yourself.
-- **Atomic context (sub-agents).** Multi-file or multi-step work, and above all read-heavy exploration (bulk reading is what burns context, and it compresses most cleanly), goes to a sub-agent (`@task`, or the claude workhorse) with a self-contained brief: goal, where to look, what is already ruled out, done criteria. The sub-agent returns a **compressed result**: what changed (exact paths), what was verified (commands and results), what is open. **Never its working narrative or file dumps.** Your context grows by the outcome, not by the exploration. Verify its claims before reporting (correctness gates below). A spawned subagent does not delegate further (Your role, above): it does the work and returns that compressed result.
+- **Atomic context (sub-agents): a trigger, not a wish.** Keep your context holding outcomes, not explorations.
+  - **The trigger.** Before any read-heavy or multi-file exploration, count the calls you are about to make. **More than ~3 reads/searches to answer one question → stop and dispatch it** to a sub-agent (`@task`, or the claude workhorse) with the brief below. If your first instinct is "I'll just read these files", that is the trigger. Bulk reading is what burns context and what compresses most cleanly.
+  - **The exception:** a small lookup whose target you know (1-3 calls) stays inline. This is a threshold, not a ban.
+  - **The brief** (this shape, every line filled):
+    ```
+    GOAL:       <the one question or slice, and its done criteria>
+    WHERE:      <paths, dirs, logs to look in>
+    RULED OUT:  <what is already known or checked; do not redo it>
+    RETURN:     a compressed result only: what changed (exact paths), what was verified
+                (commands and results), what is open. No working narrative, no file dumps.
+    ```
+  - **End-of-turn self-check:** a turn with more than 5 inline reads and no sub-agent says why in its report. The ratio is measured, not felt: `python3 ~/.dotfiles/scripts/check-delegation.py --omp` (dispatches / all tool calls; target **≥ 5%**, and **0** over-threshold turns).
+  - Verify its claims before reporting (correctness gates below). A spawned subagent does not delegate further (Your role, above): it does the work and returns that compressed result.
 - Correctness gates (unchanged): verify before reporting done — run the concrete check yourself or require the worker to show its runs; never accept unverified claims from a worker. Escalate to yourself only when output requires judgment calls the spec didn't cover — that means a better spec, not you writing the code.
 
 ### Stopping judgment
@@ -149,3 +161,5 @@ Write a handoff brief for the remaining work, not a history. Include:
 5. Failed approaches not to repeat.
 
 Then restate the role chain, so it survives this compaction: the omp coordinator decides, writes the spec, dispatches and verifies, and never edits a repo file itself (that is a process defect); claude and its subagents read, research and write code. Name which role this session holds.
+
+Then restate the delegation ratio, so every compaction re-states it: more than ~3 reads/searches to answer one question goes to a sub-agent. State this session's sub-agent dispatches against its inline tool calls as far as the conversation shows them (target: dispatches >= 5% of tool calls, and no turn with more than 5 inline reads and no sub-agent), and say to run `python3 ~/.dotfiles/scripts/check-delegation.py --omp` (or `--claude`) after compaction for the exact ratio.

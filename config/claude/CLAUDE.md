@@ -25,10 +25,19 @@ The owner runs every herdr agent from prescient's life view. Keep it told:
 ## Sub-agents for atomic context
 
 Same rule as the omp coordinator's (`APPEND_SYSTEM.md`, Delegation rules): keep your context holding outcomes, not explorations.
-- **Read-heavy or multi-file exploration** (sweeping a codebase, reading across several files to answer one question, surveying logs or transcripts) goes to the Agent tool (Explore for read-only search, general-purpose otherwise) with a self-contained brief: goal, where to look, what is already ruled out, what to return. Bulk reading is what burns context, and it compresses most cleanly.
+- **The trigger.** Before any read-heavy or multi-file exploration, count the calls you are about to make. **More than ~3 reads/searches to answer one question → stop and dispatch it** to the Agent tool (Explore for read-only search, general-purpose otherwise) with the brief below. If your first instinct is "I'll just read these files", that is the trigger. Bulk reading is what burns context and what compresses most cleanly.
+- **The exception:** a small lookup whose target you know (1-3 calls) stays inline. This is a threshold, not a ban.
+- **The brief** (this shape, every line filled):
+  ```
+  GOAL:       <the one question or slice, and its done criteria>
+  WHERE:      <paths, dirs, logs to look in>
+  RULED OUT:  <what is already known or checked; do not redo it>
+  RETURN:     a compressed result only: what changed (exact paths), what was verified
+              (commands and results), what is open. No working narrative, no file dumps.
+  ```
+- **End-of-turn self-check:** a turn with more than 5 inline reads and no sub-agent says why in its report. The ratio is measured, not felt: `python3 ~/.dotfiles/scripts/check-delegation.py --claude` (dispatches / all tool calls; target **≥ 5%**, and **0** over-threshold turns).
 - **Multi-step work with an independent slice** goes to a sub-agent for that slice, so your context holds its outcome.
-- The sub-agent returns a **compressed result**: what changed (exact paths), what was verified (commands and results), what is open. **Never its working narrative or file dumps.** Ask for exactly that in the brief.
-- Stay inline for a handful of tool calls or a lookup whose target you know. Verify a sub-agent's claims yourself before you report them; the spec's evidence rule still holds.
+- Verify a sub-agent's claims yourself before you report them; the spec's evidence rule still holds.
 - **If you are a sub-agent, or were told not to delegate:** do not spawn further. Do the work and return the compressed result.
 
 ## Compaction: a handoff brief, early
@@ -47,3 +56,5 @@ Write a handoff brief for the remaining work, not a history. Include:
 5. Failed approaches not to repeat.
 
 Then restate the role chain, so it survives this compaction: the omp coordinator decides, writes the spec, dispatches and verifies, and never edits a repo file itself (that is a process defect); claude and its subagents read, research and write code. Name which role this session holds.
+
+Then restate the delegation ratio, so every compaction re-states it: more than ~3 reads/searches to answer one question goes to a sub-agent. State this session's sub-agent dispatches against its inline tool calls as far as the conversation shows them (target: dispatches >= 5% of tool calls, and no turn with more than 5 inline reads and no sub-agent), and say to run `python3 ~/.dotfiles/scripts/check-delegation.py --omp` (or `--claude`) after compaction for the exact ratio.
