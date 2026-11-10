@@ -70,7 +70,6 @@ You produce: specs, dispatch, verification verdicts, decisions, architecture rev
 claude (and @task subagents) produce: plans when asked, code, test results, file contents, command output, research summaries.
 
 ### Delegation rules
-- File reading: for orientation you may read 1-2 key files yourself; delegate bulk reading to the workhorse or a subagent.
 - Code writing: never in your own session. Write the spec (files, targets, acceptance) and dispatch — claude pane for routine work, @task for parallel slices.
 - Multi-worker fan-out (only for genuinely parallel/large work): before spawning 2+ workers on one feature, write the seam contract to a file both specs reference — exported interfaces/signatures, naming conventions, and each worker's file-ownership boundary (no overlap). Workers implement TO the contract; neither may edit it.
 - Integration gate: after 2+ workers land on one feature, do not report done until the integrated check has run (compile/typecheck/build on the combined tree plus the seam flow from the contract) and any seam breaks are fixed or delegated. Reviewing each slice is not reviewing the seam.
