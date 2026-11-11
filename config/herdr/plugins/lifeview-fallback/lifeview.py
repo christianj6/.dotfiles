@@ -102,6 +102,9 @@ AUTO_READY = _plugin_env("AUTO_READY", "1") != "0"
 # silence on `ready` is likely deliberate (e.g. idle while a background bench
 # runs - seen live). Off by default; 1 lets auto-ready mark those too.
 AUTO_READY_STARTED = _plugin_env("AUTO_READY_STARTED", "0") == "1"
+# ...except a task the OWNER asked for (X1): its origin is the owner's words,
+# so the agent starting it is the normal path, and the harness greens it.
+OWNER_ORIGINS = ("owner", "bro")
 BRO_URL = os.environ.get("BRO_URL", "http://127.0.0.1:8766")
 PRESCIENT_URL = os.environ.get("PRESCIENT_URL", "http://127.0.0.1:8765")
 # Task hub cut-over switch (docs/go-task-hub.md wave 3): "bro" keeps today's
@@ -996,7 +999,23 @@ def ready_check(agent: Dict, tasks: list, project_busy: List[str], tail: Dict, n
     if worker:
         keys |= {worker.get("name"), worker.get("pane_id")}
     keys -= {None, ""}
-    if not AUTO_READY_STARTED and any(h.get("state") == "working" and h.get("by") in keys for h in t.get("history") or []):
+    # X1 (2026-11-11, tk-e9d0ee9c7714): the "started by the agent itself"
+    # exclusion is about SELF-DIRECTED work - an agent greening something
+    # nobody asked for. It must not swallow work the OWNER asked for that the
+    # agent merely claimed: the convention tells every agent to `prescient task
+    # start` a task it is handed (so the hub records working by=agent), and tells
+    # it the harness will mark it ready - so with this guard on owner items the
+    # owner's own request could never go green (created(owner) -> queued(owner) ->
+    # working(agent), refused here forever). The discriminator is the item's
+    # origin - WHOSE WORDS started it, the same field item_for_icon uses to decide
+    # whether ready turns the ring green: owner (or bro, the owner's words relayed)
+    # → the agent starting it is the normal path; agent → its own initiative, still
+    # its call; harness (an auto: card with no attributable prompt) → unchanged,
+    # still refused when the agent started it. Owner intent outranks machinery
+    # guards (the S1 lesson): do NOT "restore symmetry" by dropping the origin check.
+    owners_request = str(t.get("origin") or "") in OWNER_ORIGINS
+    if (not AUTO_READY_STARTED and not owners_request
+            and any(h.get("state") == "working" and h.get("by") in keys for h in t.get("history") or [])):
         return None, f"{t['id']} was started by the agent itself: `ready` is its call (LIFEVIEW_AUTO_READY_STARTED=1 overrides)"
     if hub_state(t) not in READY_ROUTE:
         return None, f"{t['id']} is {hub_state(t)}: the hub has no harness route from there to ready"

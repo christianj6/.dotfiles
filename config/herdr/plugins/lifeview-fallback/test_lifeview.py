@@ -190,6 +190,40 @@ class AutoReady(unittest.TestCase):
         sent = task(state="queued", history=[{"at": at(600), "state": "queued", "by": "bro"}])
         self.assertEqual(self.rc(tasks=[sent])[0]["id"], "tk-1")
 
+    def test_owner_filed_task_the_agent_started_still_goes_green(self):
+        # X1, the incident tk-e9d0ee9c7714: the owner filed it, the agent claimed it with
+        # `prescient task start` as its instructions say -> the harness greens it
+        hist = [{"at": at(600), "state": "created", "by": "owner"}, {"at": at(600), "state": "queued", "by": "owner"},
+                {"at": at(590), "state": "working", "by": "agent"}]
+        t, why = self.rc(tasks=[task(origin="owner", history=hist, moved_ago=590)])
+        self.assertEqual(t and t["id"], "tk-1", why)
+        t, why = self.rc(tasks=[task(origin="bro", history=hist)])                     # the owner's words via bro
+        self.assertEqual(t and t["id"], "tk-1", why)
+
+    def test_the_agents_own_work_it_started_is_still_its_call(self):
+        hist = [{"at": at(600), "state": "created", "by": "agent"}, {"at": at(590), "state": "working", "by": "agent"}]
+        for origin in ("agent", "harness"):                       # harness: auto: cards keep today's refusal
+            t, why = self.rc(tasks=[task(origin=origin, history=hist)])
+            self.assertIsNone(t, origin)
+            self.assertEqual(why, "tk-1 was started by the agent itself: `ready` is its call (LIFEVIEW_AUTO_READY_STARTED=1 overrides)")
+        old = lv.AUTO_READY_STARTED
+        lv.AUTO_READY_STARTED = True                              # the blunt escape still works
+        try:
+            self.assertEqual(self.rc(tasks=[task(origin="agent", history=hist)])[0]["id"], "tk-1")
+        finally:
+            lv.AUTO_READY_STARTED = old
+
+    def test_an_owner_item_nobody_claimed_is_unchanged(self):
+        t = task(origin="owner", history=[{"at": at(600), "state": "working", "by": "owner"}])
+        self.assertEqual(self.rc(tasks=[t])[0]["id"], "tk-1")
+        q = task(state="queued", origin="owner", history=[{"at": at(600), "state": "queued", "by": "owner"}])
+        self.assertEqual(self.rc(tasks=[q])[0]["id"], "tk-1")
+        # the harness starting an owner item records by=harness, never "agent": not "the agent itself"
+        h = task(origin="owner", history=[{"at": at(600), "state": "working", "by": "harness"}])
+        self.assertEqual(self.rc(tasks=[h])[0]["id"], "tk-1")
+        h2 = task(origin="harness", history=[{"at": at(600), "state": "working", "by": "harness"}])
+        self.assertEqual(self.rc(tasks=[h2])[0]["id"], "tk-1")
+
     def test_off_switch(self):
         old = lv.AUTO_READY
         lv.AUTO_READY = False
@@ -829,8 +863,13 @@ class ProjectAutoReady(unittest.TestCase):
         self.assertEqual(hub.calls, [])                                                  # a question
         o = omp()
         self.transcript(o, "Done.", ago=120)
-        hub, _ = self.run_tick([o], [hub_item(state="working", by="agent")])
-        self.assertEqual(hub.calls, [])                                                  # the agent started it
+        # X1: was hub_item(state="working", by="agent") - an OWNER item (hub_item's default
+        # origin) the agent started - expected to stay unmarked. That is the incident
+        # tk-e9d0ee9c7714: the owner's request could never go green. Owner items now go
+        # green when claimed (test_owner_filed_task_the_agent_started_still_goes_green);
+        # the refusal this line guards is the agent's OWN work, so it is origin="agent".
+        hub, _ = self.run_tick([o], [hub_item(state="working", by="agent", origin="agent")])
+        self.assertEqual(hub.calls, [])                                                  # the agent started its own work
 
     def test_4_any_ready_item_makes_the_project_ready_and_is_never_re_marked(self):
         # this plugin's half only; prescient's status() half is routed separately
