@@ -42,6 +42,7 @@ from common import (  # noqa: E402
     herdr_raw,
     load_channels,
     load_env,
+    resolve_agent,
     log,
     save_channels,
 )
@@ -368,13 +369,15 @@ def run() -> None:
             return
         channels = load_channels()["channels"]
         changed = False
+        # No stored pane ids: they went stale on every rollout, and the relay
+        # resolves the live agent per message (resolve_agent). Drop old ones
+        # so the file stops showing a target nothing uses.
+        for entry in channels.values():
+            if isinstance(entry, dict) and entry.pop("pane_id", None) is not None:
+                changed = True
         for pane_id, (label, cwd) in sorted(agent_label_map().items()):
             entry = channels.get(label)
             if entry and entry.get("webhook_url") and entry.get("channel_id"):
-                # keep the live pane id fresh for relay targeting
-                if entry.get("pane_id") != pane_id:
-                    entry["pane_id"] = pane_id
-                    changed = True
                 continue
             try:
                 channel = await ensure_channel(guild, label)
@@ -384,7 +387,6 @@ def run() -> None:
                 channels[label] = {
                     "channel_id": channel.id,
                     "webhook_url": hook.url,
-                    "pane_id": pane_id,
                     "cwd": cwd,
                 }
                 changed = True
@@ -419,11 +421,14 @@ def run() -> None:
             reconcile_loop.start()
 
     def find_agent(label: str):
-        """(pane_id, cwd) for a live agent with this label, or (None, None)."""
-        for pane_id, (lbl, cwd) in agent_label_map().items():
-            if lbl == label:
-                return pane_id, cwd
-        return None, None
+        """(pane_id, cwd, who) for the live agent this channel means, or
+        (None, None, None). Resolved from herdr now, coordinator (omp) first;
+        the channel entry's stored pane id is never consulted."""
+        a = resolve_agent(label)
+        if not a:
+            return None, None, None
+        who = f"{a.get('name') or a.get('pane_id')} ({a.get('agent', '?')}, {a.get('pane_id')})"
+        return a.get("pane_id"), a.get("cwd"), who
 
     @client.event
     async def on_message(message):
@@ -446,7 +451,7 @@ def run() -> None:
         text = message.content.strip()
 
         if text.startswith("!status"):
-            pane_id, _ = find_agent(label)
+            pane_id, _, _ = find_agent(label)
             if not pane_id:
                 await message.reply(f"no live agent for #{label} right now.")
                 return
@@ -465,7 +470,7 @@ def run() -> None:
             return
 
         if text.startswith("!tail"):
-            pane_id, _ = find_agent(label)
+            pane_id, _, _ = find_agent(label)
             if not pane_id:
                 await message.reply(f"no live agent for #{label} right now.")
                 return
@@ -479,7 +484,7 @@ def run() -> None:
             return
 
         # plain message = relay into the agent
-        pane_id, agent_cwd = find_agent(label)
+        pane_id, agent_cwd, who = find_agent(label)
         if not pane_id:
             await message.reply(f"no live agent for #{label} right now.")
             return
@@ -487,6 +492,7 @@ def run() -> None:
             ok, data, err = herdr_json("agent", "prompt", pane_id, text)
         if ok:
             await message.add_reaction("✅")
+            await message.reply(f"→ taken by {who}", mention_author=False)
             return
         code = ""
         try:
@@ -506,6 +512,7 @@ def run() -> None:
             outcome = await relay_via_pane(pane_id, agent_cwd, text)
             if outcome == "ok":
                 await message.add_reaction("✅")
+                await message.reply(f"→ taken by {who}", mention_author=False)
             elif outcome == "guard":
                 await message.reply(
                     "⚠️ couldn't bring the agent's REPL into view (nvim RPC focus, "
