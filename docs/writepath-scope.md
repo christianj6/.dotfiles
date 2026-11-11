@@ -149,3 +149,49 @@ affordable: it does not require redesigning the test suite, only converting refe
 Uncertain and worth one check before landing: `gcal.load_creds` reads a relative `data/`
 credentials file — every test found that reaches it patches it out, so it is likely fine,
 but it is the one path nobody has driven end to end.
+
+---
+
+## K1: verified by replaying the incident (5208c3c)
+
+I did not take the report. I re-ran the exact harmful request:
+
+```
+POST /api/settings {"work_mode": false}  to 8917 with 8917's own token
+  -> 200
+  data/settings.json md5  3d43b2137968144e9648fc7466e64419   (before)
+  data/settings.json md5  3d43b2137968144e9648fc7466e64419   (after)
+  data-test/settings.json  {"work_mode": false}              <- the write landed here
+```
+
+**Same request, same harmful value, owner's file byte-identical.** That is the right proof:
+not "the code looks correct" but "the incident no longer happens".
+
+Source-only acceptance greps: **0 and 0** (baseline 31 and 7). The resolver is
+`prescient/data_dir.py` — `data_dir()` / `data_path()` resolved **at call time** from
+`PRESCIENT_DATA_DIR`, following `tasks/store.py:136`'s `db_path()` precedent, with 78
+references converted.
+
+## "The greps are a floor, not a proof" — and I checked for a third instance
+
+The coordinator's caveat is the most important sentence in their record: **the applets root
+had the same defect and appeared in neither grep.** I searched for others:
+
+- `parents[2] /` other than `data_dir.py`: **1** — `bro_stack.PRESCIENT_CLI`, a read-only
+  path to the CLI binary, not writable state. Harmless.
+- hardcoded `/tmp/` or absolute writable paths: none outside tests.
+- `data/backups` and friends: already `DataPath(...)`.
+
+So I did **not** find a third instance, which is a weaker statement than "there is none" —
+the applets case proves a seam can hide outside the pattern. The honest position: the two
+greps are a floor, and the only real guard is that *new* code has one obvious way to name a
+data file (`data_path`), so reaching around it is a visible choice rather than an accident.
+
+## Residuals, both theirs to keep
+
+1. **`data-test/` is disposable and nothing prunes it.** Worth one line in whatever runs the
+   test server: it is a temp dir with a stable name, so it grows until deleted.
+2. **A future check needing a real file must copy a fixture in**, not reach for the owner's
+   data. That is the same rule as "never write owner data from a test", stated positively.
+3. **Practical gotcha:** 8917's token is now `data-test/.server-token-8917`, not
+   `data/.server-token-8917`. I hit this too — any script driving 8917 needs the new path.
