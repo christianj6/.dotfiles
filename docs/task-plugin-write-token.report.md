@@ -34,6 +34,7 @@ Committed locally, not pushed. **Live:** I stopped the stale daemon (it started 
    omp-v36-wdp7 …  auto-task: would open 'auto: I have the four open items mapped. …' - work session: 8 tool calls, 283s, no task covering it
    (after the relaunch)  open: ok tk-e9d0ee9c7714  (35s ago, 'auto: Okay, have Claude close the remaining open points and…')
    ```
+   **How to read `open:`.** It is a record the daemon writes to `/tmp/lifeview-fallback.hub-last.json` on each attempt, per agent, starting with this fix. A pane whose agent has had no attempt since then shows `open: no attempt recorded …` even while other panes show ids. That line means "nothing tried for this agent yet", **not** "opens never happen". The coordinator saw exactly that split: one pane with `open: ok tk-03633b4a4f71`, another with the empty line.
 4. **Tests: 131 OK.** The 6 new ones run against a real local HTTP hub that enforces the token:
    - a write with the token succeeds and records `ok`;
    - the token is read per call: a stale file is refused, and the rewritten file succeeds;
@@ -47,6 +48,6 @@ Committed locally, not pushed. **Live:** I stopped the stale daemon (it started 
 
 ## Reported, not resolved
 
-- **A second writer used this uncommitted code.** `tk-5441ae6cc5ec` ("auto: PROBE: token acceptance check - safe to drop", project heinzel, origin owner) was created at 14:25:16 and marked done 14 s later by "owner", with the note "my token-acceptance probe". I did not create it. It also wrote omp-v36-w5p1d's entry in the outcome file. I left both alone. Presumably heinzel's coordinator was verifying; please confirm.
+- **A second writer used this uncommitted code. Resolved: it was the coordinator.** `tk-5441ae6cc5ec` ("auto: PROBE: token acceptance check - safe to drop", project heinzel) was the coordinator's own probe of the open path, created 14:25:16 through the working tree and dropped 14 s later. I first guessed heinzel's coordinator; that guess was wrong. heinzel's coordinator only read the item and took it for its own card (a false pass, since corrected by the coordinator). The probe did write omp-v36-w5p1d's entry in the outcome file at the same time as my runs. Nothing was lost, but it is the two-writers-one-tree case, so it was reported rather than cleaned up.
 - **Not fixed, out of scope:** `prompt_provenance` returned `None` for this turn, whose prompt was a pure `<pasted_content>` message. That is why my acceptance item has origin `harness`. By the same rule, `autotask_check` refuses such a turn ("no prompt to attribute"), so a paste-only request from the owner gets no auto-card.
 - The old daemon's log shows the bug as it happened: `14:22:25 auto-task for omp-v36-wdp9 failed (bro CLI: …)`. The real cause was a 403.
