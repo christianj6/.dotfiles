@@ -1014,14 +1014,15 @@ class OwnerLifecycle(unittest.TestCase):
         lv.transcript_of = lambda a, agents: self.files.get(a["pane_id"])
         lv.time = self.clock
 
-    def pane_turn(self, a, prompt, calls=1, answer="On main.", ended_ago=20):
-        """One turn in the agent's own pane: prompt, `calls` tool calls, answer."""
+    def pane_turn(self, a, prompt, calls=1, answer="On main.", ended_ago=20, commands=("git branch --show-current",)):
+        """One turn in the agent's own pane: prompt, `calls` tool calls (Bash, cycling
+        through `commands`), answer."""
         # a session header first, as real transcripts have (scan_turn never reads a file's first line)
         entries = [{"type": "session", "timestamp": ts(ended_ago + 60)},
                    {"type": "user", "message": {"role": "user", "content": prompt}, "timestamp": ts(ended_ago + 10)}]
         for i in range(calls):
             entries += [{"type": "assistant", "message": {"role": "assistant", "content": [
-                            {"type": "tool_use", "name": "Bash", "input": {"command": "git branch --show-current"}}]},
+                            {"type": "tool_use", "name": "Bash", "input": {"command": commands[i % len(commands)]}}]},
                          "timestamp": ts(ended_ago + 8 - i)},
                         {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "main"}]},
                          "timestamp": ts(ended_ago + 6 - i)}]
@@ -1094,6 +1095,68 @@ class OwnerLifecycle(unittest.TestCase):
             {"omp-x"}, time.time())
         self.assertIsNotNone(title, why)
         self.assertIn("work session", why)
+
+    # S1 (2026-11-11): the owner's right-click message to the prescient coordinator was
+    # done and never went green -- the work it asked for touched the task system, and
+    # the loop guard tested what the work touched instead of who asked.
+    S1_MESSAGE = ("[from:owner project:prescient id:prescient-life-view:-message]\n"
+                  "From the owner (prescient life view): mark the recipe tweak ready and check the hub row")
+    S1_COMMANDS = ("prescient status working 'tweak ready'", "sqlite3 data/tasks.sqlite3 'select id, state from items'",
+                   "prescient task ready tk-1 --summary done")
+
+    def test_s1_right_click_message_about_the_task_system_goes_gray_amber_green(self):
+        self.assertEqual(self.hub.items, {})                                       # gray: nothing in the hub
+        self.c["agent_status"] = self.o["agent_status"] = "idle"
+        self.pane_turn(self.o, self.S1_MESSAGE, calls=3, answer="Marked ready; the hub row says ready.",
+                       commands=self.S1_COMMANDS)
+        turn = {"prompt": self.S1_MESSAGE, "tools": ["Bash"], "did": " ".join(self.S1_COMMANDS)}
+        self.assertEqual(lv.prompt_provenance(turn), "owner")                     # classified right all along
+        self.assertTrue(lv.task_system_turn(turn))                                # the gate that swallowed it
+        self.assertTrue(lv.is_coordinator(self.o, []))                            # into the coordinator's pane
+        h = lv.Harness()
+        rings = [self.tick(h)]
+        self.clock.now += 70
+        rings.append(self.tick(h))
+        (iid, item), = self.hub.items.items()
+        self.assertEqual(item["origin"], "owner")
+        self.assertEqual([s for s, _ in self.hub.events[iid]], ["created", "queued", "working", "ready"])
+        self.assertEqual(rings, ["queued", "ready"])                              # amber, then green
+        print("\nS1 right-click message (task-system work, omp): "
+              + " -> ".join(f"{s} (by {b})" for s, b in self.hub.events[iid]) + f"; rings per tick: {rings}")
+
+    def test_s1_the_exemption_is_narrow_agent_and_unattributed_task_system_turns_stay_refused(self):
+        a = dict(self.c, agent_status="working")
+        did = " ".join(self.S1_COMMANDS)
+        for prompt in ("Round 7: docs/specs/round-7.md - mark the tweak ready",            # untagged agent shape
+                       "From claude-prescient: done, the tweak is ready"):                 # an agent relay
+            title, why = lv.autotask_check(a, [], {"key": "k", "start": 0, "calls": 5, "prompt": prompt,
+                                                   "tools": ["Bash"], "did": did}, {a["name"]}, time.time() + 10 ** 6)
+            self.assertEqual(lv.prompt_provenance({"prompt": prompt}), "agent", prompt)
+            self.assertIsNone(title, prompt)
+            self.assertIn("about the task system itself", why)
+        for prompt in ("[from:harness project:prescient id:prescient]\nmark it ready",       # machinery: refused earlier
+                       "prescient: task tk-abc is queued for prescient's coordinator"):
+            title, why = lv.autotask_check(a, [], {"key": "k", "start": 0, "calls": 5, "prompt": prompt,
+                                                   "tools": ["Bash"], "did": did}, {a["name"]}, time.time() + 10 ** 6)
+            self.assertIsNone(title, prompt)
+            self.assertIn("never a card", why)
+        title, why = lv.autotask_check(a, [], {"key": "k", "start": 0, "calls": 5, "prompt": "", "did": did},
+                                       {a["name"]}, time.time() + 10 ** 6)
+        self.assertIsNone(title)                                                    # unattributed: nothing
+        self.assertIn("no prompt to attribute", why)
+        o = dict(self.o, agent_status="working")                                    # the coordinator's own agent turn
+        title, why = lv.autotask_check(o, [], {"key": "k", "start": 0, "calls": 5, "prompt": "Round 7: go",
+                                               "tools": ["Bash"], "did": "git status"}, {o["name"]}, time.time() + 10 ** 6)
+        self.assertIsNone(title)
+        self.assertIn("this agent coordinates", why)
+
+    def test_s1_an_owner_turn_without_a_tool_call_is_still_trivial(self):
+        o = dict(self.o, agent_status="working")
+        title, why = lv.autotask_check(o, [], {"key": "k", "start": time.time() - 5, "calls": 0,
+                                               "prompt": self.S1_MESSAGE.replace("mark", "should I mark")},
+                                       {o["name"]}, time.time())
+        self.assertIsNone(title)
+        self.assertIn("trivial so far", why)
 
     def test_the_loop_stays_closed(self):
         """The reason that gate existed: a hub nudge is machinery, so a card cannot

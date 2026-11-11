@@ -744,8 +744,6 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
     marker = session_marker(agent, turn)
     if marker in created or any(marker in str(h.get("note") or "") for t in tasks for h in t.get("history") or []):
         return None, "a task was already opened for this session"
-    if task_system_turn(turn):
-        return None, "this turn is about the task system itself (hub/CLI/tray) - auto-task would loop on its own output"
     origin = prompt_provenance(turn)
     if origin is None:
         return None, "no prompt to attribute: nothing is opened for work nobody can be shown to have asked for"
@@ -758,13 +756,25 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
     tag = tag_of(str(turn.get("prompt") or ""))
     if tag and tag[0] in COMMS_TAGS:
         return None, f"an agent-to-agent message ([from:{tag[0]}]): comms, never a card"
-    # A coordinator's turns are coordination, and auto-tasking them looped on the
-    # cards it was creating (2026-11-03) -- BUT that must not swallow the owner's
-    # own request typed into its pane, which is how the lifecycle failed for bro
-    # (prompt_provenance now classifies the hub nudges and agent relays that caused
-    # the loop as machinery/agent, so an owner turn reaching here is really his).
-    if is_coordinator(agent, tasks) and origin != "owner":
-        return None, "this agent coordinates; its work is other agents' tasks, not its own card"
+    # The loop guards (2026-11-03: a card about a card, whose creation nudged the
+    # coordinator, whose next turn carded again). They exist to stop MACHINERY
+    # causing turns, so they ask WHO ASKED, never what the work touched -- and the
+    # owner's request passes both, however it travelled (his pane, bro, the life
+    # view's message) and whatever it is about. Do not "restore symmetry" here:
+    # - task_system_turn tests what the work touched. For an owner turn that is
+    #   just his subject: a coordinator's requests are mostly about tasks/status/
+    #   the hub, so applying it to him refused nearly all of them (S1, 2026-11-11:
+    #   his right-click message was done and never went green).
+    # - a coordinator's own turns are coordination (its work is others' cards).
+    # The owner can't start the loop: a hub nudge, a tweak notice and bro's
+    # request lines are classified machinery above, and an agent relay is agent,
+    # so an "owner" turn reaching here is really his. Both guards stay in force
+    # for agent and unattributed turns, where the loop comes from.
+    if origin != "owner":
+        if task_system_turn(turn):
+            return None, "this turn is about the task system itself (hub/CLI/tray) - auto-task would loop on its own output"
+        if is_coordinator(agent, tasks):
+            return None, "this agent coordinates; its work is other agents' tasks, not its own card"
     calls = turn.get("calls", 0)
     span = (turn.get("end") if herdr in ("idle", "done") and turn.get("end") else now) - (turn.get("start") or now)
     # The threshold filters INCIDENTAL activity (a lookup while chatting); it

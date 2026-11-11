@@ -585,3 +585,28 @@ What the thresholds buy: a plain answer, a single lookup, and any turn while a
 task already covers the agent never open one. They can't tell "work worth the
 owner's verdict" from "busy with something". Raising
 `LIFEVIEW_WORK_MIN_TOOL_CALLS` trades missed greens for fewer spurious ones.
+
+## The owner's request about the task system gets its card too (S1, 2026-11-11)
+
+The owner sent the prescient coordinator a message from the life view's
+right-click menu; it did the work and the icon never went green. The turn was
+classified right (`prompt_provenance` → `owner`), but its work ran `prescient
+status`, `tweak ready` and `sqlite3` on the hub, so `task_system_turn` was True
+and `autotask_check` refused it as the 2026-11-03 loop. That gate tested *what
+the work touched*; the loop it guards against is *machinery causing turns*. For
+a coordinator, the task system is the subject of most of what the owner asks.
+
+Now both loop guards - `task_system_turn` and the coordinator exemption - sit
+under one `origin != "owner"` condition, commented so nobody "restores
+symmetry". `task_system_turn` itself is unchanged and stays in force for agent
+and unattributed turns; machinery (hub nudges, tweak notices, `[from:harness]`,
+`bro request tr-`) is refused before it is reached, so an owner-attributed turn
+reaching the gate is really his. Tests: `test_s1_right_click_message_about_the_task_system_goes_gray_amber_green`
+(the incident, through the harness: created → queued → working → ready, rings
+`queued`, `ready`), `test_s1_the_exemption_is_narrow_…`, `test_s1_an_owner_turn_without_a_tool_call_is_still_trivial`.
+
+Found on the way, not fixed here (bro's repo): `bro serve` inherits the
+`HERDR_PANE_ID` of the pane it was started from (live: the dotfiles omp's,
+`wD:p9`), so `omp-peer send` stamps bro's voice relays `[from:coordinator
+project:dotfiles …]` - comms, never a card. The sender knows it relays the
+owner: bro should pass `--from owner`.
