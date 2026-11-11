@@ -814,4 +814,11 @@ done <<< "$ROWS"
 if [ $DRY = 1 ]; then echo "(dry run: nothing touched)"; exit 0; fi
 printf '\n%-8s %-15s %-6s %-6s %-8s %-20s %-40s %s\n' PANE KIND OLD NEW RESUMED RESULT CWD NOTE
 for r in ${RESULTS[@]+"${RESULTS[@]}"}; do echo "$r"; done
+
+# The panes are on the new config; bring the long-running pieces (lifeview
+# daemon, discord bot, prescient, bro) onto the current code too: it restarts
+# only what is older than its code, and says what needs the owner. Never
+# changes this script's exit status.
+echo ""
+python3 "$HOME/.dotfiles/scripts/workspace-up" < /dev/null || true
 exit $FAILED

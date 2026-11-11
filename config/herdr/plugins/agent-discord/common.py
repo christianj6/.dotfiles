@@ -31,16 +31,30 @@ LOG_MAX_BYTES = 1_000_000
 NOTIFY_STATUSES = ("done", "blocked")  # anything else stays silent
 
 
-def load_env() -> None:
+def parse_env_value(raw: str) -> str:
+    """A .env value: quotes stripped, and a trailing ` # comment` dropped
+    (.env.example puts a short comment after each key; `KEY=   # required`
+    must read as EMPTY, not as the comment text)."""
+    v = raw.strip()
+    if v[:1] in ("'", '"'):
+        end = v.find(v[0], 1)
+        return v[1:end] if end > 0 else v[1:]
+    m = re.search(r"(^|\s)#", v)
+    if m:
+        v = v[: m.start()]
+    return v.strip()
+
+
+def load_env(files: "list[Path] | None" = None) -> None:
     """Seed os.environ from the plugin's .env files (never overrides real
     env vars). Two locations are honored, in priority order: the herdr
     config dir (the documented home for credentials) and the plugin root
     next to the code -- that is where the .env.example template lives, and
     the natural place to fill it in first; it is gitignored so a token
     there cannot leak into the repo."""
-    roots = [CONFIG_DIR, Path(__file__).resolve().parent]
-    for root in roots:
-        path = root / ".env"
+    if files is None:
+        files = [CONFIG_DIR / ".env", Path(__file__).resolve().parent / ".env"]
+    for path in files:
         if not path.is_file():
             continue
         try:
@@ -53,7 +67,7 @@ def load_env() -> None:
                 continue
             key, _, value = line.partition("=")
             key = key.strip()
-            value = value.strip().strip('"').strip("'")
+            value = parse_env_value(value)
             # An EMPTY value is a template line, not a setting: it must not
             # shadow a later file's real value. The config dir's .env held a
             # copied `DISCORD_BOT_TOKEN=` (empty) and blocked the plugin

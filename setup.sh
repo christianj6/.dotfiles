@@ -416,8 +416,10 @@ herdr plugin link ~/.dotfiles/config/herdr/plugins/lifeview-fallback || true
 # Discord bridge plugin (config/herdr/plugins/agent-discord/): provisions
 # the venv for the persistent bot (discord.py is the plugin's one
 # non-stdlib dependency -- the notify hook itself is stdlib-only), links
-# the plugin, and seeds the config-dir .env from the template WITHOUT ever
-# overwriting an existing one (the user's bot token lives only there).
+# the plugin, and seeds the config-dir .env from the template (every key
+# commented out, so it can never shadow a real token) WITHOUT ever rewriting
+# a value; on a re-run it only comments out EMPTY keys (2026-11-11: a copied
+# template's empty DISCORD_BOT_TOKEN= hid the real token for days).
 # All non-fatal: a venv/pip failure must not abort setup.sh; run-bot.sh
 # prints a clear error into the plugin log if the venv is missing.
 if [ ! -x "$HOME/.herdr-discord-venv/bin/python" ]; then
@@ -427,10 +429,8 @@ fi
 herdr plugin link ~/.dotfiles/config/herdr/plugins/agent-discord || true
 DISCORD_CFG_DIR="$HOME/.config/herdr/plugins/config/dotfiles.agent-discord"
 mkdir -p "$DISCORD_CFG_DIR"
-if [ ! -f "$DISCORD_CFG_DIR/.env" ]; then
-    cp ~/.dotfiles/config/herdr/plugins/agent-discord/.env.example "$DISCORD_CFG_DIR/.env"
-    chmod 600 "$DISCORD_CFG_DIR/.env"
-fi
+python3 ~/.dotfiles/scripts/env-seed.py ~/.dotfiles/config/herdr/plugins/agent-discord/.env.example \
+    "$DISCORD_CFG_DIR/.env" || true
 
 # OS-specific symlinks
 if [[ "$OS" == "macos" ]]; then
@@ -807,6 +807,13 @@ sync_conda_tmux_persistence || true
 herdr server reload-config || true
 
 echo "Setup complete for $OS"
+
+# Bring every long-running workspace piece up from the code just installed:
+# starts what is down, restarts what is older than its code, health-checks
+# each, and ends with one summary naming what needs you (a secret to fill in,
+# a piece with no launcher) with copy-paste lines. Non-fatal.
+echo ""
+python3 ~/.dotfiles/scripts/workspace-up || true
 
 if [ ! -f ~/.omp/agent/.env ]; then
     echo ""

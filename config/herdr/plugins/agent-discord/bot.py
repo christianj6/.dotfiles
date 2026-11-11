@@ -70,6 +70,11 @@ def acquire_singleton_lock() -> None:
 
 
 async def am_i_orphaned(parent_pid_at_start: int) -> bool:
+    # workspace-up starts the bot detached (parent: launchd/init from the
+    # start, or soon after): there is no herdr parent to outlive, and the
+    # flock still makes a second gateway impossible.
+    if os.environ.get("HERDR_DISCORD_DETACHED") == "1":
+        return False
     if os.getppid() != parent_pid_at_start:
         log(f"orphaned (parent {parent_pid_at_start} -> {os.getppid()}); exiting")
         return True

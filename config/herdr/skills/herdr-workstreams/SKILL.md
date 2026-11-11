@@ -265,7 +265,9 @@ into a provably empty input box, so a user draft or open dialog yields
 anything where resuming the right conversation is not certain (e.g. a
 REPL whose omp-last lookup would pick another session); the note says how
 to resume by hand. The pane running the rollout is always skipped. Binary
-upgrades (`omp update`) are out of scope.
+upgrades (`omp update`) are out of scope. A real (non-dry) rollout ends by
+running `scripts/workspace-up`, which restarts any long-running piece (lifeview
+daemon, discord bot, prescient, bro) whose code is newer than its process.
 
 After each omp restart the script watches 60s for a herdr registry wedge
 (herdr accepting omp-watch's reports but applying none, so the sidebar

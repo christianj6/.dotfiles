@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""Bring every long-running workspace piece up, from the current code.
+
+    python3 scripts/workspace-up [--dry-run] [--only name,name]
+
+For each piece (lifeview daemon, discord bot, prescient server, bro serve):
+  - not running            -> start it (detached, from the current code);
+  - code newer than process -> restart it (newest mtime of the files it runs vs
+                              the process start time: no version file to forget);
+  - then a health check that tests what matters, not just "a pid exists".
+Idempotent: a second run finds everything running and fresh and does nothing.
+Prints one line per piece and ends with one summary naming anything that needs
+the owner (a secret to fill in, a piece with no launcher), with copy-paste
+lines. Never prints a secret value. Exit 0 when nothing needs the owner, 1
+otherwise (setup.sh treats it as non-fatal).
+
+Repo locations are never hard-coded (this repo is public). They come from the
+local, unversioned config the plugins already read:
+  prescient repo = PRESCIENT_REPO, else the parent of PRESCIENT_DATA_DIR
+  bro repo       = BRO_REPO, else three levels up from BRO_BIN (<repo>/.venv/bin/bro)
+both looked up in the env, then in lifeview-fallback's lifeview.env.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Optional
+
+DOTFILES = Path(__file__).resolve().parents[1]
+PLUGINS = DOTFILES / "config" / "herdr" / "plugins"
+LIFEVIEW_ENV = Path.home() / ".config/herdr/plugins/config/dotfiles.lifeview-fallback/lifeview.env"
+DISCORD_ENV = Path.home() / ".config/herdr/plugins/config/dotfiles.agent-discord/.env"
+LOG_DIR = Path("/tmp")
+
+
+def conf(key: str) -> str:
+    v = os.environ.get(key, "").strip()
+    if v:
+        return os.path.expanduser(os.path.expandvars(v))
+    try:
+        for ln in LIFEVIEW_ENV.read_text().splitlines():
+            k, _, val = ln.partition("=")
+            if k.strip() == key and val.strip():
+                return os.path.expanduser(os.path.expandvars(val.strip()))
+    except OSError:
+        pass
+    return ""
+
+
+def prescient_repo() -> Optional[Path]:
+    r = conf("PRESCIENT_REPO") or (str(Path(conf("PRESCIENT_DATA_DIR")).parent) if conf("PRESCIENT_DATA_DIR") else "")
+    return Path(r) if r and Path(r, ".venv/bin/prescient").exists() else None
+
+
+def bro_repo() -> Optional[Path]:
+    r = conf("BRO_REPO") or (str(Path(conf("BRO_BIN")).parents[2]) if conf("BRO_BIN") else "")
+    return Path(r) if r and Path(r, ".venv/bin/bro").exists() else None
+
+
+# ---- processes ----
+
+@dataclass
+class Proc:
+    pid: int
+    started: float
+    command: str
+
+
+def processes() -> list[Proc]:
+    out = subprocess.run(["ps", "-axo", "pid=,lstart=,command="], capture_output=True, text=True).stdout
+    procs = []
+    for ln in out.splitlines():
+        m = re.match(r"\s*(\d+)\s+(\w{3} \w{3}\s+\d+ \d\d:\d\d:\d\d \d{4})\s+(.*)$", ln)
+        if m:
+            try:
+                started = time.mktime(time.strptime(m.group(2), "%a %b %d %H:%M:%S %Y"))
+            except ValueError:
+                continue
+            procs.append(Proc(int(m.group(1)), started, m.group(3)))
+    return procs
+
+
+def newest_mtime(paths: list[Path]) -> tuple[float, Optional[Path]]:
+    best, which = 0.0, None
+    for p in paths:
+        files = p.rglob("*.py") if p.is_dir() else [p]
+        for f in files:
+            try:
+                m = f.stat().st_mtime
+            except OSError:
+                continue
+            if m > best:
+                best, which = m, f
+    return best, which
+
+
+def get(url: str, timeout: float = 3) -> tuple[Optional[int], dict]:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as res:
+            body = res.read()
+            try:
+                return res.status, json.loads(body)
+            except ValueError:
+                return res.status, {}
+    except urllib.error.HTTPError as e:
+        return e.code, {}
+    except Exception:
+        return None, {}
+
+
+def age(seconds: float) -> str:
+    s = max(0, int(seconds))
+    return f"{s // 86400}d" if s >= 86400 else f"{s // 3600}h" if s >= 3600 else f"{s // 60}m" if s >= 60 else f"{s}s"
+
+
+# ---- pieces ----
+
+@dataclass
+class Piece:
+    name: str
+    match: str                                   # regex over the ps command line
+    code: Callable[[], list[Path]]               # what it runs (dirs: every *.py under them)
+    launch: Callable[[], Optional[tuple[list[str], Path, dict]]]   # (argv, cwd, extra env) or None
+    no_launcher: str = ""                        # what to tell the owner when launch() is None
+    health: Callable[[float], tuple[bool, str, list[str]]] = lambda started: (True, "", [])   # ok, detail, owner lines
+    ready: Callable[[], bool] = lambda: True     # after a start: answers yet?
+    needs: list[str] = field(default_factory=list)
+
+
+def health_lifeview(started: float = 0) -> tuple[bool, str, list[str]]:
+    # what broke on 2026-11-11: the daemon could not authenticate its hub writes
+    code = ("import lifeview as lv; t, p = lv.hub_token(); "
+            "print('ok' if t else 'NO ' + p)")
+    r = subprocess.run([sys.executable, "-c", code], cwd=PLUGINS / "lifeview-fallback",
+                       capture_output=True, text=True, timeout=20)
+    line = (r.stdout.strip().splitlines() or ["NO no answer"])[-1]
+    if line == "ok":
+        return True, "hub token found", []
+    return False, line[3:], [f"lifeview: {line[3:]}"]
+
+
+BRIDGE_LOG = Path(os.environ.get("HERDR_PLUGIN_STATE_DIR")
+                  or Path.home() / ".local/state/herdr/plugins/dotfiles.agent-discord") / "bridge.log"
+
+
+def bot_ready_since(started: float, wait: float = 15) -> bool:
+    """The running bot logged `bot ready` after it started: its gateway is up."""
+    deadline = time.time() + wait
+    while True:
+        try:
+            for ln in reversed(BRIDGE_LOG.read_text(errors="replace").splitlines()[-400:]):
+                m = re.match(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] bot ready", ln)
+                if m and time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) >= started - 1:
+                    return True
+        except OSError:
+            pass
+        if time.time() >= deadline:
+            return False
+        time.sleep(1)
+
+
+def health_discord(started: float = 0) -> tuple[bool, str, list[str]]:
+    r = subprocess.run([sys.executable, "selfcheck.py", "--live"], cwd=PLUGINS / "agent-discord",
+                       capture_output=True, text=True, timeout=60)
+    fails = [ln[5:] for ln in r.stdout.splitlines() if ln.startswith("FAIL ")]
+    if not fails and started and not bot_ready_since(started):
+        fails = [f"gateway: the running bot never logged `bot ready` since it started (see {BRIDGE_LOG})"]
+    if not fails:
+        n = sum(1 for ln in r.stdout.splitlines() if ln.startswith("PASS channel"))
+        return True, f"token ok, {n} channels resolve, Discord connects, bot ready", []
+    owner = []
+    for f in fails:
+        m = re.search(r"\(run: (.*)\)$", f)
+        owner.append(f"discord: {f.split(' - ')[0]}" + (f"\n      run: {m.group(1)}" if m else ""))
+    return False, "; ".join(f.split(" (run:")[0] for f in fails), owner
+
+
+def http_health(url: str, check: Callable[[dict], bool], what: str) -> Callable[[], tuple[bool, str, list[str]]]:
+    def h(started: float = 0) -> tuple[bool, str, list[str]]:
+        status, body = get(url)
+        if status == 200 and check(body):
+            return True, f"{what} answers 200", []
+        return False, f"{what} answered {status or 'nothing'}", []
+    return h
+
+
+def launch_prescient():
+    repo = prescient_repo()
+    if not repo:
+        return None
+    # its own launcher (tools/restart-servers.sh) sources .env with set -a; do the same,
+    # but start only 8765 (that script also kills and restarts the 8917 test server)
+    cmd = 'set -a; [ -f .env ] && . ./.env; set +a; exec .venv/bin/prescient gantt serve --port 8765 --no-open'
+    return ["bash", "-c", cmd], repo, {}
+
+
+def launch_bro():
+    repo = bro_repo()
+    return (["bash", "-c", "exec .venv/bin/bro serve"], repo, {}) if repo else None
+
+
+PIECES = [
+    Piece("lifeview", r"lifeview\.py --daemon",
+          lambda: [PLUGINS / "lifeview-fallback" / "lifeview.py"],
+          lambda: ([sys.executable, "lifeview.py", "--daemon"], PLUGINS / "lifeview-fallback", {}),
+          health=health_lifeview),
+    Piece("discord-bot", r"agent-discord/bot\.py",
+          lambda: [PLUGINS / "agent-discord" / "bot.py", PLUGINS / "agent-discord" / "common.py"],
+          lambda: (["bash", "run-bot.sh"], PLUGINS / "agent-discord", {"HERDR_DISCORD_DETACHED": "1"}),
+          health=health_discord),
+    Piece("prescient", r"prescient gantt serve --port 8765\b",
+          lambda: [prescient_repo() / "prescient"] if prescient_repo() else [],
+          launch_prescient,
+          no_launcher="prescient: repo unknown - put PRESCIENT_DATA_DIR=<prescient>/data (or PRESCIENT_REPO=) in " + str(LIFEVIEW_ENV),
+          health=http_health("http://127.0.0.1:8765/api/health",
+                             lambda b: (b.get("write_token") or {}).get("guarded") is True, "/api/health"),
+          ready=lambda: get("http://127.0.0.1:8765/api/health")[0] == 200),
+    Piece("bro", r"bro serve\b",
+          lambda: [bro_repo() / "bro"] if bro_repo() else [],
+          launch_bro,
+          no_launcher="bro: repo unknown - put BRO_BIN=<bro>/.venv/bin/bro (or BRO_REPO=) in " + str(LIFEVIEW_ENV),
+          health=http_health("http://127.0.0.1:8766/health", lambda b: b.get("ok") is True, "/health"),
+          ready=lambda: get("http://127.0.0.1:8766/health")[0] == 200),
+]
+
+
+def start(p: Piece, dry: bool) -> str:
+    spec = p.launch()
+    if spec is None:
+        return "no launcher"
+    if dry:
+        return "would start"
+    argv, cwd, extra = spec
+    log = open(LOG_DIR / f"workspace-up-{p.name}.log", "a")
+    subprocess.Popen(argv, cwd=cwd, env={**os.environ, **extra}, stdin=subprocess.DEVNULL,
+                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    for _ in range(40):                       # up to ~20 s for it to appear and answer
+        time.sleep(0.5)
+        if any(re.search(p.match, x.command) for x in processes()) and p.ready():
+            return "started"
+    return "started (not answering yet)"
+
+
+def stop(proc: Proc) -> bool:
+    try:
+        os.kill(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            os.kill(proc.pid, 0)
+        except ProcessLookupError:
+            return True
+    try:
+        os.kill(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return True
+
+
+def run(pieces: list[Piece], dry: bool, out=print) -> int:
+    counts = {"running": 0, "started": 0, "stale": 0, "restarted": 0, "unhealthy": 0}
+    owner: list[str] = []
+    now = time.time()
+    for p in pieces:
+        code_m, code_f = newest_mtime(p.code())
+        procs = [x for x in processes() if re.search(p.match, x.command)]
+        action = ""
+        if not procs:
+            action = start(p, dry)
+            if action == "no launcher":
+                owner.append(p.no_launcher or f"{p.name}: no launcher")
+                out(f"{p.name:<12} DOWN          no launcher                 needs you")
+                continue
+            if action.startswith("started"):
+                counts["started"] += 1
+        else:
+            proc = max(procs, key=lambda x: x.started)
+            if code_m > proc.started + 1:
+                why = f"code {age(code_m - proc.started)} newer than process ({code_f.name if code_f else '?'})"
+                if dry:
+                    action = f"would restart: {why}"
+                    counts["stale"] += 1
+                else:
+                    for x in procs:
+                        stop(x)
+                    action = "restarted: " + why + " -> " + start(p, dry)
+                    counts["restarted"] += 1
+        procs = [x for x in processes() if re.search(p.match, x.command)]
+        if procs:
+            proc = max(procs, key=lambda x: x.started)
+            ok, detail, need = p.health(proc.started)
+            owner += need
+            counts["running"] += 1
+            if not ok:
+                counts["unhealthy"] += 1
+            out(f"{p.name:<12} running (pid {proc.pid:<6}) up {age(now - proc.started):<4} "
+                f"code {age(now - code_m) if code_m else '?':<4} old   {'ok' if ok else 'UNHEALTHY'}: {detail}"
+                + (f"   [{action}]" if action else ""))
+        else:
+            out(f"{p.name:<12} DOWN          {action or 'not running'}")
+            if not dry:
+                counts["unhealthy"] += 1
+    summary = (f"workspace: {counts['running']} running, {counts['started']} started, "
+               f"{counts['stale']} stale, {counts['restarted']} restarted, {counts['unhealthy']} unhealthy, {len(owner)} need you")
+    out(summary + ((" - " + "; ".join(o.splitlines()[0] for o in owner)) if owner else ""))
+    for o in owner:
+        out("  " + o)
+    return 1 if owner or counts["unhealthy"] else 0
+
+
+def main(argv: list[str]) -> int:
+    dry = "--dry-run" in argv
+    only = next((a.split("=", 1)[1] if "=" in a else argv[argv.index(a) + 1] for a in argv if a.startswith("--only")), "")
+    pieces = [p for p in PIECES if not only or p.name in only.split(",")]
+    return run(pieces, dry)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
