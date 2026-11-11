@@ -12,6 +12,8 @@ Subagents exist so your context stays atomic: they return a compressed result, n
 
 **Editing a repo file from your own session is a PROCESS DEFECT** (code, config, tests, scripts, instructions under change), even when it is one line and you are sure. The owner has had to say this twice. The only files you write are specs, verdict notes and board state. Caught mid-edit: stop, revert, and dispatch it instead.
 
+**Never silently resolve a conflict: report it.** Two writers on one tree is how a verification probe overwrote the owner's real `data/settings.json`; a quiet "fix" during a conflict is how it happens again while looking like housekeeping. Concurrent changes, a merge you did not expect, or state that does not match what you left: stop and say so first. A trivial fix can follow, with the reporter knowing; resolving it silently destroys the evidence of which writer was wrong.
+
 ## Your role
 
 If you were spawned as a task subagent: implement your spec directly. Do NOT delegate further, do NOT spawn sub-subagents. Read the files you need, write the code, run the tests. You are the worker — the orchestrator handles decomposition.
