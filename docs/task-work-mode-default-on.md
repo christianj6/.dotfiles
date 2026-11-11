@@ -5,10 +5,21 @@ Owner, 2026-11-09: **"work mode on by default"**.
 ## Why
 
 His thor agent (`omp-v36-wgp1`, live in herdr) was absent from prescient's agent list.
-Cause: `data/settings.json` has `work_mode: false`, and `prescient/gantt/bro_stack.py:47-48`
+Cause: `data/settings.json` had `work_mode: false`, and `prescient/gantt/bro_stack.py:47-48`
 filters anything under `/tallence/` (and projects `thor`/`telia`) while work mode is off.
 The filter worked as designed; the owner's expectation is different — he wants the work
 agents visible.
+
+**CORRECTION (from prescient's coordinator, and I verified it): that `false` was very
+likely TEST RESIDUE, not the owner's choice.** The file's mtime is `Nov 11 08:07`,
+matching their G1 probes, and an earlier probe round (A2) recorded that it POSTed
+`{"work_mode": false}` to `/api/settings` on port 8917 — which **shares `data/` with
+8765**, so it wrote the owner's real file. That report also says plainly: *"I can't tell
+what it was before."* Nothing in this repo records the owner ever setting it false.
+
+So **do not report "the owner had work mode off"** — that would be a false history, and
+the honest statement is "a test probe wrote the file; the owner then stated the default he
+wants". The task is unchanged.
 
 ## What to change (prescient)
 
