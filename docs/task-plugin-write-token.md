@@ -65,3 +65,51 @@ the plugin was a write client that nobody listed. **Changing an API's requiremen
 enumerating its callers** — the same "function checked, system inferred" failure as
 `rule://fixed-claim-call-sites`. This time the API gained auth and one caller was missed; the
 check is `grep -rn "http_json(HUB_URL" config/herdr/plugins/ | grep -v token`.
+
+---
+
+## End-to-end: what the fix proved, and one false pass to correct
+
+The fix landed (`TOKEN_HEADER = "X-Prescient-Token"`, token read lazily, one write helper,
+refusal logged, `--explain` now prints `open: <outcome>`).
+
+**Verified by me, on the open path itself:**
+
+```
+open_task(omp-v36-w5p1d, "PROBE: token acceptance - safe to drop", turn)
+  -> tk-5441ae6cc5ec
+hub row: heinzel/coordinator, origin owner, note "opened by the lifeview harness"
+```
+
+That is the write path working where it previously returned `None` with a silent 403.
+
+**A false pass to correct.** Heinzel's coordinator reported the end-to-end as passed and
+cited `tk-5441ae6cc5ec` with `open: ok`. But that id is **my probe**, not their turn's card:
+
+```
+tk-5441ae6cc5ec  created 13:25:16  dropped 13:25:30  note "my token-acceptance probe"
+no other heinzel card was created after 12:20
+```
+
+Their own pane's `--explain` right now says why:
+
+```
+auto-task: not work: a harness notification, a resumed session or a pasted image (never a card)
+```
+
+Their turn was **about the task system** — the correct refusal — so no card of theirs was
+ever due. The `open: ok <id>` they read was the *last open attempt* recorded for that pane,
+which happened to be mine.
+
+Two lessons, both the same one this project keeps relearning:
+
+1. **`open: ok` names an outcome, not a cause.** It is now the right line to read, but it
+   records the last attempt for that pane — so a reader must check the id it names is *theirs*
+   and recent, or the line proves someone else's write succeeded.
+2. **A pass reported by a witness who cannot distinguish the evidence from a decoy is not a
+   pass.** Their reasoning was sound and their report was honest; the id simply was not theirs.
+
+**Still genuinely unproven: a real work turn on a non-dotfiles pane creating its own card.**
+The open path is proven. The trigger-to-card loop under real work remains to be observed
+end to end — the next ordinary 4-call turn on any pane, checked by comparing the hub's
+newest id against `open: ok`'s id, is what closes it.
