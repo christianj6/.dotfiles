@@ -79,3 +79,73 @@ in a review, and now a test writing live owner data. The common shape is **a mut
 attributed to, or performed on, the wrong party** — a default that says "owner", a review
 in someone's name, a probe writing real state. Fix (a) is the only one that removes the
 possibility rather than the symptom.
+
+---
+
+## Measurement (worker, verified against the repo)
+
+**2 of 73 test files touch the real `data/` — so the redirect is cheap and fix (b) does not
+have to come first.**
+
+Why so few: `tests/conftest.py` has **26 autouse fixtures** that monkeypatch data constants
+to `tmp_path` by name (mail, timeboxes, inbox, settings, tweaks, goals, sketches, …), and
+the task DB goes through `PRESCIENT_TASKS_DB`. The suite already redirects data — one
+constant at a time.
+
+| class | files |
+|---|---|
+| touches the real `data/` | **2** |
+| redirects constants itself | 20 |
+| covered by conftest | 51 |
+
+The two real ones:
+- `tests/test_sort_session.py` — reads `Path("data/priorities.json")`, read-only;
+- `tests/test_week_priorities.py` — **writes** `data/finalize-plan-<n>.json` and deletes it:
+  a genuine write into the owner's `data/` during a test run. Small and self-cleaning, but
+  real, and it is the same defect as the 8917 case in miniature.
+
+Outside pytest, the three `.mjs` browser checks drive the testserver against 8917 — those
+**are** the original defect and (b) exists for them.
+
+## The correction that matters: my acceptance grep was incomplete
+
+I wrote:
+
+```
+grep -rn 'parents\[2\] / "data"' prescient/ | grep -v data_dir.py    # must be empty
+```
+
+**That misses a whole second family** — paths relative to the *current directory*:
+
+```
+prescient/backlog/autopilot.py:413      REPORT_PATH    = Path("data/autopilot-report.json")
+prescient/backlog/llm_sorter.py:29      PRIORITIES_PATH = Path("data/priorities.json")
+prescient/backlog/sort_session.py:27    PRIORITIES_PATH = Path("data/priorities.json")
+prescient/gantt/sunsama_write.py:530    BACKUPS        = Path("data/backups")
+```
+
+(My own first grep returned 0 because I searched `prescient/gantt/` and `tests/` only —
+another instance of searching where I expected the answer to be, which is the failure
+`rule://fixed-claim-call-sites` names.)
+
+So the acceptance check must be **both**:
+
+```
+grep -rn 'parents\[2\] / "data"' prescient/ | grep -v data_dir.py     # empty
+grep -rnE 'Path\(["\x27]data/' prescient/ | grep -v data_dir.py        # empty
+```
+
+The cwd-relative ones are *worse* than the constant ones: they resolve against whatever
+directory the process was started in, so a test run from `prescient/` and a run from
+`~` write different files, and neither is the resolver.
+
+## The real cost, restated
+
+Not the fixtures — **78 constant-name patches** (the worker's count). The conftest already
+knows the names, so the change is mechanical: each constant becomes a call to the resolver,
+and the fixtures keep working because they patch the same names. That is the reason (a) is
+affordable: it does not require redesigning the test suite, only converting references.
+
+Uncertain and worth one check before landing: `gcal.load_creds` reads a relative `data/`
+credentials file — every test found that reaches it patches it out, so it is likely fine,
+but it is the one path nobody has driven end to end.
