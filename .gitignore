@@ -8,3 +8,4 @@ spikes/
 .pytest_cache/
 prescient-status.json
 .prescient-status.json.*
+.inbox/
