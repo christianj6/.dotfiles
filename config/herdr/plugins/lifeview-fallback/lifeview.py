@@ -59,6 +59,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from urllib.parse import quote
 from datetime import datetime
@@ -1065,15 +1066,138 @@ def list_agents() -> list:
     return json.loads(proc.stdout)["result"]["agents"]
 
 
-def http_json(url: str, body: Optional[Dict] = None, timeout: float = 3) -> Optional[Dict]:
-    """GET (or POST body) a JSON endpoint; None when the service is down."""
+def http_json(url: str, body: Optional[Dict] = None, timeout: float = 3,
+              headers: Optional[Dict] = None, outcome: Optional[Dict] = None) -> Optional[Dict]:
+    """GET (or POST body) a JSON endpoint; None when the service is down or
+    refuses. `outcome`, when given, is filled with the HTTP status and the
+    service's {"error": ...} text, so a refusal can be told from a dead service
+    (hub_write() needs that; reads don't)."""
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"} if data else {})
+    hdrs = {"Content-Type": "application/json"} if data else {}
+    hdrs.update(headers or {})
+    req = urllib.request.Request(url, data=data, headers=hdrs)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as res:
-            return json.loads(res.read())
-    except Exception:
+            got = json.loads(res.read())
+            if outcome is not None:
+                outcome["status"] = res.status
+            return got
+    except urllib.error.HTTPError as e:
+        if outcome is not None:
+            outcome["status"] = e.code
+            try:
+                outcome["error"] = str(json.loads(e.read()).get("error") or "")[:200]
+            except Exception:
+                outcome["error"] = ""
         return None
+    except Exception as e:
+        if outcome is not None:
+            outcome["status"], outcome["error"] = None, f"no answer ({type(e).__name__})"
+        return None
+
+
+# ---- hub writes: ONE door, carrying the launch token ----
+# prescient's write gate (its security work, 2026-11-11) refuses any write
+# without X-Prescient-Token, strict by default. The plugin was a write client
+# nobody listed, so every create 403'd and auto-task died silently. Every
+# write to the hub goes through hub_write(): no call site sends its own.
+TOKEN_HEADER = "X-Prescient-Token"
+HUB_DEFAULT_PORT = 8765
+HUB_LAST_PATH = Path("/tmp/lifeview-fallback.hub-last.json")   # last open outcome per agent, for --explain
+_refusals_seen: Dict[str, None] = {}
+
+
+def _plugin_conf_raw(key: str) -> str:
+    """KEY from the env, else KEY= from the plugin's local config file, case
+    kept (a path; _plugin_env lowercases)."""
+    v = os.environ.get(key, "").strip()
+    if v:
+        return v
+    try:
+        for ln in PLUGIN_CONFIG.read_text().splitlines():
+            k, _, val = ln.partition("=")
+            if k.strip() == key and val.strip():
+                return val.strip()
+    except OSError:
+        pass
+    return ""
+
+
+def hub_token_path() -> Tuple[Optional[Path], str]:
+    """(prescient's token file for HUB_URL's port, problem). The hub writes
+    data/.server-token for 8765 and data/.server-token-<port> for any other
+    port; data/ is PRESCIENT_DATA_DIR (env, or the plugin's local config:
+    herdr starts the daemon without our env)."""
+    d = _plugin_conf_raw("PRESCIENT_DATA_DIR")
+    if not d:
+        return None, f"no token: PRESCIENT_DATA_DIR is not set (put PRESCIENT_DATA_DIR=<prescient>/data in {PLUGIN_CONFIG})"
+    m = re.match(r"https?://[^/:]+:(\d+)", HUB_URL)
+    port = int(m.group(1)) if m else HUB_DEFAULT_PORT
+    name = ".server-token" if port == HUB_DEFAULT_PORT else f".server-token-{port}"
+    return Path(os.path.expanduser(os.path.expandvars(d))) / name, ""
+
+
+def hub_token() -> Tuple[Optional[str], str]:
+    """(this launch's token, problem). Read on EVERY call, never cached: the
+    hub draws a new token at each restart, and a cached one goes stale the way
+    the stale daemon did. The token itself is never logged or printed."""
+    path, problem = hub_token_path()
+    if path is None:
+        return None, problem
+    try:
+        tok = path.read_text().strip()
+    except OSError as e:
+        return None, f"no token: {path} unreadable ({type(e).__name__}); is the hub running from that data dir?"
+    return (tok, "") if tok else (None, f"no token: {path} is empty")
+
+
+def hub_write(body: Dict, what: str, timeout: float = 3) -> Tuple[Optional[Dict], str]:
+    """POST one op to the hub's /api/tasks with the token. (answer, problem):
+    problem is "" on success, else a one-line reason with no token in it. A
+    refusal is logged ONCE per shape (what + status + reason): a 403 is never
+    silent again, and a ticking daemon does not repeat it every 10 s."""
+    tok, tok_problem = hub_token()
+    out: Dict = {}
+    got = http_json(HUB_URL + "/api/tasks", body, timeout,
+                    headers={TOKEN_HEADER: tok} if tok else None, outcome=out)
+    if isinstance(got, dict) and not got.get("error"):
+        return got, ""
+    err = (got or {}).get("error") if isinstance(got, dict) else out.get("error")
+    status = out.get("status")
+    problem = " ".join(x for x in (str(status) if status else "", str(err or "")) if x) or "no answer"
+    if tok_problem:
+        problem += f" [{tok_problem}]"     # the actionable half: why no token was sent
+    key = f"{what}|{status}|{err}|{tok_problem}"
+    if key not in _refusals_seen:
+        if len(_refusals_seen) > 256:
+            _refusals_seen.clear()
+        _refusals_seen[key] = None
+        log(f"hub write refused: {what}: {problem}")
+    return got, problem
+
+
+def record_open(who: str, title: str, outcome: str, detail: str) -> None:
+    """The last auto-task open attempt per agent, for --explain (a separate
+    process: it cannot see the daemon's memory). outcome: ok | refused | skipped."""
+    try:
+        data = json.loads(HUB_LAST_PATH.read_text())
+    except (OSError, ValueError):
+        data = {}
+    data[who] = {"at": time.time(), "title": title, "outcome": outcome, "detail": detail}
+    try:
+        tmp = HUB_LAST_PATH.with_name(HUB_LAST_PATH.name + ".tmp")
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, HUB_LAST_PATH)
+    except OSError:
+        pass
+
+
+def last_open(who: str) -> Optional[Dict]:
+    try:
+        got = json.loads(HUB_LAST_PATH.read_text()).get(who)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return got if isinstance(got, dict) else None
 
 
 def bro_tasks() -> Optional[list]:
@@ -1120,9 +1244,10 @@ def hub_open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
     """Harness create through the hub (wave 3): project is REQUIRED and comes
     from the git toplevel, never derived from a dest string."""
     project = agent.get("project") or project_name(agent)    # World stamps it by the same rule
-    if not project:
-        return None
     who = agent.get("name") or agent["pane_id"]
+    if not project:
+        record_open(who, title, "skipped", "no project: the pane's cwd is not in a git repo")
+        return None
     note = (f"opened by the lifeview harness: {who} began work with no task covering it "
             f"(LIFEVIEW_AUTO_TASK=0 disables this) {session_marker(agent, turn)}")
     # origin is WHOSE WORDS started this, not who pressed the button. It was always
@@ -1131,14 +1256,19 @@ def hub_open_task(agent: Dict, title: str, turn: Dict) -> Optional[str]:
     # downstream re-derives it.
     origin = prompt_provenance(turn) or "harness"
     if origin == "machinery":
+        record_open(who, title, "skipped", "machinery prompt")
         return None                      # belt and braces: autotask_check already refuses this
     # the card says what was ASKED (the requester's words), not the agent's reply
     if origin in ("owner", "agent") and str(turn.get("prompt") or "").strip():
         title = "auto: " + snippet(untagged(str(turn["prompt"]).strip()) or turn["prompt"], 114)
-    got = http_json(HUB_URL + "/api/tasks", {"op": "create", "text": title, "project": project,
-                                             "target": "coordinator", "origin": origin, "note": note})
+    got, problem = hub_write({"op": "create", "text": title, "project": project,
+                              "target": "coordinator", "origin": origin, "note": note}, "auto-task create")
     item = (got or {}).get("item") or {}
-    return item.get("id") if item.get("id") else None
+    if item.get("id"):
+        record_open(who, title, "ok", str(item["id"]))
+        return item["id"]
+    record_open(who, title, "refused", problem or "the hub answered without an item")
+    return None
 
 
 def hub_mark_ready(t: Dict, agent: Dict, tail: Dict, quiet: float) -> Optional[Dict]:
@@ -1154,7 +1284,7 @@ def hub_mark_ready(t: Dict, agent: Dict, tail: Dict, quiet: float) -> Optional[D
         body = {"op": op, "id": t["id"], "by": "harness", "note": note}
         if op == "ready":
             body["summary"] = summary_of(tail.get("text", ""))
-        got = http_json(HUB_URL + "/api/tasks", body)
+        got, _ = hub_write(body, f"auto-ready {op}")
         if not got or "error" in got:
             return got                    # refused or down: the caller logs it once
     return got
@@ -1421,7 +1551,11 @@ class Harness:
                               "history": [{"at": datetime.now().astimezone().isoformat(timespec="seconds"),
                                            "state": "sent", "by": HARNESS_BY, "note": marker}]})
             else:
-                log(f"auto-task for {who} failed (bro CLI: {bro_bin() or 'not found'})")
+                if TASK_HUB == "prescient" and hub_available():
+                    lo = last_open(who) or {}
+                    log(f"auto-task for {who} NOT opened: {lo.get('outcome', '?')} {lo.get('detail', '')}")
+                else:
+                    log(f"auto-task for {who} failed (bro CLI: {bro_bin() or 'not found'})")
 
     @staticmethod
     def ready_plans(w: World, tasks: Optional[list], tails: Dict[str, Dict]) -> Dict[str, Dict]:
@@ -1489,6 +1623,8 @@ def explain() -> None:
     plans = Harness.ready_plans(w, tasks, {})
     print(f"bro: {'up' if tasks is not None else 'DOWN (no tasks, no auto-ready)'}; "
           f"prescient: {'up' if board else 'DOWN (icon state computed locally)'}; auto-ready {'on' if AUTO_READY else 'off'}")
+    tok, tok_problem = hub_token()
+    print("hub write token: " + (f"found ({hub_token_path()[0].name})" if tok else tok_problem))
     for a in w.agents:
         name = a.get("name") or a["pane_id"]
         herdr = a.get("agent_status") or "unknown"
@@ -1542,7 +1678,16 @@ def explain() -> None:
                 print(f"  auto-ready: {a.get('project')} settles on {p['settler'].get('name') or p['settler']['pane_id']}")
             turn = scan_turn(path) if path else {}
             shown = set(rows) if board else None
-            print("  auto-task: " + autotask_check(a, tasks, turn, shown, now)[1])
+            title, why = autotask_check(a, tasks, turn, shown, now)
+            # the why reads like a decision and is not one: say what WOULD open,
+            # and separately what the last attempt actually did
+            print("  auto-task: " + (f"would open {title!r} - {why}" if title else why))
+            lo = last_open(name)
+            if lo:
+                when = f"{now - float(lo.get('at') or now):.0f}s ago"
+                print(f"  open: {lo.get('outcome')} {lo.get('detail')}  ({when}, {snippet(str(lo.get('title') or ''), 60)!r})")
+            else:
+                print("  open: no attempt recorded since the daemon started writing them")
         open_tasks = [t for t in mine if t.get("state") not in ("done", "dropped")]
         print("  why: " + why_icon(icon, herdr, status, e, open_tasks))
 

@@ -11,6 +11,12 @@ from pathlib import Path
 
 import lifeview as lv
 
+# Never touch the live daemon's state from a test: the open-outcome file and the
+# token's data dir both point into a throwaway folder (no token file in it).
+_ISO = tempfile.mkdtemp(prefix="lifeview-test-")
+lv.HUB_LAST_PATH = Path(_ISO) / "hub-last.json"
+os.environ["PRESCIENT_DATA_DIR"] = _ISO
+
 
 def at(ago_s: float) -> str:
     return datetime.fromtimestamp(time.time() - ago_s).astimezone().isoformat(timespec="seconds")
@@ -719,7 +725,7 @@ class FakeHub:
     def __init__(self, items):
         self.items, self.calls = {i["id"]: i for i in items}, []
 
-    def __call__(self, url, body=None, timeout=3):
+    def __call__(self, url, body=None, timeout=3, **kw):
         if body is None:
             return {"items": list(self.items.values())}
         self.calls.append(body)
@@ -955,7 +961,7 @@ class LifecycleHub:
     def __init__(self, shown):
         self.items, self.events, self.calls, self.shown = {}, {}, [], shown
 
-    def __call__(self, url, body=None, timeout=3):
+    def __call__(self, url, body=None, timeout=3, **kw):
         if url.endswith("/api/agent-board"):
             return {"agents": [{"name": n} for n in self.shown]}
         if body is None:
@@ -1583,6 +1589,118 @@ class NudgeLiterals(unittest.TestCase):
         # One real entry: the doorbell landed while the owner was typing.
         p = "i had to ma" + self.TWEAK + "nu"
         self.assertEqual(self.prov(p), "owner")
+
+
+
+class HubWriteToken(unittest.TestCase):
+    """docs/task-plugin-write-token.md: every hub write carries the launch token,
+    read per call; a refusal is logged once; the token never reaches a log line."""
+
+    TOKEN = "tok-" + "x" * 40
+
+    def setUp(self):
+        import http.server
+        import threading
+        test = self
+        self.seen, self.logs = [], []
+
+        class Hub(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                tok = self.headers.get("X-Prescient-Token")
+                test.seen.append((body, tok))
+                if tok != test.TOKEN:      # prescient's strict gate: its exact refusal text
+                    code, out = 403, {"error": "a write needs this launch's token (X-Prescient-Token; data/.server-token has it)"}
+                else:
+                    code, out = 200, {"item": {"id": "it-test1", "state": "queued", **body}}
+                raw = json.dumps(out).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        self.srv = http.server.HTTPServer(("127.0.0.1", 0), Hub)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.data = tempfile.TemporaryDirectory()
+        port = self.srv.server_address[1]
+        self.tokfile = Path(self.data.name) / f".server-token-{port}"     # non-default port: the -<port> file
+        saved = (lv.HUB_URL, lv.log, os.environ.get("PRESCIENT_DATA_DIR"), dict(lv._refusals_seen))
+        lv.HUB_URL = f"http://127.0.0.1:{port}"
+        lv.log = self.logs.append
+        os.environ["PRESCIENT_DATA_DIR"] = self.data.name
+        lv._refusals_seen.clear()
+
+        def restore():
+            lv.HUB_URL, lv.log = saved[0], saved[1]
+            os.environ["PRESCIENT_DATA_DIR"] = saved[2]
+            lv._refusals_seen.clear()
+            lv._refusals_seen.update(saved[3])
+            self.srv.shutdown()
+            self.srv.server_close()
+            self.data.cleanup()
+        self.addCleanup(restore)
+
+    def create(self):
+        a = agent("working", pane="wD:pA", name="claude-v2-wdpa", project="dotfiles")
+        turn = {"prompt": "[from:owner project:dotfiles] fix the plugin's write token", "key": "k1", "start": 1.0}
+        return lv.hub_open_task(a, "auto: fix the plugin's write token", turn)
+
+    def test_write_with_the_token_succeeds(self):
+        self.tokfile.write_text(self.TOKEN + "\n")
+        self.assertEqual(self.create(), "it-test1")
+        body, tok = self.seen[-1]
+        self.assertEqual(tok, self.TOKEN)
+        self.assertEqual((body["op"], body["project"], body["target"], body["origin"]),
+                         ("create", "dotfiles", "coordinator", "owner"))
+        self.assertEqual(lv.last_open("claude-v2-wdpa")["outcome"], "ok")
+        self.assertEqual(self.logs, [])
+
+    def test_token_is_read_per_call_not_cached(self):
+        self.tokfile.write_text("stale-token\n")      # a previous launch's token
+        self.assertIsNone(self.create())
+        self.tokfile.write_text(self.TOKEN + "\n")    # the hub restarted: a new file
+        self.assertEqual(self.create(), "it-test1")
+
+    def test_wrong_token_is_refused_and_logged_once(self):
+        self.tokfile.write_text("wrong-token\n")
+        self.assertIsNone(self.create())
+        self.assertIsNone(self.create())               # second identical refusal: no second log line
+        refused = [l for l in self.logs if "refused" in l]
+        self.assertEqual(len(refused), 1, self.logs)
+        self.assertIn("403", refused[0])
+        self.assertIn("needs this launch's token", refused[0])
+        lo = lv.last_open("claude-v2-wdpa")
+        self.assertEqual(lo["outcome"], "refused")
+        self.assertIn("403", lo["detail"])
+        for l in self.logs + [json.dumps(lo)]:
+            self.assertNotIn("wrong-token", l)
+            self.assertNotIn(self.TOKEN, l)
+
+    def test_write_without_a_token_file_reports_the_refusal(self):
+        self.assertIsNone(self.create())               # no token file at all
+        self.assertIsNone(self.seen[-1][1])            # nothing invented: no header sent
+        self.assertEqual(len(self.logs), 1, self.logs)
+        self.assertIn("403", self.logs[0])
+        self.assertIn("unreadable", self.logs[0])      # distinct and actionable: names the missing file
+        self.assertIn(self.tokfile.name, self.logs[0])
+
+    def test_unset_data_dir_says_how_to_set_it(self):
+        os.environ.pop("PRESCIENT_DATA_DIR")
+        saved = lv.PLUGIN_CONFIG
+        lv.PLUGIN_CONFIG = Path(self.data.name) / "absent.env"
+        self.addCleanup(setattr, lv, "PLUGIN_CONFIG", saved)
+        self.assertIsNone(self.create())
+        self.assertIn("PRESCIENT_DATA_DIR is not set", self.logs[0])
+
+    def test_no_hub_write_bypasses_the_helper(self):
+        src = Path(lv.__file__).read_text()
+        import re as _re
+        posts = _re.findall(r"http_json\(HUB_URL \+ \"/api/tasks\", [^t)]", src)
+        self.assertEqual(len(posts), 1, posts)        # the one inside hub_write()
 
 
 if __name__ == "__main__":
