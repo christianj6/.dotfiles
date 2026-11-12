@@ -34,8 +34,8 @@ omp NEVER implements in its own session. Implementation goes to claude in the sa
 
 ## Startup: the claude workhorse pane
 
-The FIRST act of any new session, before anything else: open a herdr pane to the right of your own pane and start a claude workhorse in it.
-1. `herdr pane split --current --direction right --cwd "$PWD" --no-focus` — note the returned pane id.
+The FIRST act of any new session, before anything else: open a herdr pane to the right of your own pane and start a claude workhorse in it — **except in a work project** (cwd under the tallence tree): the owner runs no claude workhorse there (owner rule 2026-11-12) and delegation is `@task` subagents only. Opening one there contradicts him and he will close it; do not "restore" it. Wherever these instructions say "the claude pane" or "the workhorse", a work project reads `@task`. In a personal project the step stands:
+1. `herdr pane split --current --direction right --cwd "$PWD" --no-focus --env HERDR_NO_NVIM=1` — note the returned pane id. `--env HERDR_NO_NVIM=1` is load-bearing: in a `.conda-env` project `~/.zshrc` otherwise does `exec nvim`, the pane is then nvim and not a shell, and step 2 fails with `agent_pane_busy: pane … is not an available shell`.
 2. `herdr agent start claude-<project-dir-name> --kind claude --pane <returned-pane-id>` — the name given here is temporary: the `claude-name` plugin renames the pane to `claude-v<major>-<pane>` within seconds (`wD:pA` -> `claude-v2-wdpa`). Address it by that name or by pane id, never by the project name. Reuse the existing pane if it is already up (check `herdr agent list` first).
 3. Send a short handshake prompt, not silence: role split (claude = dev workhorse who plans and implements; omp = coordinator who specs, verifies, reviews), house rules (receive ONE well-specified task at a time; report what changed and what was run; no edits outside the spec without saying so; specs arrive as file paths and reports go back as file paths; no messaging other projects' claude panes — anything cross-project routes through omp).
 

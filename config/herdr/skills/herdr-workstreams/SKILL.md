@@ -40,9 +40,12 @@ uses the configured default for new panes (this setup: clean shell in
 
 Extra pane in the CURRENT tab (quick side shell, no new space):
 
-    herdr pane split --current --direction right --cwd "$PWD" --no-focus
+    herdr pane split --current --direction right --cwd "$PWD" --no-focus --env HERDR_NO_NVIM=1
 
 Result: `result.pane.pane_id`. Use `--direction down` for tall/narrow panes.
+`--env HERDR_NO_NVIM=1` is what makes it a shell: in a `.conda-env` project
+`~/.zshrc` otherwise does `exec nvim`, so the pane is an editor (drop the
+flag when an editor pane is what you want).
 
 ## After creation
 
@@ -57,6 +60,10 @@ Result: `result.pane.pane_id`. Use `--direction down` for tall/narrow panes.
   explicit request.
 
 ## Subagents: you are main, claude/omp panes are the workers
+
+**Not in a work project** (cwd under the tallence tree): the owner runs no
+claude pane there (owner rule 2026-11-12); delegate with `@task` subagents
+only, and do not open or "restore" one.
 
 In this workspace the omp session you are running IS the project's main
 agent: it owns the conversation, the repo context, and the herdr driving.
@@ -73,6 +80,9 @@ and the same shape works for a second omp.
    clean zsh in `$HOME`. A pane created directly in a project dir
    auto-starts nvim from the shell config, so its foreground process is
    nvim and every agent-start path rejects it with `agent_pane_busy`.
+   The other way to a shell that is already in the project:
+   `--cwd "$PWD" --env HERDR_NO_NVIM=1` (the shell config skips nvim), after
+   which `herdr agent start <name> --kind claude --pane <id>` works too.
 
 2. **Push the agent in as a command** -- this is what makes it the pane's
    FOREGROUND process, which is the only thing herdr's screen detection
