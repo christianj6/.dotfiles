@@ -1,0 +1,5 @@
+#!/bin/sh
+# Bring every project tab back to nvim+omp left, claude right. Idempotent.
+#   scripts/herdr-restore [--dry-run] [--create-missing] [--tab TAB_ID]
+# The logic (and the herdr [[startup]] hook that runs it) lives in the plugin.
+exec python3 "$(dirname "$0")/../config/herdr/plugins/workspace-restore/restore.py" "$@"

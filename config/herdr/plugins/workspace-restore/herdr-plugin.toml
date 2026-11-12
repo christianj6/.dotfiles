@@ -1,0 +1,14 @@
+id = "dotfiles.workspace-restore"
+name = "workspace restore"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Once per server start: runs scripts/workspace-up (services), then brings every project tab back to nvim+omp left, claude right. Fills panes that exist but are empty; never creates a pane the owner closed."
+platforms = ["linux", "macos"]
+
+# [[startup]] only, on purpose: no event hook, no keybinding, no config.toml
+# change. It runs once when the server starts and never again, so it cannot
+# get in the way of opening panes or using a terminal afterwards. --startup
+# detaches (the hook is one-shot); the result is in
+# $HERDR_PLUGIN_STATE_DIR/restore.log. By hand: scripts/herdr-restore.
+[[startup]]
+command = ["python3", "restore.py", "--startup"]

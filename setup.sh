@@ -413,6 +413,13 @@ herdr plugin link ~/.dotfiles/config/herdr/plugins/claude-name || true
 # [[events]] hook launches it on the next status change.
 herdr plugin link ~/.dotfiles/config/herdr/plugins/lifeview-fallback || true
 
+# Link the workspace-restore plugin (config/herdr/plugins/workspace-restore/):
+# its [[startup]] hook runs once per herdr server start: scripts/workspace-up
+# (services), then every project tab back to nvim+omp left, claude right. It
+# only fills panes that exist but are empty, never creates one the owner
+# closed, and gives work projects no claude pane. By hand: scripts/herdr-restore.
+herdr plugin link ~/.dotfiles/config/herdr/plugins/workspace-restore || true
+
 # Discord bridge plugin (config/herdr/plugins/agent-discord/): provisions
 # the venv for the persistent bot (discord.py is the plugin's one
 # non-stdlib dependency -- the notify hook itself is stdlib-only), links
