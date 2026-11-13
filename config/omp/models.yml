@@ -14,3 +14,14 @@ providers:
   opencode-go:
     compat:
       promptCacheSessionHeader: x-opencode-session
+    # omp discovers these models with no context window (cached null, runtime
+    # 0), and omp never auto-compacts a model whose window is 0, so
+    # compaction.thresholdTokens in config.yml did nothing on them. The owner
+    # confirmed both are 1M-context models (2026-11-13). Schema:
+    # providers.<p>.modelOverrides.<id>.contextWindow (omp 17.3.4,
+    # models-config-schema.d.ts). See docs/task-compaction-500k.report.md.
+    modelOverrides:
+      deepseek-v4.1-flash:
+        contextWindow: 1000000
+      glm-5.3-flash:
+        contextWindow: 1000000

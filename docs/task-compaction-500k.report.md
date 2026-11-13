@@ -1,4 +1,4 @@
-# REPORT: omp compaction at 500k — and why it does nothing on the default model yet
+# REPORT: omp compaction at 500k — now effective on every model we run
 
 Spec: `docs/task-compaction-500k.md`.
 
@@ -100,6 +100,46 @@ Side effects to weigh:
 
 **Decision needed:** ship the override (my recommendation), or accept that 500k applies to
 the Claude roles only.
+
+## Follow-up (2026-11-13): the window override shipped and verified
+
+The owner confirmed both opencode-go models are 1M-context. Shipped in `config/omp/models.yml`:
+
+```yaml
+providers:
+  opencode-go:
+    modelOverrides:
+      deepseek-v4.1-flash:
+        contextWindow: 1000000
+      glm-5.3-flash:
+        contextWindow: 1000000
+```
+
+**The key is real, not invented.** `models-config-schema.d.ts` (omp 17.3.4), lines 1043–1195,
+types `providers.<p>.modelOverrides: Record<id, {…, contextWindow?: number, …}>`. The merge
+`contextWindow: f.contextWindow ?? h.contextWindow` puts the override first, and it does
+apply to these discovered/cached models: omp is **not** limited to its models.db value.
+
+How I verified it:
+
+- **`omp models`:** both rows now show `1M` in the context column (they showed `-` before).
+- **Fresh decision lines:** one tiny `omp -p --no-session` turn per model, run from a
+  scratch dir with `HERDR_*` stripped:
+  - `~/.omp/logs/omp.2026-11-13.72067.log` — deepseek-v4.1-flash:
+    `"contextWindow":1000000 … "thresholdTokens":500000`
+  - `~/.omp/logs/omp.2026-11-13.72053.log` — glm-5.3-flash:
+    `"contextWindow":1000000 … "thresholdTokens":500000`
+  - Before the change, every decision on these models was `0 / 0`.
+
+**Effective threshold, end to end:** deepseek-v4.1-flash **500,000**, glm-5.3-flash
+**500,000**, claude-sonnet-5 **500,000**. The clamp `min(window - 1, 500000)` no longer bites
+on any of them, because every window is 1,000,000. The compaction keys are unchanged.
+
+**Running sessions:** omp processes started before the edit (10:16) loaded their model
+registry at start. For example, the omp in `wD:p9` (pid 23590, up since 2026-11-12 07:12)
+logged `0 / 0` at 09:16, before the edit. Whether omp reloads models.yml mid-session is not
+proven. Assume each omp pane gets the new window at its next start (`/exit` + resume, or a
+herdr restart).
 
 ## Run
 
