@@ -59,8 +59,13 @@ dev:
 browser: 
   enabled: false
 # Context compaction (omp settings compaction.*, read by omp 17.3.4: see
-# docs/task-subagents-and-compaction.report.md). Maintenance at two thirds of
-# the window instead of the legacy reserve-based point near full. The strategy
-# stays omp's default (snapcompact).
+# docs/task-compaction-500k.report.md). Compact at ~500k tokens, not a
+# percentage (owner, 2026-11-12). omp tries thresholdTokens first and only
+# falls back to thresholdPercent when thresholdTokens is unset, so no percent
+# is kept: it would read as active and never apply. The value is clamped to
+# (context window - 1), and omp skips auto-compaction entirely for a model
+# whose window it does not know (window 0) -- the opencode-go models need a
+# contextWindow in models.yml for this to apply to them (see the report).
+# The strategy stays omp's default (snapcompact).
 compaction: 
-  thresholdPercent: 66
+  thresholdTokens: 500000
