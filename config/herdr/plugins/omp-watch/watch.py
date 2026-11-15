@@ -116,6 +116,20 @@ ROTATE_AFTER_SENDS = 4
 MAX_ROTATIONS_WITHOUT_CONVERGENCE = 3
 ROTATION_COOLDOWN_SECONDS = 120
 SOURCE = "custom:omp-watch"
+# When rotation is exhausted the pane used to be left silently wrong: the
+# only trace was a stderr line, and the [[startup]] instance's stderr is a
+# pipe nobody reads (found 2026-11-15 on w5:p1D, pinned at "working" for 40+
+# min with nothing in any log). Escalation now goes to a file:
+#   1. once per wedge, if no foreign claim owns the slot: release our claim
+#      and re-report from a fresh source (the heaviest hammer we hold);
+#   2. if that does not converge either, or a foreign claim owns the slot
+#      (release is a proven no-op there, see foreign_claim): one
+#      "report_wedged" event naming the pane, its cause and the remedy.
+# Both reset when the registry converges, so a later wedge reports again.
+EVENTS_PATH = Path(
+    os.environ.get("HERDR_PLUGIN_STATE_DIR")
+    or Path.home() / ".local/state/herdr/plugins/dotfiles.omp-watch"
+) / "events.jsonl"
 AGENT = "omp"
 HOME = Path.home()
 SESSIONS_DIR = HOME / ".omp" / "agent" / "sessions"
@@ -579,6 +593,33 @@ def registry_matches(verdict: str, registry_status: Optional[str]) -> bool:
     return registry_status == verdict
 
 
+def emit_event(kind: str, pane_id: str, **fields) -> None:
+    """One JSON line in EVENTS_PATH (and stderr). Never raises: a full disk
+    must not take the watcher down with it."""
+    record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "event": kind, "pane_id": pane_id, **fields}
+    print(f"[omp-watch] {kind} {pane_id}: {json.dumps(fields)}", file=sys.stderr)
+    try:
+        EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(EVENTS_PATH, "a") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except OSError as exc:
+        print(f"[omp-watch] could not write {EVENTS_PATH}: {exc}", file=sys.stderr)
+
+
+def explain_state(pane_id: str) -> Optional[str]:
+    """herdr's own `agent explain` verdict for the pane, as a diagnostic
+    only: for omp (no herdr screen manifest) it is always the idle
+    fallback, so it cannot arbitrate between a working omp and a stuck-idle
+    registry, and is never used to gate the escalation."""
+    try:
+        out = subprocess.run([HERDR_BIN, "agent", "explain", pane_id],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return None
+    m = re.search(r"^state:\s*(\S+)", out, re.M)
+    return m.group(1) if m else None
+
+
 def foreign_claim(pane: dict) -> Optional[str]:
     """The source of a FOREIGN agent-session claim on this pane, if any.
 
@@ -661,6 +702,10 @@ def main() -> None:
     # Panes whose agent slot is owned by a foreign source (see
     # foreign_claim): warned once each, then skipped every tick.
     foreign_claims: Dict[str, str] = {}
+    # Escalation state per pane, cleared on convergence or release: the
+    # one-shot release-and-re-report was tried; report_wedged was emitted.
+    release_retried: Dict[str, bool] = {}
+    wedged_reported: Dict[str, bool] = {}
     last_seq_sent = 0
     dlog(f"main() starting, pid={os.getpid()} parent_pid={parent_pid_at_start}")
 
@@ -690,6 +735,8 @@ def main() -> None:
                 rotations.pop(pane_id, None)
                 cooldown_until.pop(pane_id, None)
                 pane_sources.pop(pane_id, None)
+                release_retried.pop(pane_id, None)
+                wedged_reported.pop(pane_id, None)
             else:
                 dlog(f"{pane_id}: release-agent call FAILED, will retry next tick")
             # else: leave it tracked so the next tick retries the release
@@ -848,9 +895,13 @@ def main() -> None:
                     if run_herdr("agent", "rename", pane_id, want_rename):
                         dlog(f"{pane_id}: renamed -> {want_rename!r}")
                 if registry_matches(verdict, reg_status):
+                    if wedged_reported.get(pane_id) or release_retried.get(pane_id):
+                        emit_event("report_recovered", pane_id, registry=reg_status, verdict=verdict)
                     unconfirmed.pop(pane_id, None)
                     rotations.pop(pane_id, None)
                     cooldown_until.pop(pane_id, None)
+                    release_retried.pop(pane_id, None)
+                    wedged_reported.pop(pane_id, None)
                     last_state[pane_id] = verdict
                     continue
 
@@ -859,6 +910,43 @@ def main() -> None:
                     dlog(f"{pane_id}: in rotation cooldown, registry={reg_status!r} verdict={verdict!r}")
                     continue
                 if rotations.get(pane_id, 0) >= MAX_ROTATIONS_WITHOUT_CONVERGENCE:
+                    # Rotation is exhausted. Escalate before backing off.
+                    if not claimed_by and not release_retried.get(pane_id):
+                        release_retried[pane_id] = True
+                        old_src = pane_sources.get(pane_id, SOURCE)
+                        rotation_counter += 1
+                        new_src = f"{SOURCE}-r{rotation_counter}"
+                        released = run_herdr("pane", "release-agent", pane_id,
+                                             "--source", old_src, "--agent", AGENT)
+                        reported = run_herdr("pane", "report-agent", pane_id, "--source", new_src,
+                                             "--agent", AGENT, "--state", verdict,
+                                             "--seq", str(next_seq(pane_id)))
+                        pane_sources[pane_id] = new_src
+                        emit_event("report_release_retry", pane_id, registry=reg_status,
+                                   verdict=verdict, released_source=old_src, new_source=new_src,
+                                   release_ok=released, report_ok=reported)
+                        rotations[pane_id] = 0
+                        unconfirmed[pane_id] = 0
+                        continue
+                    if not wedged_reported.get(pane_id):
+                        wedged_reported[pane_id] = True
+                        claim_agent = (pane.get("agent_session") or {}).get("agent")
+                        emit_event(
+                            "report_wedged", pane_id,
+                            registry=reg_status, verdict=verdict,
+                            explain=explain_state(pane_id),
+                            rotations=rotations[pane_id],
+                            release_retried=bool(release_retried.get(pane_id)),
+                            foreign_claim=claimed_by, foreign_claim_agent=claim_agent,
+                            remedy=(
+                                "a foreign agent-session claim owns the pane's slot and no report can "
+                                "win: recreate the pane, or stop the server and run "
+                                "scripts/herdr-clear-agent-claims.sh"
+                                if claimed_by else
+                                "reports are accepted and dropped even after release + fresh source: "
+                                "restart the pane's agent; if that does not clear it, recreate the pane"
+                            ),
+                        )
                     print(
                         f"[omp-watch] {pane_id}: registry stuck at {reg_status!r} "
                         f"after {rotations[pane_id]} source rotations -- backing off "

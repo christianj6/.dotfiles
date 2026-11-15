@@ -363,6 +363,105 @@ def test_gate_verdict_caps_pinned_working():
     assert watch.gate_verdict("working", None, now, now=now)[0] == "working"
 
 
+class _StopLoop(BaseException):
+    """Ends main()'s infinite loop from inside the patched sleep."""
+
+
+def _drive_main(registry_fn, panes, ticks):
+    """Run the REAL main() loop for `ticks` ticks against fakes: one pane with a
+    live omp, no transcript (verdict idle), a registry from registry_fn(tick),
+    and a herdr that answers every call "ok". Returns (herdr calls, events)."""
+    import tempfile
+    saved = {k: getattr(watch, k) for k in (
+        "live_omp_pids", "ancestor_set", "pane_shell_pids", "load_panes", "load_registry",
+        "newest_session_file", "version_for_pid", "run_herdr", "explain_state", "EVENTS_PATH")}
+    saved_sleep, saved_time = watch.time.sleep, watch.time.time
+    calls, clock, tick = [], [1_000_000.0], [0]
+    events_path = Path(tempfile.mkdtemp()) / "events.jsonl"
+
+    def fake_sleep(_seconds):
+        tick[0] += 1
+        clock[0] += watch.POLL_SECONDS
+        if tick[0] >= ticks:
+            raise _StopLoop()
+
+    watch.live_omp_pids = lambda: ({999: 1}, {})
+    watch.ancestor_set = lambda live, ppids: {999: {100}}
+    watch.pane_shell_pids = lambda ids: {i: 100 for i in ids}
+    watch.load_panes = lambda: panes
+    watch.load_registry = lambda: registry_fn(tick[0])
+    watch.newest_session_file = lambda cwd: None
+    watch.version_for_pid = lambda pid: None
+    watch.run_herdr = lambda *args: calls.append(args) or True
+    watch.explain_state = lambda pane_id: "idle"
+    watch.EVENTS_PATH = events_path
+    watch.time.sleep, watch.time.time = fake_sleep, lambda: clock[0]
+    try:
+        watch.main()
+    except _StopLoop:
+        pass
+    finally:
+        for k, v in saved.items():
+            setattr(watch, k, v)
+        watch.time.sleep, watch.time.time = saved_sleep, saved_time
+    events = [json.loads(l) for l in events_path.read_text().splitlines()] if events_path.exists() else []
+    return calls, events
+
+
+def test_report_dropping_registry_escalates_instead_of_going_silent():
+    """2026-11-15 w5:p1D: herdr accepted every report and applied none. The
+    registry below does exactly that (always "working"; the verdict is idle)."""
+    pane = {"pane_id": "w1:p1", "cwd": "/proj"}
+    stuck = lambda tick: {"w1:p1": ("working", "omp")}
+    calls, events = _drive_main(stuck, [pane], ticks=300)
+    kinds = [e["event"] for e in events]
+    # escalation happens, in order, and each step exactly once per wedge
+    assert kinds.count("report_release_retry") == 1, kinds
+    assert kinds.count("report_wedged") == 1, kinds
+    assert kinds.index("report_release_retry") < kinds.index("report_wedged")
+    # the release-and-re-report really went to herdr
+    assert any(c[:2] == ("pane", "release-agent") and c[2] == "w1:p1" for c in calls)
+    wedged = events[kinds.index("report_wedged")]
+    assert wedged["registry"] == "working" and wedged["verdict"] == "idle"
+    assert wedged["foreign_claim"] is None and wedged["release_retried"] is True
+    assert wedged["explain"] == "idle" and "restart" in wedged["remedy"]
+    # reports keep flowing after the event: escalation never stops reporting
+    last_wedge = max(i for i, c in enumerate(calls) if c[:2] == ("pane", "report-agent"))
+    assert last_wedge > len(calls) // 2
+
+
+def test_foreign_claim_wedge_skips_the_noop_release_and_names_the_claim():
+    pane = {"pane_id": "w1:p1", "cwd": "/proj",
+            "agent_session": {"source": "herdr:claude", "agent": "claude", "kind": "id", "value": "x"}}
+    calls, events = _drive_main(lambda t: {"w1:p1": ("working", "omp")}, [pane], ticks=300)
+    kinds = [e["event"] for e in events]
+    assert "report_release_retry" not in kinds, kinds          # proven no-op there
+    assert not any(c[:2] == ("pane", "release-agent") for c in calls)
+    assert kinds.count("report_wedged") == 1, kinds
+    wedged = events[kinds.index("report_wedged")]
+    assert wedged["foreign_claim"] == "herdr:claude" and wedged["foreign_claim_agent"] == "claude"
+    assert "herdr-clear-agent-claims.sh" in wedged["remedy"]
+
+
+def test_wedge_recovery_is_logged_and_rearms_the_event():
+    """Stuck, then the registry starts applying (recovered), then stuck again:
+    the second wedge must be reported too, not swallowed by the first."""
+    pane = {"pane_id": "w1:p1", "cwd": "/proj"}
+    def flaky(tick):
+        return {"w1:p1": ("idle" if 120 <= tick < 125 else "working", "omp")}
+    _, events = _drive_main(flaky, [pane], ticks=400)
+    kinds = [e["event"] for e in events]
+    assert "report_recovered" in kinds, kinds
+    first_recovery = kinds.index("report_recovered")
+    assert "report_wedged" in kinds[:first_recovery] and "report_wedged" in kinds[first_recovery:], kinds
+
+
+def test_converging_registry_emits_nothing():
+    pane = {"pane_id": "w1:p1", "cwd": "/proj"}
+    calls, events = _drive_main(lambda t: {"w1:p1": ("idle", "omp")}, [pane], ticks=50)
+    assert events == [] and calls == []
+
+
 def main():
     groups = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in groups:
