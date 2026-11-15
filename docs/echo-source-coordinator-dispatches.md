@@ -47,3 +47,33 @@ if those echoes keep costing attention.
 Use `omp-peer send` for every dispatch, including to the project's own Claude. If a message must
 go through `herdr agent prompt`, prefix it with the `[from:coordinator …]` line by hand — an
 untagged dispatch is a claim that the owner wrote it.
+
+---
+
+## Verified: `omp-peer` works to Claude panes, so there was never a reason not to use it
+
+I had assumed (wrongly, implicitly) that dispatching to the project's Claude needed
+`herdr agent prompt`. Tested:
+
+```
+$ omp-peer send claude-v36-wdpj "Tag test: reply with the single word TAGOK."
+delivered <claude's own transcript>
+
+transcript shows:  [from:coordinator project:dotfiles id:omp-v36-wdp9]
+                   Tag test: reply with the single word TAGOK.
+```
+
+**The tag is on the wire and the delivery is confirmed against Claude's transcript.** So:
+
+- `omp-peer send` reaches omp panes **and** claude panes;
+- it always tags, so nothing it sends can be read as the owner's;
+- `herdr agent prompt` is the untagged path and has no advantage.
+
+**The rule, now with evidence:** every dispatch — to a worker, to a coordinator, to the project's
+own Claude — goes through `omp-peer send`. Three echoes this session came from me using the bare
+path out of habit, and each one created a card the owner had to see.
+
+## If a dispatch must go through `herdr agent prompt`
+
+Prefix the tag by hand: `[from:coordinator project:<p> id:<me>]` as the first line. An untagged
+dispatch is a claim that the owner wrote it.
