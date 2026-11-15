@@ -72,3 +72,64 @@ version problem. The restart has to go through the yarepl RPC path the rollout u
 4. `w5:p1A` (claude, genuinely working — transcript written a minute ago, rule
    `osc_title_working`) is untouched.
 5. No change to the idle heuristic — it computed the right answer.
+
+---
+
+## ROOT CAUSE: a foreign `herdr:claude` claim on an omp pane (recovered)
+
+The worker's prevention commit caught it, and the event named the cause:
+
+```
+report_wedged w5:p1D {registry: working, verdict: idle, explain: idle,
+                      foreign_claim: herdr:claude, ...}
+```
+
+**`foreign_claim: herdr:claude` on a pane whose occupant is `omp`.** That is the documented
+mechanism in `scripts/herdr-clear-agent-claims.sh` (written 2026-09-15, same symptom):
+
+> *"Any `claude` process that inherits a pane's `HERDR_PANE_ID` registers one — including a
+> one-shot `claude -p` probe run from that pane's shell, even if the pane's real occupant is omp.
+> After that, herdr accepts omp-watch's report-agent calls with a clean "ok" and never applies
+> them: the pane's sidebar status freezes at whatever state was live when the claim landed."*
+
+That explains every measurement: `herdr agent explain` said `idle` (the engine knew), the
+registry said `working` (frozen at claim time), and **four different `report-agent` calls —
+idle, blocked, own source, fresh source — were all accepted and applied none**.
+
+`claude -p` probes run from that pane today are the likely source: I have been running
+`/Users/christianjohnson/.herdr-discord-venv/bin/python` and `claude`-family commands from panes
+all session.
+
+## Recovery
+
+The script's own advice for one pane is *"close and recreate just that pane (a new pane id
+carries no claim)"* — much lighter than its alternative, which stops the server and kills every
+pane process.
+
+```
+herdr pane close w5:p1D
+herdr pane split --pane w5:p1A --direction right --cwd <heinzel> --env HERDR_NO_NVIM=1   -> w5:p1T
+herdr pane run w5:p1T nvim ; ctrl+a                                                       -> nvim + omp
+```
+
+**Verified after:**
+
+```
+w5:p1A | claude -> working      (untouched, genuinely working)
+w5:p1T | omp    -> idle         (reports correctly, unlike the pinned pane)
+claim on omp-v36-w5p1t: none    (vs the old pane's herdr:claude)
+```
+
+The new pane id carries no claim, so the report path works again — which is the proof that the
+claim was the cause and not the idle heuristic.
+
+## What still needs fixing, in the harness
+
+1. **Do not let an `omp` pane accept a `herdr:claude` claim.** That is the actual defect: the
+   claim is registered by whatever process inherits the pane's `HERDR_PANE_ID`, with no check
+   that it matches the pane's real agent kind.
+2. **`herdr-clear-agent-claims.sh` exists and nobody ran it** — because nothing surfaced that the
+   state was wrong. `report_wedged` now does (the worker's prevention commit), which is the
+   durable half.
+3. **Avoid `claude -p` probes from an omp pane's shell** — they are the likely origin. If a probe
+   is needed, run it with a clean environment (`env -u HERDR_PANE_ID`).
