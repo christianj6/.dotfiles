@@ -178,5 +178,63 @@ class DiscordSelfcheck(unittest.TestCase):
             self.assertNotIn("# required", r.stdout.split("FAIL token")[1].split("\n")[0].split("(run:")[0])
 
 
+class OmpPanes(unittest.TestCase):
+    """An omp pane running other compaction settings than config/omp is named (issue-compaction-not-firing)."""
+
+    def pane(self, started):
+        return wu.OmpPane(4242, started, "wX:p1", "proj")
+
+    def run_check(self, decision, started=None):
+        lines = []
+        started = time.time() if started is None else started
+        rc = wu.run([], False, out=lines.append, omp=[self.pane(started)], decision=lambda pid, s: decision)
+        return rc, lines
+
+    def test_config_threshold_is_read_from_the_committed_config(self):
+        self.assertEqual(wu.omp_threshold_config(), 500000)
+
+    def test_window_zero_is_stale_and_needs_you(self):
+        rc, lines = self.run_check((0, 0))
+        self.assertEqual(rc, 1)
+        self.assertIn("STALE: contextWindow 0: never compacts", lines[0])
+        self.assertIn("1 omp stale, 1 need you - omp wX:p1 (proj)", lines[1])
+
+    def test_old_threshold_is_stale(self):
+        rc, lines = self.run_check((1000000, 660000))
+        self.assertEqual(rc, 1)
+        self.assertIn("threshold 660000 vs config 500000", lines[0])
+
+    def test_matching_pane_is_ok(self):
+        rc, lines = self.run_check((1000000, 500000))
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("ok: window 1000000, threshold 500000", lines[0])
+        self.assertIn("0 omp stale, 0 need you", lines[1])
+
+    def test_threshold_clamped_to_a_small_window_is_ok(self):
+        rc, lines = self.run_check((200000, 199999))
+        self.assertEqual(rc, 0, lines)
+
+    def test_no_turn_yet_judged_by_start_time_against_config_mtime(self):
+        self.assertEqual(self.run_check(None)[0], 0)          # started now: after the config
+        rc, lines = self.run_check(None, started=0)           # started at the epoch: before it
+        self.assertEqual(rc, 1)
+        self.assertIn("no turn logged, started", lines[0])
+
+    def test_decision_is_read_from_the_newest_log_line_of_that_pid(self):
+        with tempfile.TemporaryDirectory() as d:
+            mk = lambda w, t: ('{"message":"%s","contextWindow":%d,"thresholdTokens":%d}' % (wu.OMP_DECISION, w, t))
+            today = time.strftime("%Y-%m-%d")
+            Path(d, f"omp.{today}.4242.log").write_text("\n".join([mk(0, 0), "not json", mk(1000000, 500000), '{"message":"other"}']) + "\n")
+            Path(d, "omp.1999-01-01.4242.log").write_text(mk(7, 7) + "\n")      # recycled pid, ignored
+            Path(d, f"omp.{today}.999.log").write_text(mk(9, 9) + "\n")         # other pid
+            self.assertEqual(wu.omp_decision(4242, time.time() - 60, Path(d)), (1000000, 500000))
+            self.assertIsNone(wu.omp_decision(5555, time.time(), Path(d)))
+
+    def test_services_only_run_has_no_omp_section(self):
+        lines = []
+        wu.run([], False, out=lines.append)
+        self.assertNotIn("omp stale", lines[0])
+
+
 if __name__ == "__main__":
     unittest.main()

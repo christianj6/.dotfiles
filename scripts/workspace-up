@@ -8,6 +8,9 @@ For each piece (lifeview daemon, discord bot, prescient server, bro serve):
   - code newer than process -> restart it (newest mtime of the files it runs vs
                               the process start time: no version file to forget);
   - then a health check that tests what matters, not just "a pid exists".
+Then every omp in a herdr pane (--only omp for just these): its last logged
+compaction decision must match config/omp (window known, thresholdTokens as
+configured). A stale one is named as "needs you", never restarted from here.
 Idempotent: a second run finds everything running and fresh and does nothing.
 Prints one line per piece and ends with one summary naming anything that needs
 the owner (a secret to fill in, a piece with no launcher), with copy-paste
@@ -233,6 +236,113 @@ PIECES = [
 ]
 
 
+# ---- omp panes: the live compaction settings must be the configured ones ----
+# Same class as a service older than its code: an omp process loads config.yml
+# and models.yml once, at start, so a pane started before a config change keeps
+# the old values until its omp restarts. Seen 2026-11-18: three panes from
+# Nov 12 ran contextWindow 0 / thresholdTokens 0 (never compacts) or the old
+# 660k after the 500k fix had shipped. The truth is the process's own log:
+# omp writes "Auto-compaction threshold decision" (contextWindow,
+# thresholdTokens) after every turn. Report only, never restart: an agent's
+# REPL may be mid-turn or hold typed input, and restarting it is a judgment
+# call (the yarepl /exit + ctrl+a path), not a startup-hook action.
+
+OMP_CONFIG = DOTFILES / "config" / "omp"
+OMP_LOGS = Path.home() / ".omp" / "logs"
+OMP_DECISION = "Auto-compaction threshold decision"
+
+
+@dataclass
+class OmpPane:
+    pid: int
+    started: float
+    pane: str        # HERDR_PANE_ID, from the process env
+    project: str     # cwd basename
+
+
+def omp_threshold_config() -> int:
+    """compaction.thresholdTokens from config.yml (0 = unset)."""
+    try:
+        txt = (OMP_CONFIG / "config.yml").read_text()
+    except OSError:
+        return 0
+    m = re.search(r"^compaction:[ \t]*\n(?:(?:[ \t]+.*|[ \t]*#.*|)\n)*?[ \t]+thresholdTokens:[ \t]*(\d+)", txt, re.M)
+    return int(m.group(1)) if m else 0
+
+
+def omp_panes() -> list[OmpPane]:
+    """Interactive omp processes inside herdr panes (ps -E shows the env)."""
+    out = subprocess.run(["ps", "-E", "-ww", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+    starts = {p.pid: p.started for p in processes()}
+    panes = []
+    for ln in out.splitlines():
+        m = re.match(r"\s*(\d+)\s+(.*)$", ln)
+        if not m or not re.search(r"/bin/omp(\s|$)", m.group(2)) or re.search(r"/bin/omp\s+(-p|--print)\b", m.group(2)):
+            continue
+        pane = re.search(r"\bHERDR_PANE_ID=(\S+)", m.group(2))
+        pid = int(m.group(1))
+        if not pane or pid not in starts:
+            continue
+        cwd = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+                             capture_output=True, text=True).stdout
+        cwd = next((l[1:] for l in cwd.splitlines() if l.startswith("n")), "")
+        panes.append(OmpPane(pid, starts[pid], pane.group(1), Path(cwd).name or "?"))
+    return sorted(panes, key=lambda p: p.pane)
+
+
+def omp_decision(pid: int, started: float, logs: Path = OMP_LOGS) -> Optional[tuple[int, int]]:
+    """(contextWindow, thresholdTokens) of this process's newest logged decision."""
+    day0 = time.strftime("%Y-%m-%d", time.localtime(started))
+    for f in sorted(logs.glob(f"omp.*.{pid}.log"), reverse=True):
+        if f.name.split(".")[1] < day0:          # a recycled pid's old log
+            continue
+        try:
+            lines = f.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for ln in reversed(lines):
+            if OMP_DECISION not in ln:
+                continue
+            try:
+                d = json.loads(ln)
+            except ValueError:
+                continue
+            return int(d.get("contextWindow") or 0), int(d.get("thresholdTokens") or 0)
+    return None
+
+
+def omp_verdict(p: OmpPane, want: int, config_m: float,
+                decision: Callable[[int, float], Optional[tuple[int, int]]] = omp_decision) -> tuple[bool, str]:
+    """(ok, detail). Not ok = the pane is not running the configured compaction."""
+    d = decision(p.pid, p.started)
+    if d is None:
+        if p.started + 1 < config_m:
+            return False, f"no turn logged, started {age(config_m - p.started)} before the omp config changed"
+        return True, "no turn logged yet, started after the config"
+    window, thr = d
+    if window <= 0:
+        return False, f"contextWindow 0: never compacts (config {want})"
+    expect = min(want, window - 1) if want > 0 else thr
+    if thr != expect:
+        return False, f"threshold {thr} vs config {expect}"
+    return True, f"window {window}, threshold {thr}"
+
+
+def check_omp(panes: list[OmpPane], out, decision=omp_decision) -> list[str]:
+    """One line per omp pane; returns the owner lines for the stale ones."""
+    want = omp_threshold_config()
+    config_m, _ = newest_mtime([OMP_CONFIG / "config.yml", OMP_CONFIG / "models.yml"])
+    owner = []
+    now = time.time()
+    for p in panes:
+        ok, detail = omp_verdict(p, want, config_m, decision)
+        out(f"omp {p.pane:<8} {p.project[:16]:<16} pid {p.pid:<6} up {age(now - p.started):<4} "
+            f"{'ok' if ok else 'STALE'}: {detail}")
+        if not ok:
+            owner.append(f"omp {p.pane} ({p.project}): {detail} - restart its omp (/exit, then ctrl+a in the pane)")
+    return owner
+
+
 def start(p: Piece, dry: bool) -> str:
     spec = p.launch()
     if spec is None:
@@ -268,7 +378,8 @@ def stop(proc: Proc) -> bool:
     return True
 
 
-def run(pieces: list[Piece], dry: bool, out=print) -> int:
+def run(pieces: list[Piece], dry: bool, out=print, omp: Optional[list[OmpPane]] = None,
+        decision=omp_decision) -> int:
     counts = {"running": 0, "started": 0, "stale": 0, "restarted": 0, "unhealthy": 0}
     owner: list[str] = []
     now = time.time()
@@ -311,8 +422,11 @@ def run(pieces: list[Piece], dry: bool, out=print) -> int:
             out(f"{p.name:<12} DOWN          {action or 'not running'}")
             if not dry:
                 counts["unhealthy"] += 1
+    omp_stale = check_omp(omp, out, decision) if omp is not None else []
+    owner += omp_stale
     summary = (f"workspace: {counts['running']} running, {counts['started']} started, "
-               f"{counts['stale']} stale, {counts['restarted']} restarted, {counts['unhealthy']} unhealthy, {len(owner)} need you")
+               f"{counts['stale']} stale, {counts['restarted']} restarted, {counts['unhealthy']} unhealthy, "
+               + (f"{len(omp_stale)} omp stale, " if omp is not None else "") + f"{len(owner)} need you")
     out(summary + ((" - " + "; ".join(o.splitlines()[0] for o in owner)) if owner else ""))
     for o in owner:
         out("  " + o)
@@ -323,7 +437,8 @@ def main(argv: list[str]) -> int:
     dry = "--dry-run" in argv
     only = next((a.split("=", 1)[1] if "=" in a else argv[argv.index(a) + 1] for a in argv if a.startswith("--only")), "")
     pieces = [p for p in PIECES if not only or p.name in only.split(",")]
-    return run(pieces, dry)
+    omp = omp_panes() if not only or "omp" in only.split(",") else None
+    return run(pieces, dry, omp=omp)
 
 
 if __name__ == "__main__":
