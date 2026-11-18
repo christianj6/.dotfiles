@@ -178,6 +178,31 @@ class DiscordSelfcheck(unittest.TestCase):
             self.assertNotIn("# required", r.stdout.split("FAIL token")[1].split("\n")[0].split("(run:")[0])
 
 
+class DiscordReady(unittest.TestCase):
+    """A healthy long-running bot is not reported as never ready (2026-11-18 false positive)."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.log = Path(self.dir.name, "bridge.log")
+        old, wu.BRIDGE_LOG = wu.BRIDGE_LOG, self.log
+        self.addCleanup(setattr, wu, "BRIDGE_LOG", old)
+        self.started = time.time() - 6 * 86400
+        stamp = lambda t: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+        self.ready = f"[{stamp(self.started + 4 * 86400)}] bot ready as X#1 in [\"s\"]"
+        self.notified = [f"[{stamp(time.time() - 60)}] notified #c: idle (wX:p1, 130 chars)"] * 3000
+        self.stamp = stamp
+
+    def test_ready_line_far_back_in_a_busy_log_counts(self):
+        self.log.write_text("\n".join([self.ready] + self.notified) + "\n")
+        self.assertTrue(wu.bot_ready_since(self.started, wait=0))
+
+    def test_ready_line_older_than_the_process_does_not(self):
+        before = f"[{self.stamp(self.started - 3600)}] bot ready as X#1 in [\"s\"]"
+        self.log.write_text("\n".join([before] + self.notified[:5]) + "\n")
+        self.assertFalse(wu.bot_ready_since(self.started, wait=0))
+
+
 class OmpPanes(unittest.TestCase):
     """An omp pane running other compaction settings than config/omp is named (issue-compaction-not-firing)."""
 

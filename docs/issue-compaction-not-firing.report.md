@@ -128,3 +128,28 @@ acceptance 2: a stale pane is named, not tolerated.
 
 - No claude pane, and not `wD:p9`.
 - `config/claude/settings.json`: an uncommitted change I did not make.
+
+## Follow-up: the discord "never logged bot ready" false positive (fixed)
+
+**Cause (not the timestamp rule):** the running bot (pid 14457, up since Nov 12 07:06) *did*
+log `bot ready` after it started: last at Nov 16 07:29, line 2579 of 2995 in `bridge.log`.
+`bot_ready_since()` only read the **last 400 lines**, and a few days of `notified` lines pushed
+every ready line out of that window. A healthy bot was reported as never ready.
+
+**Fix (`scripts/workspace-up`):**
+- `bot_ready_since()` reads the whole log (about 3k lines, cheap).
+- **New fallback, `bot_connected()`:** if no ready line is found since the start (log rotated
+  or truncated), the check passes when the bot holds an ESTABLISHED TCP:443 connection, which
+  is the gateway websocket. The detail then says so instead of failing. I did not use a
+  recent `notified` line as evidence: it only proves the REST path works, not the gateway.
+- The discord check fails only when there is neither a ready line since start nor a live
+  connection.
+
+**Verified:**
+- `workspace-up --dry-run --only discord-bot` → `ok: … bot ready`, exit 0. The ready line is
+  now found, and `bot_connected()` returns True as well.
+- `test_workspace_up.py`: 19 tests, all passing. The 2 new tests:
+  - a ready line 3000 lines back counts; the old 400-line tail would fail this;
+  - a ready line older than the process still does not count.
+- **Full dry run:** `4 running, 0 unhealthy, 2 omp stale`. The only items left are `wD:p9`
+  and `wG:p6`, both named and left alone as instructed.

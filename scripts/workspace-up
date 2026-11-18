@@ -156,11 +156,16 @@ BRIDGE_LOG = Path(os.environ.get("HERDR_PLUGIN_STATE_DIR")
 
 
 def bot_ready_since(started: float, wait: float = 15) -> bool:
-    """The running bot logged `bot ready` after it started: its gateway is up."""
+    """The running bot logged `bot ready` after it started: its gateway is up.
+
+    Reads the whole log, not a tail: a bot up for days pushes its last
+    `bot ready` thousands of `notified` lines back (2026-11-18: ready at line
+    2579 of 2995, outside the old 400-line tail -> a healthy bot was reported
+    as never ready)."""
     deadline = time.time() + wait
     while True:
         try:
-            for ln in reversed(BRIDGE_LOG.read_text(errors="replace").splitlines()[-400:]):
+            for ln in reversed(BRIDGE_LOG.read_text(errors="replace").splitlines()):
                 m = re.match(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\] bot ready", ln)
                 if m and time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) >= started - 1:
                     return True
@@ -171,15 +176,33 @@ def bot_ready_since(started: float, wait: float = 15) -> bool:
         time.sleep(1)
 
 
+def bot_connected() -> bool:
+    """Live-operation evidence: the running bot holds an established TCPS
+    connection (the gateway websocket). Covers a ready line lost to log
+    rotation or truncation."""
+    for p in processes():
+        if re.search(r"agent-discord/bot\.py", p.command):
+            out = subprocess.run(["lsof", "-a", "-p", str(p.pid), "-i", "TCP:443", "-sTCP:ESTABLISHED", "-n", "-P"],
+                                 capture_output=True, text=True).stdout
+            if "ESTABLISHED" in out:
+                return True
+    return False
+
+
 def health_discord(started: float = 0) -> tuple[bool, str, list[str]]:
     r = subprocess.run([sys.executable, "selfcheck.py", "--live"], cwd=PLUGINS / "agent-discord",
                        capture_output=True, text=True, timeout=60)
     fails = [ln[5:] for ln in r.stdout.splitlines() if ln.startswith("FAIL ")]
+    live = "bot ready"
     if not fails and started and not bot_ready_since(started):
-        fails = [f"gateway: the running bot never logged `bot ready` since it started (see {BRIDGE_LOG})"]
+        if bot_connected():
+            live = "no `bot ready` since start, but the gateway connection is up"
+        else:
+            fails = [f"gateway: the running bot never logged `bot ready` since it started and holds no "
+                     f"gateway connection (see {BRIDGE_LOG})"]
     if not fails:
         n = sum(1 for ln in r.stdout.splitlines() if ln.startswith("PASS channel"))
-        return True, f"token ok, {n} channels resolve, Discord connects, bot ready", []
+        return True, f"token ok, {n} channels resolve, Discord connects, {live}", []
     owner = []
     for f in fails:
         m = re.search(r"\(run: (.*)\)$", f)
