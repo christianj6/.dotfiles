@@ -61,3 +61,55 @@ compares **code mtime against process start**. A pane's omp process carrying an 
 3. `workspace-up` exits non-zero or prints `N need you` when an omp pane's threshold disagrees
    with the config.
 4. Nothing compacts later than before: 0 → 500k for prescient/bro, 660k → 500k for thor.
+
+---
+
+## Fixed and verified, plus a false positive in the new check
+
+### The durable fix works
+
+`3fb0111` — `workspace-up` now reads each omp pane's live log and compares it with the config:
+
+```
+omp wD:p9    .dotfiles        pid 20944  STALE: contextWindow 0: never compacts (config 500000)
+omp wG:p1    thor-voiceai     pid 84434  ok: no turn logged yet, started after the config
+omp wG:p6    ai-assisted-dev  pid 80155  STALE: threshold 660000 vs config 500000
+omp wG:pC    knowledge-graph  pid 4499   ok: window 1000000, threshold 500000
+workspace: ... 2 omp stale, 3 need you - ... restart its omp (/exit, then ctrl+a in the pane)
+```
+
+It names the pane, says *why*, and gives the remedy — and it correctly distinguishes "no turn
+logged yet, started after the config" from genuinely stale, which is the mistake a naive
+mtime check would make.
+
+Confirmed by the worker: prescient, bro and thor were restarted and all now log 1M / 500000.
+
+### Still stale, by design of the report
+
+| pane | why |
+|---|---|
+| **`wD:p9` (this session)** | up 6 days, `contextWindow 0` — my own pane. Cannot restart itself from inside. |
+| `wG:p6` (ai-assisted-dev) | up 6 days, threshold 660000 — a project that is not mine to restart |
+
+### FALSE POSITIVE: the Discord "unhealthy"
+
+The summary also said:
+
+```
+discord: gateway: the running bot never logged `bot ready` since it started
+```
+
+**That is wrong.** The bot is connected and working:
+
+- **33** `bot ready` lines in `bridge.log`
+- one live TCP connection to the gateway (`lsof` → 1 TCP)
+- notifications flowing a minute before the check: `[17:42:56] notified #dotfiles-wD: idle (wD:pJ, …)`
+
+The check looks for a `bot ready` line **after the process start time**, and the running bot
+started Nov 12 — before the current log and before that check existed. So it reports "never" for
+a bot that is demonstrably fine.
+
+**Fix:** the check should accept *either* a ready line newer than the process start *or* evidence
+of live operation (a `notified` line within the last few minutes, or an established TCP
+connection). A health check that cries wolf on a healthy service trains the owner to ignore the
+summary — which is worse than not checking.
