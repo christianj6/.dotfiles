@@ -160,3 +160,49 @@ comms without guessing.
   every pane and would have restarted none. Bumped to 36 and rolled everything.
 - 2026-11-09: claude panes went from `claude-v2-wdpa` (CLI major) to `v36` read from a
   marker, matching the omp panes.
+
+### Shipped but not live: a fix in a long-running process is not a fix
+
+**Goal.** A committed fix is not reported as done until the process that runs it has
+restarted and is observed on the new behaviour. No owner-visible fix may sit silently
+inert behind a process that predates it.
+
+**Design decisions.**
+- **Four instances in one session is a class, not four accidents.** VERSION sat at 35
+  across 52 commits, the Discord bot ran 9 days stale, the lifeview daemon predated its
+  own parser, and three omp panes predated the compaction config.
+- **The failure is silent by construction.** A long-running process reads its config
+  once at start, so a committed change is invisible to it, and every check that reads
+  *config* (not process state) reports healthy.
+- **Therefore the check must read live process state and name the process.** `workspace-up`
+  compares a service's start time against its code's mtime, and now compares each omp
+  pane's *logged* `contextWindow`/`thresholdTokens` against the config, naming any that
+  disagree with the reason and the remedy ("restart its omp"). The logged value is the
+  only evidence of what the running process actually believes.
+- **`contextWindow: 0` is worse than a low threshold**: the guard
+  `if (window <= 0) return false` short-circuits before any threshold is consulted, so
+  neither a percentage nor a token count can apply and the session grows until the
+  provider rejects it. That was the 800k+ the owner saw.
+- **A health check that cries wolf is worse than none.** The first omp/unhealthy check
+  reported the Discord bot as never having logged `bot ready` because it tailed only
+  the last 400 log lines; a healthy service named unhealthy trains the owner to ignore
+  the whole summary. Checks must satisfy themselves on evidence of live operation, not
+  on the absence of an old line in a truncated window.
+- **Distinguish "no turn yet" from "stale".** A process started after the config has no
+  logged decision; that is not staleness and must not be reported as needing a restart.
+
+**Work items.**
+- Compaction: three live panes ran `contextWindow 0` (never compact) or the old 660k —
+  `docs/issue-compaction-not-firing.md`.
+- `scripts/workspace-up`: omp pane threshold check with reason + remedy.
+
+**Log.**
+- 2026-11-18: owner reported compaction "not working", agents at 800k+. Config was
+  correct; prescient (23590) and bro (23795) logged `contextWindow 0` from Nov 12 —
+  never compacts — and thor (24105) still had 660000. Restarted all three; each now
+  logs 1M / 500000.
+- 2026-11-18: `workspace-up` names stale omp panes (3fb0111). Caught the coordinator's
+  own pane (wD:p9) and ai-assisted-dev (wG:p6); it also false-positived the Discord bot
+  as never ready (400-line tail), fixed the same day.
+- 2026-11-18: wD:p9 restarted onto pid 41690, same session `01a0ffdb` (13052 entries intact); it auto-compacted
+  907K -> 5.7% of 1M on resume — the first proof the setting applies to a live pane.
