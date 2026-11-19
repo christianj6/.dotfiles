@@ -254,3 +254,19 @@ must be visible in a file someone reads.
   owner's drop; 34 done pairs are left untouched because dropping one would rewrite a
   resolution the owner gave, and 6 have different resolutions (ambiguous). The store
   refuses an agent's drop by design.
+- 2026-11-19: **two more instances, both in `workspace-up`.** (a) `proc = max(procs,
+  key=started)` judged staleness against a hook launch that was about to exit on the lock,
+  so the real stale daemon was never examined (`docs/task-workspace-up-lockholder.md`) —
+  fixed by `Piece.serving()` reading the lock holder for all four locked pieces. (b) pieces
+  matched a regex over the whole command line and `stop()` was a plain `os.kill` escalating
+  to `SIGKILL`, so any process that merely *mentioned* a piece was a kill candidate — a shell
+  typing `pgrep -f 'lifeview.py --daemon'` was killed twice while testing
+  (`docs/task-workspace-up-never-kills-shells.md`) — fixed by matching the kernel argv
+  (interpreter `argv[0]`, script as a whole element) and refusing to signal our own pid,
+  ancestors or our own group, printing each skip.
+- 2026-11-19: sixth instance recorded rather than repeated — `ready` was absent from
+  `COVERING`, so the owner's own "not quite" left the card in the one state the covering
+  check ignored and a second card was opened 4 s later (`docs/task-ready-does-not-cover.md`).
+  Rule: a `ready` card covers the turn it went ready **in** (turn start <= ready event);
+  neither a recency window nor owner-origin works — every `auto:` card is owner-origin, so
+  that rule would make an old card cover forever.
