@@ -1742,5 +1742,88 @@ class HubWriteToken(unittest.TestCase):
         self.assertEqual(len(posts), 1, posts)        # the one inside hub_write()
 
 
+
+class Singleton(unittest.TestCase):
+    """Exactly one daemon, even when the lock path is replaced (duplicate tasks, 2026-11-18).
+
+    flock is per open file description, so two SingletonLock objects in one
+    process contend exactly like two daemons."""
+
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.path = Path(d.name, "sub", "lock")         # parent created on demand
+        self.held = []
+        self.addCleanup(lambda: [l.fh.close() for l in self.held if l.fh])
+
+    def lock(self):
+        l = lv.SingletonLock(self.path)
+        self.held.append(l)
+        return l
+
+    def replace_path(self):
+        self.path.unlink()                                # what /tmp pruning did
+        self.path.write_text("")
+
+    def test_lock_lives_outside_tmp(self):
+        self.assertNotIn("/tmp", str(lv.LOCK_PATH))
+        self.assertFalse(str(lv.LOCK_PATH).startswith(tempfile.gettempdir()))
+
+    def test_same_inode_second_instance_exits(self):
+        first = self.lock()
+        self.assertTrue(first.acquire())
+        self.assertEqual(self.path.read_text(), str(os.getpid()))
+        self.assertFalse(self.lock().acquire())
+        self.assertTrue(first.keep())
+
+    def test_replaced_path_is_retaken_so_a_later_instance_exits(self):
+        first = self.lock()
+        self.assertTrue(first.acquire())
+        self.replace_path()
+        self.assertTrue(first.keep())                     # the holder's next tick re-takes the path
+        self.assertFalse(self.lock().acquire())           # and the newcomer finds it held
+
+    def test_removed_path_is_retaken(self):
+        first = self.lock()
+        self.assertTrue(first.acquire())
+        self.path.unlink()
+        self.assertTrue(first.keep())
+        self.assertFalse(self.lock().acquire())
+
+    def test_newcomer_that_won_the_replaced_path_makes_the_old_holder_exit(self):
+        first = self.lock()
+        self.assertTrue(first.acquire())
+        self.replace_path()
+        second = self.lock()
+        self.assertTrue(second.acquire())                 # raced in before first's tick
+        self.assertFalse(first.keep())                    # first sees it lost the path: exits
+        self.assertTrue(second.keep())
+
+    def test_acquire_refuses_a_path_replaced_between_open_and_flock(self):
+        l = self.lock()
+        self.path.parent.mkdir(parents=True)
+        real_flock = lv.fcntl.flock
+
+        def flock_then_replace(fh, op):
+            real_flock(fh, op)
+            self.replace_path()
+        lv.fcntl.flock = flock_then_replace
+        try:
+            self.assertFalse(l.acquire())
+        finally:
+            lv.fcntl.flock = real_flock
+
+    def test_run_stops_when_the_lock_is_lost(self):
+        class Lost:
+            def keep(self):
+                return False
+        old, lv._singleton = lv._singleton, Lost()
+        old_h, lv.Harness = lv.Harness, lambda: None
+        try:
+            self.assertIsNone(lv.run())                   # returns before any tick
+        finally:
+            lv._singleton, lv.Harness = old, old_h
+
+
 if __name__ == "__main__":
     unittest.main()

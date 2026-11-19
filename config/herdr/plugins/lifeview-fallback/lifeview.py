@@ -161,26 +161,86 @@ BRO_STATES = {"open": "queued", "sent": "queued", "reopened": "queued", "noted":
               "ready": "ready", "done": "done", "dropped": "dropped", "failed": "failed"}
 
 HERDR_BIN = os.environ.get("HERDR_BIN_PATH", "herdr")
-LOCK_PATH = Path("/tmp/lifeview-fallback.lock")
+# The singleton lock. Not in /tmp: macOS prunes /tmp, which unlinked the
+# Nov 12 daemon's lock file; the next launch created a new file at the same
+# path, its flock succeeded on the new inode, and two daemons each opened an
+# auto task per turn (duplicate tasks, 2026-11-18). A fixed path, not
+# HERDR_PLUGIN_STATE_DIR: a launch from another context must find the same lock.
+LOCK_PATH = Path.home() / ".local/state/herdr/plugins/dotfiles.lifeview-fallback/lock"
 LOG_PATH = "/tmp/lifeview-fallback.log"
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
-_lock_handle: Optional[object] = None   # module-level so the flock outlives acquire()
 
 
 def log(msg: str) -> None:
     print(f"[lifeview-fallback] {time.strftime('%H:%M:%S')} {msg}", file=sys.stderr, flush=True)
 
 
+class SingletonLock:
+    """An flock that is only held while the path still names the locked inode.
+
+    An flock is mutual exclusion on an inode, not a path: once the path is
+    unlinked or replaced, a newcomer locks a different inode and succeeds.
+    So: acquire() checks the path still names what it locked, and keep()
+    (every tick) re-checks; if the path was replaced, the holder re-takes the
+    path when it can, or exits when someone else holds it. One daemon
+    survives either way, and a launch after the re-take exits on the lock."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.fh = None
+
+    def _ours(self, fh) -> bool:
+        try:
+            st, mine = os.stat(self.path), os.fstat(fh.fileno())
+        except OSError:
+            return False
+        return (st.st_dev, st.st_ino) == (mine.st_dev, mine.st_ino)
+
+    def _take(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(self.path, "a")
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fh.close()
+            return None
+        if not self._ours(fh):            # replaced between open and flock
+            fh.close()
+            return None
+        fh.truncate(0)
+        fh.write(str(os.getpid()))
+        fh.flush()
+        return fh
+
+    def acquire(self) -> bool:
+        self.fh = self._take()
+        return self.fh is not None
+
+    def keep(self) -> bool:
+        """True while we hold the lock the path names (re-taking it if the
+        path was removed or replaced and nobody else holds it)."""
+        if self.fh is None:
+            return False
+        if self._ours(self.fh):
+            return True
+        fh = self._take()
+        if fh is None:
+            log(f"lock path {self.path} now held by another instance; exiting")
+            return False
+        old, self.fh = self.fh, fh
+        old.close()
+        log(f"lock path {self.path} was removed or replaced; re-took it")
+        return True
+
+
+_singleton: Optional[SingletonLock] = None   # module-level so the flock outlives acquire()
+
+
 def acquire_singleton_lock() -> None:
-    global _lock_handle
-    _lock_handle = open(LOCK_PATH, "a")
-    try:
-        fcntl.flock(_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    global _singleton
+    _singleton = SingletonLock(LOCK_PATH)
+    if not _singleton.acquire():
         sys.exit(0)
-    _lock_handle.truncate(0)
-    _lock_handle.write(str(os.getpid()))
-    _lock_handle.flush()
 
 
 # ---- pure decision logic: status file (unit-tested) ----
@@ -1731,6 +1791,8 @@ def run() -> None:
     h = Harness()
     tick_errors = 0
     while True:
+        if _singleton is not None and not _singleton.keep():
+            return
         try:
             h.tick()
             tick_errors = 0
