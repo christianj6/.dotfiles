@@ -117,15 +117,16 @@ prescient task done tk-5edb44ae05ee --resolution dropped --note "duplicate of tk
 
 **Left as they are, and reported:**
 
-- **37 auto+owner pairs that are already `done`** (Nov 18 08:43 onward; the second daemon
-  started Nov 18 08:25). They are out of the owner's column already, and dropping one would
-  rewrite a resolution the owner gave.
-- **5 pairs where the two copies are in different states**, which the spec calls ambiguous:
+- **34 auto+owner pairs that are already `done` with the same resolution** (Nov 18 08:43
+  onward; the second daemon started Nov 18 08:25). They are out of the owner's column already,
+  and dropping one would rewrite a resolution the owner gave.
+- **6 done pairs whose copies have different resolutions**, which the spec calls ambiguous:
   - `tk-dff51ea28b1a`/`tk-229aa28ff030`
   - `tk-5629e2719ecc`/`tk-4b8b97497551`
   - `tk-d38c5623d419`/`tk-ddcbaa3b8d58`
   - `tk-f5c4e88c139b`/`tk-1102d95d2a24`
   - `tk-30b3f716474f`/`tk-3e7c800f0279`
+  - `tk-a9cb3461e47c`/`tk-85233195191d`
 - **topical `tk-07d8ab7cb055` (done/dropped) and `tk-053455ddd36c` (ready):** the owner sees
   only one card here.
 - **2 older groups (Nov 3 and Nov 7) that are not `auto:`.** They predate this bug and are
