@@ -206,3 +206,51 @@ inert behind a process that predates it.
   as never ready (400-line tail), fixed the same day.
 - 2026-11-18: wD:p9 restarted onto pid 41690, same session `01a0ffdb` (13052 entries intact); it auto-compacted
   907K -> 5.7% of 1M on resume — the first proof the setting applies to a live pane.
+
+### Guards that cannot guard: the check reports success while protecting nothing
+
+**Goal.** Every guard verifies the thing it actually holds, not a name for it. A lock, a
+claim, or a threshold that can silently stop binding must fail loudly, and its failure
+must be visible in a file someone reads.
+
+**Design decisions.**
+- **Four instances, one shape: the guard's own success signal is the bug.**
+  - `herdr:claude` foreign claim: every `report-agent` returned "ok" and applied none.
+  - `contextWindow: 0`: `if (window <= 0) return false` short-circuits before any threshold,
+    so compaction was disabled while the config read correctly.
+  - `flock` on `/tmp/<plugin>.lock`: macOS unlinks `/tmp` entries, freeing the pathname but
+    not the inode; the next launch creates a fresh file, flocks it, and both processes
+    believe they are the singleton.
+  - the plugin log on `/tmp`: the older daemon wrote to an orphaned inode, so its copies of
+    the duplicate opens never appeared in the file the coordinator read.
+- **Verify the identity, not the path.** `stat(path)` vs `fstat(fd)` on `(st_dev, st_ino)`
+  after acquiring; re-take the path each tick (`keep()`), or exit if another holder has it.
+- **State that guards live belongs outside `/tmp`.** Locks and logs go to
+  `~/.local/state/herdr/plugins/<plugin-id>/`; the parent is created on demand.
+- **A diagnostic log that silently disappears is worse than none**: it makes a partial
+  record look complete.
+- **One implementation, four consumers.** `config/herdr/plugins/_shared/singleton.py`; no
+  plugin keeps its own copy of the lock dance.
+
+**Work items.**
+- duplicate auto-tasks (owner-visible: two cards per direct message) —
+  `docs/task-fix-duplicate-tasks.md`, `docs/task-shared-singleton-lock.md`.
+- `_shared/singleton.py`: shared lock for lifeview-fallback, claude-name, agent-discord,
+  omp-watch (46f24e6).
+
+**Log.**
+- 2026-11-19: owner: "if i give a message directly to an agent it gets two duplicate tasks".
+  Cause: two `lifeview.py --daemon` processes, each holding `/tmp/lifeview-fallback.lock` on
+  a different inode (92236289 from Nov 12, 108131618 from Nov 18), both logging the same
+  open in the same second. Lock fixed (3a5f8c0): path outside `/tmp`, inode-checked,
+  `keep()` each tick.
+- 2026-11-19: the same fault was live in agent-discord (lock file **gone**, bot holding an
+  orphaned inode — the next `workspace-up` would have started a second bot), claude-name
+  (two daemons), omp-watch (latent). Shared module + logs off `/tmp` (46f24e6); counts
+  1/1/1/1; bot holds one gateway connection and logged a fresh `bot ready`.
+- 2026-11-19: proven live in the bot's own log — `another bridge instance holds the lock --
+  exiting` at 14:48:37, then a normal notification at 14:51:04.
+- 2026-11-19: 45 duplicate groups found (44 pairs, one triple). Two open pairs await the
+  owner's drop; 34 done pairs are left untouched because dropping one would rewrite a
+  resolution the owner gave, and 6 have different resolutions (ambiguous). The store
+  refuses an agent's drop by design.
