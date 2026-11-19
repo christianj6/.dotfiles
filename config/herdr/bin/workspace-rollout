@@ -99,7 +99,7 @@ CLAUDE_MARKERS="${CLAUDE_CONFIG_MARKERS:-/tmp/claude-config-versions}"
 SELF_PANE="${HERDR_PANE_ID:-}"
 VERIFY_SECS=30
 # Wedge watch (omp panes): omp-watch's daemon log, same override it honours.
-WATCH_LOG="${OMP_WATCH_LOG:-/tmp/omp-watch-daemon.log}"
+WATCH_LOG="${OMP_WATCH_LOG:-$HOME/.local/state/herdr/plugins/dotfiles.omp-watch/omp-watch-daemon.log}"
 WEDGE_SECS="${ROLLOUT_WEDGE_SECS:-60}"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/workspace-rollout.XXXXXX")"

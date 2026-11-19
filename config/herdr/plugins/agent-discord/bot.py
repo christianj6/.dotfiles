@@ -23,7 +23,6 @@ DISCORD_CATEGORY_NAME, DISCORD_NOTIFY_WEBHOOK.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import os
 import re
@@ -48,25 +47,28 @@ from common import (  # noqa: E402
 )
 
 RECONCILE_SECONDS = 60
-LOCK_PATH = Path("/tmp/herdr-agent-discord.lock")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_shared"))
+from singleton import SingletonLock, plugin_state_dir  # noqa: E402  (shared by the daemon plugins)
+
+# Off /tmp since 2026-11-19: macOS pruned /tmp/herdr-agent-discord.lock under
+# the running bot, so the next launch would have started a second gateway.
+# A fixed path (not STATE_DIR, which follows HERDR_PLUGIN_STATE_DIR): every
+# launcher -- the startup hook, workspace-up -- must find the same lock.
+LOCK_PATH = plugin_state_dir("dotfiles.agent-discord") / "lock"
+from common import LOG_FILE  # noqa: E402,F401  (bridge.log, already off /tmp; re-exported for checks)
 MAX_TAIL_CHARS = 1800
-_lock_handle = None
+_singleton: SingletonLock | None = None
 
 
 def acquire_singleton_lock() -> None:
     """Exit immediately if another bridge instance holds the lock (a normal,
     expected outcome when herdr's startup hook races the running bridge --
     the flock is what makes duplicate gateways structurally impossible)."""
-    global _lock_handle
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _lock_handle = LOCK_PATH.open("w")
-    try:
-        fcntl.flock(_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    global _singleton
+    _singleton = SingletonLock(LOCK_PATH, log)
+    if not _singleton.acquire():
         log("another bridge instance holds the lock -- exiting")
         sys.exit(0)
-    _lock_handle.write(str(os.getpid()))
-    _lock_handle.flush()
 
 
 async def am_i_orphaned(parent_pid_at_start: int) -> bool:
@@ -403,6 +405,8 @@ def run() -> None:
 
     @tasks.loop(seconds=10)
     async def orphan_watch():
+        if _singleton is not None and not _singleton.keep():
+            os._exit(0)  # another bridge holds the lock path now: one gateway only
         if await am_i_orphaned(parent_pid_at_start):
             os._exit(0)  # herdr server died; its next start spawns a fresh bridge
 

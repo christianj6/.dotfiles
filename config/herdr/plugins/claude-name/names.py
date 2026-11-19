@@ -24,7 +24,6 @@ herdr-plugin.toml for what launches it.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -43,12 +42,17 @@ SERVER_DEATH_TICKS = 10
 UNSETTLED = {"working", "blocked"}
 
 HERDR_BIN = os.environ.get("HERDR_BIN_PATH", "herdr")
-LOCK_PATH = Path("/tmp/claude-name.lock")
-LOG_PATH = "/tmp/claude-name-daemon.log"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_shared"))
+from singleton import SingletonLock, plugin_state_dir  # noqa: E402  (shared by the daemon plugins)
+
+# Lock and log off /tmp (macOS prunes it: two daemons ran on 2026-11-18).
+STATE_DIR = plugin_state_dir("dotfiles.claude-name")
+LOCK_PATH = STATE_DIR / "lock"
+LOG_PATH = str(STATE_DIR / "claude-name-daemon.log")
 MARKERS = Path(os.environ.get("CLAUDE_CONFIG_MARKERS", "/tmp/claude-config-versions"))
 # Module-level on purpose: a local would be collected, closing the fd and
 # releasing the flock straight after acquiring it.
-_lock_handle: Optional[object] = None
+_singleton: Optional[SingletonLock] = None
 
 
 def log(msg: str) -> None:
@@ -58,15 +62,10 @@ def log(msg: str) -> None:
 def acquire_singleton_lock() -> None:
     """Exit quietly if another instance holds the lock. The event hook relies
     on this: most of its launches are meant to do nothing."""
-    global _lock_handle
-    _lock_handle = open(LOCK_PATH, "a")
-    try:
-        fcntl.flock(_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    global _singleton
+    _singleton = SingletonLock(LOCK_PATH, log)
+    if not _singleton.acquire():
         sys.exit(0)
-    _lock_handle.truncate(0)
-    _lock_handle.write(str(os.getpid()))
-    _lock_handle.flush()
 
 
 def parse_major(version_output: str) -> Optional[str]:
@@ -232,6 +231,8 @@ def run() -> None:
     naming = Naming()
     tick_errors = 0
     while True:
+        if _singleton is not None and not _singleton.keep():
+            return
         try:
             naming.tick()
             tick_errors = 0
@@ -252,6 +253,7 @@ def daemonize() -> None:
     os.setsid()
     if os.fork():
         os._exit(0)
+    Path(LOG_PATH).parent.mkdir(parents=True, exist_ok=True)
     log_fd = os.open(LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     for fd in (0, 1, 2):
         os.dup2(log_fd, fd)

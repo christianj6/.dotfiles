@@ -46,7 +46,6 @@ events.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -146,7 +145,15 @@ HERDR_BIN = os.environ.get("HERDR_BIN_PATH", "herdr")
 # from a real herdr-side bug until traced to a second process. A single
 # machine-wide lock file makes concurrent instances structurally
 # impossible, no matter who launches the second one or why.
-LOCK_PATH = Path("/tmp/omp-watch.lock")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_shared"))
+from singleton import SingletonLock, plugin_state_dir  # noqa: E402  (shared by the daemon plugins)
+
+# Off /tmp since 2026-11-19: macOS prunes /tmp, and a pruned lock file let a
+# second instance lock a fresh inode at the same path (two lifeview and two
+# claude-name daemons that day). The shared SingletonLock also re-checks the
+# path every tick (keep(), at the top of main()'s loop).
+LOCK_PATH = plugin_state_dir("dotfiles.omp-watch") / "lock"
+LOG_PATH = os.environ.get("OMP_WATCH_LOG") or str(plugin_state_dir("dotfiles.omp-watch") / "omp-watch-daemon.log")
 # Module-level, deliberately: acquire_singleton_lock() must keep this
 # reference alive for the whole process lifetime. A local variable would
 # be garbage-collected the instant the function returns (CPython reference
@@ -154,7 +161,11 @@ LOCK_PATH = Path("/tmp/omp-watch.lock")
 # within microseconds of acquiring it -- confirmed empirically 2026-09-04:
 # a first-then-second-instance test showed the second instance "wrongly"
 # acquiring the lock, because the first had already silently lost it.
-_lock_handle: Optional[object] = None
+_singleton: Optional[SingletonLock] = None
+
+
+def _lock_log(msg: str) -> None:
+    print(f"[omp-watch] {msg}", file=sys.stderr, flush=True)
 
 
 def acquire_singleton_lock() -> None:
@@ -163,18 +174,14 @@ def acquire_singleton_lock() -> None:
     never closed: the OS releases the lock the moment this process exits,
     by any means, and holding it open for the process's entire lifetime is
     exactly the point."""
-    global _lock_handle
-    _lock_handle = open(LOCK_PATH, "w")
-    try:
-        fcntl.flock(_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    global _singleton
+    _singleton = SingletonLock(LOCK_PATH, _lock_log)
+    if not _singleton.acquire():
         print(
             f"[omp-watch] another instance already holds {LOCK_PATH} -- exiting, not duplicating it",
             file=sys.stderr,
         )
         sys.exit(0)
-    _lock_handle.write(str(os.getpid()))
-    _lock_handle.flush()
 
 
 def session_key(cwd: str) -> str:
@@ -767,6 +774,8 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(0)
+        if _singleton is not None and not _singleton.keep():
+            sys.exit(0)            # another instance holds the lock path now
         if _HUP["flag"]:
             print("[omp-watch] SIGHUP -> re-exec (code reload)", file=sys.stderr)
             os.execv(sys.executable, [sys.executable, __file__])
@@ -1048,8 +1057,8 @@ if __name__ == "__main__":
         # Detach stdio to a log file, not /devnull: a silent daemon is
         # undebuggable -- a failed re-exec crash-loops invisibly under the
         # crash-retry net (hit live 2026-09-24).
-        log_path = os.environ.get("OMP_WATCH_LOG", "/tmp/omp-watch-daemon.log")
-        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        Path(LOG_PATH).parent.mkdir(parents=True, exist_ok=True)
+        log_fd = os.open(LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         os.dup2(log_fd, 0)
         os.dup2(log_fd, 1)
         os.dup2(log_fd, 2)
