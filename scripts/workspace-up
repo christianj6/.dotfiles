@@ -75,21 +75,132 @@ def bro_repo() -> Optional[Path]:
 class Proc:
     pid: int
     started: float
-    command: str
+    command: str            # ps's joined command line: a PREFILTER only, never a kill decision
+    ppid: int = 0
 
 
 def processes() -> list[Proc]:
-    out = subprocess.run(["ps", "-axo", "pid=,lstart=,command="], capture_output=True, text=True).stdout
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,lstart=,command="], capture_output=True, text=True).stdout
     procs = []
     for ln in out.splitlines():
-        m = re.match(r"\s*(\d+)\s+(\w{3} \w{3}\s+\d+ \d\d:\d\d:\d\d \d{4})\s+(.*)$", ln)
+        m = re.match(r"\s*(\d+)\s+(\d+)\s+(\w{3} \w{3}\s+\d+ \d\d:\d\d:\d\d \d{4})\s+(.*)$", ln)
         if m:
             try:
-                started = time.mktime(time.strptime(m.group(2), "%a %b %d %H:%M:%S %Y"))
+                started = time.mktime(time.strptime(m.group(3), "%a %b %d %H:%M:%S %Y"))
             except ValueError:
                 continue
-            procs.append(Proc(int(m.group(1)), started, m.group(3)))
+            procs.append(Proc(int(m.group(1)), started, m.group(4), int(m.group(2))))
     return procs
+
+
+# ---- who is a piece, and who may be signalled ----
+# Pieces used to match re.search over ps's whole joined command line, and a
+# restart stops every match (SIGTERM, then SIGKILL). So anything that merely
+# MENTIONED a piece was a kill candidate: a shell running `pgrep -f '...'`, a
+# `git commit -m '...'`, an editor -- and workspace-up's own invoking shell
+# (2026-11-19: it killed the worker's shell twice). Two guards now:
+#  1. a piece is a process RUNNING the program: the exact argv (from the kernel,
+#     not ps's space-joined string), an interpreter as argv[0], and the script as
+#     the first non-option argument, matched as a whole element;
+#  2. never our own pid, an ancestor, or our own process group / session --
+#     excluded visibly ("skipping pid N (...)"), never silently.
+
+INTERPRETER = re.compile(r"(?i)^python[0-9.]*$")   # python, python3, python3.15, macOS framework "Python"
+PY_OPTS_WITH_VALUE = {"-W", "-X", "-Q"}             # options that consume the next element
+
+
+def proc_argv(pid: int) -> Optional[list[str]]:
+    """The process's exact argv, or None when it cannot be read (then it never matches)."""
+    if sys.platform.startswith("linux"):
+        try:
+            return [a.decode(errors="replace") for a in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if a]
+        except OSError:
+            return None
+    try:
+        import ctypes
+        import ctypes.util
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        argmax, size = ctypes.c_int(0), ctypes.c_size_t(ctypes.sizeof(ctypes.c_int))
+        if libc.sysctl((ctypes.c_int * 2)(1, 8), 2, ctypes.byref(argmax), ctypes.byref(size), None, 0) != 0:
+            return None                                     # CTL_KERN, KERN_ARGMAX
+        buf, size = ctypes.create_string_buffer(argmax.value), ctypes.c_size_t(argmax.value)
+        if libc.sysctl((ctypes.c_int * 3)(1, 49, pid), 3, buf, ctypes.byref(size), None, 0) != 0:
+            return None                                     # CTL_KERN, KERN_PROCARGS2
+        raw = buf.raw[:size.value]
+        argc = int.from_bytes(raw[:4], sys.byteorder)
+        rest = raw[4:]
+        rest = rest[rest.index(b"\0"):].lstrip(b"\0")      # skip the exec path and its padding
+        return [a.decode(errors="replace") for a in rest.split(b"\0")[:argc]]
+    except Exception:
+        return None
+
+
+def runs_program(argv: Optional[list[str]], script: str, args: tuple[str, ...] = ()) -> bool:
+    r"""argv runs `script` (a regex anchored to a WHOLE argv element, e.g.
+    r"(?:^|/)lifeview\.py") with every one of `args` as a whole element: argv[0]
+    is a Python interpreter and the script is its first non-option argument, or
+    argv[0] is the script itself. Shells (bash -c '...'), pgrep, git, editors
+    never match, whatever their arguments mention."""
+    if not argv:
+        return False
+    if re.fullmatch(f"(?:.*/)?(?:{script})", argv[0]):     # the script exec'd as argv[0]
+        rest = argv[1:]
+    elif INTERPRETER.match(argv[0].rsplit("/", 1)[-1]):
+        i = 1
+        while i < len(argv) and argv[i].startswith("-"):
+            if argv[i] in ("-c", "-m", "-"):
+                return False                                # code or a module, not a script file
+            i += 2 if argv[i] in PY_OPTS_WITH_VALUE else 1
+        if i >= len(argv) or not re.fullmatch(f"(?:.*/)?(?:{script})", argv[i]):
+            return False
+        rest = argv[i + 1:]
+    else:
+        return False
+    return all(a in rest for a in args)
+
+
+def protected_pids(procs: list[Proc], me: Optional[int] = None) -> dict[int, str]:
+    """pid -> why it must never be signalled: ourselves and every ancestor."""
+    me = os.getpid() if me is None else me
+    parent = {x.pid: x.ppid for x in procs}
+    out, pid = {me: "workspace-up itself"}, parent.get(me, os.getppid() if me == os.getpid() else 0)
+    while pid and pid not in out and pid != 1:
+        out[pid] = "our own ancestor"
+        pid = parent.get(pid, 0)
+    return out
+
+
+def same_group(pid: int) -> str:
+    """Non-empty when pid shares our process group or session."""
+    try:
+        if os.getpgid(pid) == os.getpgid(0):
+            return "in our own process group"
+        if os.getsid(pid) == os.getsid(0):
+            return "in our own session"
+    except OSError:
+        pass
+    return ""
+
+
+def piece_procs(p: "Piece", procs: Optional[list[Proc]] = None, argv_of=proc_argv,
+                me: Optional[int] = None, group_of=same_group, out=None) -> list[Proc]:
+    """The processes that ARE this piece and may be signalled. Excluded
+    candidates are printed (if `out`), so a misidentified piece stays visible."""
+    procs = processes() if procs is None else procs
+    guard = protected_pids(procs, me)
+    found = []
+    for x in procs:
+        if not re.search(p.match, x.command):               # cheap prefilter
+            continue
+        if not runs_program(argv_of(x.pid), p.script, p.args):
+            continue
+        why = guard.get(x.pid) or group_of(x.pid)
+        if why:
+            if out:
+                out(f"{p.name}: skipping pid {x.pid} ({why})")
+            continue
+        found.append(x)
+    return found
 
 
 def newest_mtime(paths: list[Path]) -> tuple[float, Optional[Path]]:
@@ -138,6 +249,8 @@ class Piece:
     ready: Callable[[], bool] = lambda: True     # after a start: answers yet?
     needs: list[str] = field(default_factory=list)
     lock: Optional[Path] = None                  # its singleton lock: the file names the SERVING pid
+    script: str = ""                             # the program: regex for a whole argv element (runs_program)
+    args: tuple[str, ...] = ()                   # whole argv elements it must also carry
 
 
 # ---- which process serves ----
@@ -278,34 +391,38 @@ PIECES = [
     Piece("lifeview", r"lifeview\.py --daemon",
           lambda: [PLUGINS / "lifeview-fallback" / "lifeview.py", SHARED],
           lambda: ([sys.executable, "lifeview.py", "--daemon"], PLUGINS / "lifeview-fallback", {}),
-          health=health_lifeview, lock=PLUGIN_STATE / "dotfiles.lifeview-fallback" / "lock"),
+          health=health_lifeview, lock=PLUGIN_STATE / "dotfiles.lifeview-fallback" / "lock",
+          script=r"lifeview\.py", args=("--daemon",)),
     Piece("discord-bot", r"agent-discord/bot\.py",
           lambda: [PLUGINS / "agent-discord" / "bot.py", PLUGINS / "agent-discord" / "common.py", SHARED],
           lambda: (["bash", "run-bot.sh"], PLUGINS / "agent-discord", {"HERDR_DISCORD_DETACHED": "1"}),
-          health=health_discord, lock=PLUGIN_STATE / "dotfiles.agent-discord" / "lock"),
+          health=health_discord, lock=PLUGIN_STATE / "dotfiles.agent-discord" / "lock",
+          script=r"agent-discord/bot\.py"),
     # The other two singleton-locked plugin daemons. Launched by absolute path so
     # the started process matches the same regex as herdr's own launch.
     Piece("omp-watch", r"omp-watch/watch\.py",
           lambda: [PLUGINS / "omp-watch" / "watch.py", SHARED],
           lambda: ([sys.executable, str(PLUGINS / "omp-watch" / "watch.py"), "--daemon"], PLUGINS / "omp-watch", {}),
-          lock=PLUGIN_STATE / "dotfiles.omp-watch" / "lock"),
+          lock=PLUGIN_STATE / "dotfiles.omp-watch" / "lock", script=r"omp-watch/watch\.py"),
     Piece("claude-name", r"claude-name/names\.py|names\.py --daemon",
           lambda: [PLUGINS / "claude-name" / "names.py", SHARED],
           lambda: ([sys.executable, str(PLUGINS / "claude-name" / "names.py"), "--daemon"], PLUGINS / "claude-name", {}),
-          lock=PLUGIN_STATE / "dotfiles.claude-name" / "lock"),
+          lock=PLUGIN_STATE / "dotfiles.claude-name" / "lock", script=r"names\.py", args=("--daemon",)),
     Piece("prescient", r"prescient gantt serve --port 8765\b",
           lambda: [prescient_repo() / "prescient"] if prescient_repo() else [],
           launch_prescient,
           no_launcher="prescient: repo unknown - put PRESCIENT_DATA_DIR=<prescient>/data (or PRESCIENT_REPO=) in " + str(LIFEVIEW_ENV),
           health=http_health("http://127.0.0.1:8765/api/health",
                              lambda b: (b.get("write_token") or {}).get("guarded") is True, "/api/health"),
-          ready=lambda: get("http://127.0.0.1:8765/api/health")[0] == 200),
+          ready=lambda: get("http://127.0.0.1:8765/api/health")[0] == 200,
+          script=r"prescient", args=("gantt", "serve", "--port", "8765")),
     Piece("bro", r"bro serve\b",
           lambda: [bro_repo() / "bro"] if bro_repo() else [],
           launch_bro,
           no_launcher="bro: repo unknown - put BRO_BIN=<bro>/.venv/bin/bro (or BRO_REPO=) in " + str(LIFEVIEW_ENV),
           health=http_health("http://127.0.0.1:8766/health", lambda b: b.get("ok") is True, "/health"),
-          ready=lambda: get("http://127.0.0.1:8766/health")[0] == 200),
+          ready=lambda: get("http://127.0.0.1:8766/health")[0] == 200,
+          script=r"bro", args=("serve",)),
 ]
 
 
@@ -428,7 +545,7 @@ def start(p: Piece, dry: bool) -> str:
                      stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(40):                       # up to ~20 s for it to appear and answer
         time.sleep(0.5)
-        if any(re.search(p.match, x.command) for x in processes()) and p.ready():
+        if piece_procs(p) and p.ready():
             return "started"
     return "started (not answering yet)"
 
@@ -458,7 +575,7 @@ def run(pieces: list[Piece], dry: bool, out=print, omp: Optional[list[OmpPane]] 
     now = time.time()
     for p in pieces:
         code_m, code_f = newest_mtime(p.code())
-        procs = [x for x in processes() if re.search(p.match, x.command)]
+        procs = piece_procs(p, out=out)
         action = ""
         if not procs:
             action = start(p, dry)
@@ -480,7 +597,7 @@ def run(pieces: list[Piece], dry: bool, out=print, omp: Optional[list[OmpPane]] 
                         stop(x)
                     action = "restarted: " + why + " -> " + start(p, dry)
                     counts["restarted"] += 1
-        procs = [x for x in processes() if re.search(p.match, x.command)]
+        procs = piece_procs(p)
         if procs:
             proc, note = serving(procs, p.lock)
             ok, detail, need = p.health(proc.started)

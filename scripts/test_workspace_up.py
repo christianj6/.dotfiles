@@ -43,7 +43,8 @@ class WorkspaceUp(unittest.TestCase):
         os.utime(self.code, (old, old))
         self.piece = wu.Piece(
             self.marker, self.marker, lambda: [self.code],
-            lambda: ([sys.executable, str(self.code), self.marker], Path(self.dir.name), {}))
+            lambda: ([sys.executable, str(self.code), self.marker], Path(self.dir.name), {}),
+            script=r"fake_daemon\.py", args=(self.marker,))
         self.lines = []
         self.addCleanup(self.kill_all)
         self.addCleanup(self.dir.cleanup)
@@ -102,7 +103,8 @@ class WorkspaceUp(unittest.TestCase):
         p = wu.Piece(self.marker, self.marker, lambda: [self.code],
                      lambda: ([sys.executable, str(self.code), self.marker], Path(self.dir.name), {}),
                      health=lambda started: (False, "token missing",
-                                             ["discord: token missing\n      run: echo 'DISCORD_BOT_TOKEN=...' >> X"]))
+                                             ["discord: token missing\n      run: echo 'DISCORD_BOT_TOKEN=...' >> X"]),
+                     script=r"fake_daemon\.py", args=(self.marker,))
         rc = self.run_once(pieces=[p])
         self.assertEqual(rc, 1)
         self.assertIn("UNHEALTHY", self.lines[0])
@@ -201,6 +203,94 @@ class DiscordReady(unittest.TestCase):
         before = f"[{self.stamp(self.started - 3600)}] bot ready as X#1 in [\"s\"]"
         self.log.write_text("\n".join([before] + self.notified[:5]) + "\n")
         self.assertFalse(wu.bot_ready_since(self.started, wait=0))
+
+
+class ShellNeverKilled(unittest.TestCase):
+    """A process that only MENTIONS a piece is never a piece, and workspace-up
+    never signals itself or its ancestors (docs/task-workspace-up-never-kills-shells.md)."""
+
+    PIECE = wu.Piece("lifeview", r"lifeview\.py --daemon", lambda: [], lambda: None,
+                     script=r"lifeview\.py", args=("--daemon",))
+    PY = "/opt/homebrew/Cellar/python@3.15/3.15.2/Frameworks/Python.framework/Versions/3.15/Resources/Python.app/Contents/MacOS/Python"
+
+    def test_the_real_daemon_shapes_match(self):
+        for argv in ([self.PY, "lifeview.py", "--daemon"],
+                     ["python3", "/x/plugins/lifeview-fallback/lifeview.py", "--daemon"],
+                     ["python3.15", "-u", "lifeview.py", "--daemon"],
+                     ["python3", "-X", "dev", "lifeview.py", "--daemon"],
+                     ["/x/lifeview.py", "--daemon"]):                          # exec'd as argv[0]
+            self.assertTrue(wu.runs_program(argv, self.PIECE.script, self.PIECE.args), argv)
+
+    def test_a_shell_that_mentions_the_piece_is_not_it(self):
+        for argv in (["bash", "-c", "echo lifeview.py --daemon; ./scripts/workspace-up --dry-run --only lifeview"],
+                     ["/bin/zsh", "-c", "pgrep -f 'lifeview.py --daemon'"],
+                     ["zsh", "-c", "python3 lifeview.py --daemon"],              # even one that would RUN it
+                     ["pgrep", "-f", "lifeview.py --daemon"],
+                     ["git", "commit", "-m", "fix lifeview.py --daemon lock"],
+                     ["nvim", "lifeview.py", "--daemon"],
+                     ["tail", "-f", "lifeview.py", "--daemon"],
+                     ["python3", "-c", "import time; time.sleep(9)", "lifeview.py", "--daemon"],
+                     ["python3", "-m", "lifeview.py", "--daemon"],
+                     ["python3", "notlifeview.py", "--daemon"],                  # whole element, anchored
+                     ["python3", "lifeview.py.bak", "--daemon"],
+                     ["python3", "lifeview.py", "--explain"],                    # without its required arg
+                     ["python3", "lifeview.py", "--daemon=no"],
+                     [], None):
+            self.assertFalse(wu.runs_program(argv, self.PIECE.script, self.PIECE.args), argv)
+
+    def table(self):
+        # init -> login shell 10 -> zsh 20 (the owner's) -> bash -c '... lifeview.py --daemon ...' 30 -> us 40
+        return [wu.Proc(1, 0, "launchd", 0), wu.Proc(10, 0, "-zsh", 1), wu.Proc(20, 0, "zsh", 10),
+                wu.Proc(30, 0, "bash -c echo lifeview.py --daemon; ./scripts/workspace-up", 20),
+                wu.Proc(40, 0, "python3 lifeview.py --daemon", 30)]
+
+    def test_ancestors_and_self_are_protected(self):
+        self.assertEqual(wu.protected_pids(self.table(), me=40),
+                         {40: "workspace-up itself", 30: "our own ancestor", 20: "our own ancestor", 10: "our own ancestor"})
+
+    def test_a_table_whose_only_matches_are_us_and_our_parent_yields_no_actions(self):
+        """Even if self and parent DID look like the piece, nothing is returned to
+        signal, and each exclusion is printed."""
+        argv = lambda pid: ["python3", "lifeview.py", "--daemon"]               # pretend everything runs it
+        lines = []
+        got = wu.piece_procs(self.PIECE, self.table(), argv_of=argv, me=40, group_of=lambda pid: "", out=lines.append)
+        self.assertEqual(got, [])
+        self.assertIn("lifeview: skipping pid 40 (workspace-up itself)", lines)
+        self.assertIn("lifeview: skipping pid 30 (our own ancestor)", lines)
+
+    def test_our_process_group_or_session_is_excluded_visibly(self):
+        table = self.table() + [wu.Proc(50, 0, "python3 lifeview.py --daemon", 1)]
+        argv = lambda pid: ["python3", "lifeview.py", "--daemon"]
+        lines = []
+        got = wu.piece_procs(self.PIECE, table, argv_of=argv, me=40,
+                             group_of=lambda pid: "in our own session" if pid == 50 else "", out=lines.append)
+        self.assertEqual(got, [])
+        self.assertIn("lifeview: skipping pid 50 (in our own session)", lines)
+
+    def test_a_real_daemon_elsewhere_is_still_found(self):
+        table = self.table() + [wu.Proc(60, 0, "python3 lifeview.py --daemon", 1)]
+        argvs = {60: [self.PY, "lifeview.py", "--daemon"],
+                 30: ["bash", "-c", "echo lifeview.py --daemon; ./scripts/workspace-up"]}
+        lines = []
+        got = wu.piece_procs(self.PIECE, table, argv_of=lambda pid: argvs.get(pid), me=40,
+                             group_of=lambda pid: "", out=lines.append)
+        self.assertEqual([x.pid for x in got], [60])
+        self.assertEqual(lines, [])                                    # the shell is not a candidate at all
+
+    def test_unreadable_argv_never_matches(self):
+        table = [wu.Proc(70, 0, "python3 lifeview.py --daemon", 1)]
+        self.assertEqual(wu.piece_procs(self.PIECE, table, argv_of=lambda pid: None, me=99999, group_of=lambda p: ""), [])
+
+    def test_proc_argv_reads_the_exact_argv_of_a_live_process(self):
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "a b", "lifeview.py"])
+        self.addCleanup(p.kill)
+        time.sleep(0.3)
+        argv = wu.proc_argv(p.pid)
+        self.assertEqual(argv[1:], ["-c", "import time; time.sleep(30)", "a b", "lifeview.py"])   # spaces kept
+
+    def test_every_piece_names_its_program(self):
+        for p in wu.PIECES:
+            self.assertTrue(p.script, p.name)
 
 
 class Serving(unittest.TestCase):
