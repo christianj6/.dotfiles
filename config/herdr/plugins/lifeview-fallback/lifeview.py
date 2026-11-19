@@ -136,6 +136,18 @@ JUST_DONE_S = 120            # a turn that ended this recently still gets its ta
 # waits for the owner's verdict, possibly for hours, and covering with it would
 # swallow every request he makes meanwhile (no card, no amber, no green for it).
 COVERING = ("created", "queued", "working", "open", "sent", "reopened", "noted")
+# ...plus ONE rule for `ready`: a ready item covers the turn DURING WHICH it
+# went ready (the turn started before the item's ready event). The owner's
+# "not quite" makes the agent rework the item and mark it ready mid-turn; the
+# turn ends seconds later, and with ready never covering, the harness carded
+# that very turn as new work (tk-84a4a895f73b, 4 s after tk-5edb44ae05ee went
+# ready, 2026-11-19). A turn that starts AFTER the ready event is a new request
+# and still gets its card, however soon it follows (the harness's own
+# auto-ready puts the previous card in ready seconds before the owner's next
+# message) and however old the ready card is.
+# Not a time window: it swallowed exactly that quick follow-up. Not origin:
+# every auto card is origin=owner, so an owner exemption would make every
+# long-ready card cover forever, the swallow-everything rule above again.
 HARNESS_BY = "lifeview-harness"
 BUSY = ("working", "blocked")
 
@@ -746,7 +758,7 @@ def autotask_check(agent: Dict, tasks: list, turn: Dict, shown: Optional[set], n
         return None, f"herdr says {herdr}"
     if shown is None or (agent.get("name") or agent.get("pane_id")) not in shown:
         return None, "not on the life view (prescient down, or a project it doesn't show)"
-    covering = covering_items(agent, tasks)
+    covering = covering_items(agent, tasks, turn.get("start"))
     if covering:
         return None, "covered by " + ", ".join(f"{t['id']} ({t['state']})" for t in covering)
     if not turn.get("key"):
@@ -934,7 +946,28 @@ def is_coordinator(agent: Dict, tasks: list) -> bool:
     return (agent.get("agent") or agent.get("kind")) == "omp"
 
 
-def covering_items(agent: Dict, tasks: list) -> list:
+def ready_since(t: Dict) -> Optional[float]:
+    """When the item last went ready: its newest `ready` event (open hub items
+    carry their event log), else its `updated` stamp."""
+    times = [epoch(h.get("at")) for h in t.get("history") or [] if h.get("state") == "ready"]
+    times = [x for x in times if x is not None]
+    return max(times) if times else epoch(t.get("updated"))
+
+
+def covers(t: Dict, turn_start: Optional[float] = None) -> bool:
+    """Does this item cover new work by its agent's project? In-progress states
+    always; `ready` only for a turn that started before the item went ready
+    (no turn known: ready does not cover, the pre-transcript check)."""
+    state = hub_state(t)
+    if state in COVERING:
+        return True
+    if state == "ready" and turn_start is not None:
+        since = ready_since(t)
+        return since is not None and turn_start <= since
+    return False
+
+
+def covering_items(agent: Dict, tasks: list, turn_start: Optional[float] = None) -> list:
     """The open items that already cover this agent's work: keyed on PROJECT, like
     ready_candidates. Hub items carry agent: null and a role target, so the old
     agent-keyed match (tasks_of) was always empty and every turn of a worker with
@@ -948,7 +981,7 @@ def covering_items(agent: Dict, tasks: list) -> list:
     project = agent.get("project") or project_name(agent)
     seen, out = set(), []
     for t in project_items(project, tasks) + tasks_of(agent, tasks):
-        if hub_state(t) in COVERING and id(t) not in seen:
+        if covers(t, turn_start) and id(t) not in seen:
             seen.add(id(t))
             out.append(t)
     return out

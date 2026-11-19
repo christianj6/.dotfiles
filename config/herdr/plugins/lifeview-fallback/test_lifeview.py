@@ -1061,7 +1061,9 @@ class OwnerLifecycle(unittest.TestCase):
 
     def pane_turn(self, a, prompt, calls=1, answer="On main.", ended_ago=20, commands=("git branch --show-current",)):
         """One turn in the agent's own pane: prompt, `calls` tool calls (Bash, cycling
-        through `commands`), answer."""
+        through `commands`), answer. Stamped on the test's clock (lv.time), like the
+        hub's events, so turn order against an item's ready event is real."""
+        ts = lambda ago: datetime.fromtimestamp(self.clock.now - ago, timezone.utc).isoformat().replace("+00:00", "Z")
         # a session header first, as real transcripts have (scan_turn never reads a file's first line)
         entries = [{"type": "session", "timestamp": ts(ended_ago + 60)},
                    {"type": "user", "message": {"role": "user", "content": prompt}, "timestamp": ts(ended_ago + 10)}]
@@ -1349,6 +1351,83 @@ class TaskEcho(unittest.TestCase):
                      self.hub_item(state="ready")):                       # awaiting the owner's verdict
             self.assertEqual(lv.covering_items(self.c, [item]), [], item)
             self.assertIsNotNone(self.chk(self.c, [item], self.REQUEST)[0], item)
+
+    # --- ready covers the turn during which it went ready (docs/task-ready-does-not-cover.md) ---
+
+    def ready_item(self, went_ready: float, origin="owner", history=True):
+        item = self.hub_item(state="ready", id="tk-5edb44ae05ee")
+        item["origin"] = origin
+        iso = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds")
+        item["history"] = [{"at": iso(went_ready - 63), "state": "working", "by": "omp-v36-wdp9", "note": None},
+                           {"at": iso(went_ready), "state": "ready", "by": "omp-v36-wdp9", "note": None}] if history else []
+        item["updated"] = iso(went_ready)
+        return item
+
+    def turn_at(self, start, end, prompt="just push it", key="k-push"):
+        return {"key": key, "start": start, "end": end, "calls": 3, "said": "", "prompt": prompt}
+
+    def chk_turn(self, tasks, t, now, created=frozenset()):
+        return lv.autotask_check(dict(self.c, agent_status="idle"), tasks, t, {self.c["name"]}, now, created)
+
+    def test_ready_covers_the_rework_turn_it_went_ready_in(self):
+        """The replay: 13:56:35 tk-5edb44ae05ee -> working (the owner's "not quite"
+        rework), 13:57:38 -> ready, mid-turn; 13:57:42 the harness looks at that
+        turn -> covered, no second card."""
+        went_ready = datetime(2026, 11, 19, 13, 57, 38, tzinfo=timezone.utc).timestamp()
+        item = self.ready_item(went_ready)
+        t = self.turn_at(went_ready - 63, went_ready + 2)
+        self.assertEqual(lv.covering_items(self.c, [item], t["start"]), [item])
+        title, why = self.chk_turn([item], t, went_ready + 4)
+        self.assertIsNone(title)
+        self.assertEqual(why, "covered by tk-5edb44ae05ee (ready)")
+
+    def test_ready_event_time_falls_back_to_updated(self):
+        went_ready = time.time() - 30
+        item = self.ready_item(went_ready, history=False)                  # bro's list: no event log
+        self.assertEqual(lv.covering_items(self.c, [item], went_ready - 60), [item])
+
+    def test_long_ready_does_not_cover_new_work(self):
+        """The pre-existing rule stays: a card waiting hours for the verdict does
+        not swallow the owner's next, different request."""
+        now = time.time()
+        item = self.ready_item(now - 3 * 3600)
+        t = self.turn_at(now - 60, now - 5, prompt=self.REQUEST, key="k-new")
+        self.assertEqual(lv.covering_items(self.c, [item], t["start"]), [])
+        self.assertIsNotNone(self.chk_turn([item], t, now)[0])
+
+    def test_just_ready_does_not_cover_a_request_that_started_after_it(self):
+        """No time window: the harness's auto-ready puts the previous card in ready
+        seconds before the owner's next message; that message is still new work."""
+        now = time.time()
+        item = self.ready_item(now - 15)
+        t = self.turn_at(now - 10, now - 2, prompt=self.REQUEST, key="k-next")
+        self.assertEqual(lv.covering_items(self.c, [item], t["start"]), [])
+        self.assertIsNotNone(self.chk_turn([item], t, now)[0])
+
+    def test_origin_does_not_change_the_ready_rule(self):
+        """One rule, by turn order. Every auto card is origin=owner, so an owner
+        exemption would make every long-ready card cover forever."""
+        now = time.time()
+        new_turn = now - 60
+        self.assertEqual(lv.covering_items(self.c, [self.ready_item(now - 3 * 3600, origin="owner")], new_turn), [])
+        for origin in ("owner", "agent", "harness"):
+            item = self.ready_item(now - 10, origin=origin)
+            self.assertEqual(lv.covering_items(self.c, [item], now - 70), [item], origin)
+
+    def test_ready_never_covers_without_a_turn(self):
+        """The cheap pre-transcript check has no turn: ready does not cover there,
+        so the transcript is read and autotask_check decides with the turn."""
+        self.assertEqual(lv.covering_items(self.c, [self.ready_item(time.time() - 1)]), [])
+
+    def test_same_turn_guard_is_unchanged(self):
+        """The session marker still stops a second card for one turn, whatever the
+        ready rule says."""
+        now = time.time()
+        t = self.turn_at(now - 10, now - 2, key="k-again")
+        marker = lv.session_marker(self.c, t)
+        title, why = self.chk_turn([self.ready_item(now - 15)], t, now, {marker})
+        self.assertIsNone(title)
+        self.assertIn("already opened for this session", why)
 
     def test_bro_list_items_still_cover_by_agent(self):
         bro = {"id": "tk-b", "state": "sent", "agent": self.c["name"], "project": None, "target": None}
