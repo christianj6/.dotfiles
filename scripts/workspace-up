@@ -137,6 +137,46 @@ class Piece:
     health: Callable[[float], tuple[bool, str, list[str]]] = lambda started: (True, "", [])   # ok, detail, owner lines
     ready: Callable[[], bool] = lambda: True     # after a start: answers yet?
     needs: list[str] = field(default_factory=list)
+    lock: Optional[Path] = None                  # its singleton lock: the file names the SERVING pid
+
+
+# ---- which process serves ----
+# A locked piece's hooks fire short-lived launches that exit on the lock. While
+# one is in flight it is the NEWEST match, so judging the newest match compared
+# the code against a doomed launch and never restarted the stale daemon behind
+# it (2026-11-19: "running (pid 54127) up 0s" while 20359 served stale code).
+# The lock file names the pid that actually serves (_shared/singleton.py).
+
+PLUGIN_STATE = Path.home() / ".local" / "state" / "herdr" / "plugins"
+SHARED = PLUGINS / "_shared" / "singleton.py"   # every locked piece runs it too
+
+
+def lock_pid(path: Optional[Path]) -> Optional[int]:
+    try:
+        return int(path.read_text().strip()) if path else None
+    except (OSError, ValueError):
+        return None
+
+
+def serving(procs: list[Proc], lock: Optional[Path]) -> tuple[Optional[Proc], str]:
+    """(the process to judge, a note for the line). The lock holder when the
+    lock names a live matching process; otherwise the newest match, saying why.
+    No lock (prescient, bro): the newest match, as always."""
+    if not procs:
+        return None, ""
+    newest = max(procs, key=lambda x: x.started)
+    if lock is None:
+        return newest, ""
+    pid = lock_pid(lock)
+    if pid is None:
+        return newest, "no pid in the lock file; judged the newest match"
+    holder = next((x for x in procs if x.pid == pid), None)
+    if holder is None:
+        return newest, f"lock names pid {pid}, which is not running; judged the newest match"
+    others = sorted(x.pid for x in procs if x.pid != pid)
+    if not others:
+        return holder, ""
+    return holder, "lock holder; " + ", ".join(map(str, others)) + (" launch" if len(others) == 1 else " launches") + " in flight"
 
 
 def health_lifeview(started: float = 0) -> tuple[bool, str, list[str]]:
@@ -236,13 +276,23 @@ def launch_bro():
 
 PIECES = [
     Piece("lifeview", r"lifeview\.py --daemon",
-          lambda: [PLUGINS / "lifeview-fallback" / "lifeview.py"],
+          lambda: [PLUGINS / "lifeview-fallback" / "lifeview.py", SHARED],
           lambda: ([sys.executable, "lifeview.py", "--daemon"], PLUGINS / "lifeview-fallback", {}),
-          health=health_lifeview),
+          health=health_lifeview, lock=PLUGIN_STATE / "dotfiles.lifeview-fallback" / "lock"),
     Piece("discord-bot", r"agent-discord/bot\.py",
-          lambda: [PLUGINS / "agent-discord" / "bot.py", PLUGINS / "agent-discord" / "common.py"],
+          lambda: [PLUGINS / "agent-discord" / "bot.py", PLUGINS / "agent-discord" / "common.py", SHARED],
           lambda: (["bash", "run-bot.sh"], PLUGINS / "agent-discord", {"HERDR_DISCORD_DETACHED": "1"}),
-          health=health_discord),
+          health=health_discord, lock=PLUGIN_STATE / "dotfiles.agent-discord" / "lock"),
+    # The other two singleton-locked plugin daemons. Launched by absolute path so
+    # the started process matches the same regex as herdr's own launch.
+    Piece("omp-watch", r"omp-watch/watch\.py",
+          lambda: [PLUGINS / "omp-watch" / "watch.py", SHARED],
+          lambda: ([sys.executable, str(PLUGINS / "omp-watch" / "watch.py"), "--daemon"], PLUGINS / "omp-watch", {}),
+          lock=PLUGIN_STATE / "dotfiles.omp-watch" / "lock"),
+    Piece("claude-name", r"claude-name/names\.py|names\.py --daemon",
+          lambda: [PLUGINS / "claude-name" / "names.py", SHARED],
+          lambda: ([sys.executable, str(PLUGINS / "claude-name" / "names.py"), "--daemon"], PLUGINS / "claude-name", {}),
+          lock=PLUGIN_STATE / "dotfiles.claude-name" / "lock"),
     Piece("prescient", r"prescient gantt serve --port 8765\b",
           lambda: [prescient_repo() / "prescient"] if prescient_repo() else [],
           launch_prescient,
@@ -419,7 +469,7 @@ def run(pieces: list[Piece], dry: bool, out=print, omp: Optional[list[OmpPane]] 
             if action.startswith("started"):
                 counts["started"] += 1
         else:
-            proc = max(procs, key=lambda x: x.started)
+            proc, note = serving(procs, p.lock)
             if code_m > proc.started + 1:
                 why = f"code {age(code_m - proc.started)} newer than process ({code_f.name if code_f else '?'})"
                 if dry:
@@ -432,13 +482,14 @@ def run(pieces: list[Piece], dry: bool, out=print, omp: Optional[list[OmpPane]] 
                     counts["restarted"] += 1
         procs = [x for x in processes() if re.search(p.match, x.command)]
         if procs:
-            proc = max(procs, key=lambda x: x.started)
+            proc, note = serving(procs, p.lock)
             ok, detail, need = p.health(proc.started)
             owner += need
             counts["running"] += 1
             if not ok:
                 counts["unhealthy"] += 1
-            out(f"{p.name:<12} running (pid {proc.pid:<6}) up {age(now - proc.started):<4} "
+            pid = f"{proc.pid} {note}" if note else f"{proc.pid:<6}"
+            out(f"{p.name:<12} running (pid {pid}) up {age(now - proc.started):<4} "
                 f"code {age(now - code_m) if code_m else '?':<4} old   {'ok' if ok else 'UNHEALTHY'}: {detail}"
                 + (f"   [{action}]" if action else ""))
         else:

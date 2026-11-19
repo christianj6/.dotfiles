@@ -203,6 +203,102 @@ class DiscordReady(unittest.TestCase):
         self.assertFalse(wu.bot_ready_since(self.started, wait=0))
 
 
+class Serving(unittest.TestCase):
+    """Which process is judged: the lock holder, not a hook launch in flight
+    (docs/task-workspace-up-lockholder.md)."""
+
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.lock = Path(d.name, "lock")
+        self.daemon = wu.Proc(100, 1000.0, "python3 x.py --daemon")      # serving since t=1000
+        self.launch = wu.Proc(200, 9000.0, "python3 x.py --daemon")      # a hook launch, about to exit
+
+    def test_lock_holder_is_judged_over_a_newer_launch(self):
+        self.lock.write_text("100")
+        proc, note = wu.serving([self.daemon, self.launch], self.lock)
+        self.assertIs(proc, self.daemon)
+        self.assertEqual(note, "lock holder; 200 launch in flight")
+
+    def test_lock_holder_alone_needs_no_note(self):
+        self.lock.write_text("100")
+        self.assertEqual(wu.serving([self.daemon], self.lock), (self.daemon, ""))
+
+    def test_dead_pid_in_the_lock_falls_back_to_the_newest_match(self):
+        self.lock.write_text("4242")
+        proc, note = wu.serving([self.daemon, self.launch], self.lock)
+        self.assertIs(proc, self.launch)
+        self.assertIn("lock names pid 4242, which is not running", note)
+
+    def test_missing_or_garbage_lock_falls_back(self):
+        for content in (None, "", "not-a-pid"):
+            if content is None:
+                self.lock.unlink(missing_ok=True)
+            else:
+                self.lock.write_text(content)
+            proc, note = wu.serving([self.daemon, self.launch], self.lock)
+            self.assertIs(proc, self.launch, content)
+            self.assertIn("no pid in the lock file", note)
+
+    def test_unlocked_piece_judges_the_newest_match_as_before(self):
+        self.assertEqual(wu.serving([self.daemon, self.launch], None), (self.launch, ""))
+        self.assertEqual(wu.serving([], self.lock), (None, ""))
+
+    def test_every_plugin_daemon_piece_has_its_lock_and_the_services_none(self):
+        locks = {p.name: p.lock for p in wu.PIECES}
+        for name, plugin in (("lifeview", "lifeview-fallback"), ("discord-bot", "agent-discord"),
+                             ("omp-watch", "omp-watch"), ("claude-name", "claude-name")):
+            self.assertEqual(locks[name], wu.PLUGIN_STATE / f"dotfiles.{plugin}" / "lock", name)
+            self.assertIn(wu.SHARED, next(p for p in wu.PIECES if p.name == name).code(), name)
+        self.assertIsNone(locks["prescient"])
+        self.assertIsNone(locks["bro"])
+
+
+class ServingLive(unittest.TestCase):
+    """End to end with fake processes: a stale lock holder behind a fresh launch."""
+    setUp, kill_all, procs, run_once = WorkspaceUp.setUp, WorkspaceUp.kill_all, WorkspaceUp.procs, WorkspaceUp.run_once
+
+    def start_fake(self):
+        p = subprocess.Popen([sys.executable, str(self.code), self.marker], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        for _ in range(40):
+            if any(x.pid == p.pid for x in self.procs()):
+                return p.pid
+            time.sleep(0.05)
+        self.fail("fake process never appeared")
+
+    def test_stale_holder_behind_a_launch_in_flight_is_restarted(self):
+        lock = Path(self.dir.name, "lock")
+        self.piece.lock = lock
+        holder = self.start_fake()
+        lock.write_text(str(holder))
+        time.sleep(1.2)                                   # ps start times have 1 s resolution
+        newer = time.time()
+        os.utime(self.code, (newer, newer))               # code changed after the holder started
+        time.sleep(1.2)
+        launch = self.start_fake()                        # the hook launch: newer than the code
+        self.run_once(dry=True)
+        self.assertIn(f"pid {holder} lock holder; {launch} launch in flight", self.lines[0])
+        self.assertIn("would restart", self.lines[0])
+        self.assertIn("1 stale", self.summary)
+        self.run_once()
+        self.assertIn("1 restarted", self.summary)
+        pids = [p.pid for p in self.procs()]
+        self.assertEqual(len(pids), 1)                    # holder and launch both stopped, one started
+        self.assertNotIn(holder, pids)
+        self.assertNotIn(launch, pids)
+
+    def test_fresh_holder_with_a_launch_in_flight_is_left_alone(self):
+        lock = Path(self.dir.name, "lock")
+        self.piece.lock = lock
+        holder = self.start_fake()                        # code is an hour old: holder is fresh
+        lock.write_text(str(holder))
+        launch = self.start_fake()
+        self.run_once()
+        self.assertIn("0 stale, 0 restarted", self.summary)
+        self.assertEqual(sorted(p.pid for p in self.procs()), sorted([holder, launch]))
+
+
 class OmpPanes(unittest.TestCase):
     """An omp pane running other compaction settings than config/omp is named (issue-compaction-not-firing)."""
 
